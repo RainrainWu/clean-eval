@@ -16,6 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false  # create-pull-request authenticates with its own token
       - id: heatmap
         uses: RainrainWu/clean-eval@v1
         with:

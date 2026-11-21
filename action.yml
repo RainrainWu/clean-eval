@@ -46,7 +46,7 @@ inputs:
     description: "eval: period end YYYY-MM-DD (default: today)"
     required: false
   apply:
-    description: "eval: apply recommendations to .clean-eval/risk-model.json and .clean-eval/review-rules.md (true|false). The action never commits; follow with a create-PR step."
+    description: "eval: let the agent edit .clean-eval/risk-model.json and .clean-eval/review-rules.md (true|false). An edit is kept only if it is well-formed, changes only tunable keys and doesn't lower AUC on replay. The action never commits; follow with a create-PR step."
     required: false
     default: "false"
 
@@ -56,7 +56,7 @@ inputs:
     required: false
     default: README.md
   use-claude:
-    description: "risk-heat-map: run through Claude for a narrative report (true) or script-only, no API key (false)"
+    description: "risk-heat-map: add a Claude-written narrative to the report (true) or script only, no API key (false)"
     required: false
     default: "false"
 
@@ -82,7 +82,7 @@ inputs:
 
 outputs:
   output-dir:
-    description: Directory containing report.md, result.json and claude.log
+    description: Directory containing report.md, result.json, claude.log, and the agent's context/ and agent/ folders
     value: ${{ steps.run.outputs.output-dir }}
   result:
     description: Path to result.json
@@ -129,4 +129,4 @@ runs:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key || env.ANTHROPIC_API_KEY }}
         CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token || env.CLAUDE_CODE_OAUTH_TOKEN }}
         GH_TOKEN: ${{ inputs.github-token }}
-      run: '"$GITHUB_ACTION_PATH/ci/run.sh"'
+      run: bash "$GITHUB_ACTION_PATH/ci/run.sh"

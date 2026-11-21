@@ -1,4 +1,5 @@
-# Dogfood: run this repo's action on its own PRs.
+# Dogfood: test the scripts, and run this repo's action on its own PRs (`uses: ./` runs the PR's own action code,
+# so this is a smoke test, not an independent review).
 name: self-test
 on:
   pull_request:
@@ -9,12 +10,24 @@ permissions:
   pull-requests: write
 
 jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s tests -v
+
   risk-heat-map:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - id: heatmap
         uses: ./
         with:
@@ -29,7 +42,7 @@ jobs:
           python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d['modules']), 'modules')" "$RESULT"
 
   pr-review:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -41,6 +54,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - if: env.HAS_KEY == 'true'
         id: review
         uses: ./

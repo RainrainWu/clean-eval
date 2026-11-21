@@ -1,5 +1,6 @@
 # Monthly calibration of the risk model and review rules over the last 90 days.
-# With apply: "true", recommended changes land in .clean-eval/* and are proposed as a PR for humans to approve.
+# With apply: "true", the agent may edit .clean-eval/*; the action keeps an edit only if it is well-formed, touches
+# only tunable keys, and doesn't lower AUC on replay — and the result is still proposed as a PR for humans to approve.
 name: clean-eval eval
 on:
   schedule:
@@ -21,6 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false  # create-pull-request authenticates with its own token
       - id: eval
         uses: RainrainWu/clean-eval@v1
         with:
@@ -34,5 +36,7 @@ jobs:
           branch: clean-eval/eval
           title: "chore: clean-eval calibration (AUC ${{ steps.eval.outputs.auc }})"
           commit-message: "chore: apply clean-eval eval recommendations"
-          add-paths: .clean-eval/
+          add-paths: |
+            .clean-eval/risk-model.json
+            .clean-eval/review-rules.md
           body-path: ${{ steps.eval.outputs.output-dir }}/report.md

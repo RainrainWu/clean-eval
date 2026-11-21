@@ -27,6 +27,8 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
    ```
    Read `totals`, `calibration`, `modules`, `rules` first; dip into `prs` for detail. Under ~20 PRs or ~5
    defective PRs, say the sample is too small for weight changes and limit advice to qualitative findings.
+   If `rules.reliable` is false (too many `gh` fetches failed — see `prs_fetch_failed`), don't draw rule-usefulness
+   conclusions and report the failure count under Caveats.
 
 3. **Verify defects.** Fix→PR links are heuristic (shared files + fix/revert wording). For defective PRs with
    `confidence: heuristic` (sample up to ~15, prioritising High/Critical and Low-tier misses), read both diffs
@@ -41,8 +43,10 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
    - Tier mix: if >60% of PRs land in one tier, propose moving `level_thresholds`.
    - Modules with high `escape_rate` but low `mean_score` → propose `criticality` values or a finer `modules`
      mapping (coarse modules hide hotspots); the reverse → over-flagged.
-   - **Replay** proposed model changes: write the candidate model to a temp file, rerun `history.py --model <file>`
-     and compare AUC / tier escape rates before vs after. Only recommend changes that don't make AUC worse.
+   - **Replay** proposed weight/threshold/criticality changes on the collected history (milliseconds, no git):
+     `history.py --from-history <history.json> --replay <candidate-model.json>`, or `--sensitivity` for every
+     one-knob change at once. Compare AUC / tier escape rates before vs after; only recommend changes that don't
+     make AUC worse. Structural changes (`modules`, `window_days`, `exclude`) need a full re-collect with `--model`.
 
 5. **Analyse review rules** (needs `--with-gh`; otherwise read review comments for a sample via `gh`, or skip and say so).
    - Rules cited often on PRs that stayed clean and never blocked anything → downgrade severity, raise min tier, or retire.
@@ -52,6 +56,8 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
      (next free ID in its section, severity, min tier, one-sentence check).
    - Recurring `[NEW]` findings in pr-review comments (`new_findings` per PR) → promote to rules.
    - Low share of PRs carrying the `clean-eval:pr-review` marker → rule metrics cover only those PRs; say so.
+     Markers count only from the reviewer identity (any `…[bot]` login, or `--reviewer-login`); others are
+     ignored (`untrusted_markers_ignored`), so a commenter can't steer the metrics.
 
 6. **Report**:
    ```
@@ -71,14 +77,32 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
 
 ## CI mode
 
-When the prompt says you're running in CI (no human): history is already collected at the path the prompt gives
-(skip step 2 unless replaying a candidate model). Don't ask anything; apply recommendations only if `apply=true`
-(and only those whose replay didn't lower AUC; never with a too-small sample) — edits are allowed only under
-`.clean-eval/`. Then write
-- `<output dir>/report.md` — the step-6 report, noting which recommendations were applied.
-- `<output dir>/result.json` — exactly:
+When the prompt says you're running in CI, you have **no shell, no network and no GitHub access** — only file
+tools. The action has already done steps 1–2 and the mechanical part of 3–4, read-only, in the context directory
+named in the prompt:
+
+| File | Contents |
+|---|---|
+| `context.json` | period, PR and defect counts, baseline AUC, whether rule metrics are reliable |
+| `eval-history.json` | the step-2 output |
+| `sensitivity.json` | replays of every one-knob change (each weight ±0.1 and → 0, each threshold ±0.05): AUC, tier escape rates and tier mix — use these instead of running replays |
+| `defects/index.json` + `defects/NN-prX-{pr,fix}.patch` | the PR and fix diffs (overlapping files) for up to 30 defect links, highest-risk first — use these for step 3 |
+| `risk-model.orig.json`, `review-rules.orig.md` | the current model and rules |
+
+**Coverage:** do step 3 from the patches — read the PR and fix patch for at least the first 10 links in
+`defects/index.json` (all of them if fewer), say how many you read and how many links you dropped as false, and
+base AUC/escape-rate conclusions on the verified set. Don't ask anything. With `apply=false`, write nothing outside
+the agent directory. With `apply=true` you may
+edit `.clean-eval/risk-model.json` and `.clean-eval/review-rules.md` (create them from the `.orig` copies). The
+action then accepts a model edit only if it changes nothing but `likelihood_weights`, `impact_weights`,
+`level_thresholds`, `criticality`, `criticality_default`, `new_module_tier` or `version`, and only if its replay AUC
+is not below the baseline — otherwise it restores the file. A rules edit must still parse into unique rule rows.
+Any other file you create or change under `.clean-eval/` is restored to its previous state.
+The action also refuses model edits when the sample is under 20 PRs or 5 defective PRs, or AUC is undefined.
+Then write to the agent directory:
+- `report.md` — the step-6 report, saying which recommendations you applied.
+- `result.json` — exactly:
   ```json
-  {"since": "2026-08-01", "until": "2026-10-31", "prs": 287, "defective_prs": 56, "auc": 0.58,
-   "applied": false,
-   "recommendations": [{"target": "risk-model.json|review-rules.md", "change": "…", "evidence": "…", "applied": false}]}
+  {"recommendations": [{"target": "risk-model.json|review-rules.md", "change": "…", "evidence": "…"}]}
   ```
+  The action takes PR counts and AUC from the history itself and reports whether each edit was accepted.

@@ -42,8 +42,10 @@ Always write commands with the literal `${CLEAN_EVAL_SKILLS:-.claude/skills}` pr
 
 ## CI mode
 
-In CI the action computes and writes the heat map itself (no agent needed). With `use-claude: true` you're only
-asked to write the step-4 narrative to `<output dir>/report.md` from the JSON it gives you; never edit other files.
+In CI the action computes and writes the heat map itself (no agent needed). With `use-claude: true` you have no
+shell — only file tools — and are asked to write the step-4 narrative as `report.md` in the agent directory named
+in the prompt, from the precomputed `heatmap.json` (per-module signals) and `readme.diff` (what changed). Never
+edit other files.
 
 ## Options
 
