@@ -20,7 +20,7 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
 1. **Period.** Turn the request into `--since`/`--until` dates (default end: today; default period: last 90 days).
    Leave `--defect-window-days` at 30 unless asked; PRs merged in the last 30 days have incomplete look-ahead.
 
-2. **Collect.** Use `--with-gh` when `gh auth status` succeeds (adds review comments and rule citations):
+2. **Collect.** Use `--with-gh` when `gh` is authenticated (adds review comments and rule citations):
    ```bash
    python3 ${CLEAN_EVAL_SKILLS:-.claude/skills}/eval/scripts/history.py --since <YYYY-MM-DD> --until <YYYY-MM-DD> \
      [--with-gh] --out <tmp or output dir>/eval-history.json

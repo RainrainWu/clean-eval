@@ -49,9 +49,10 @@ The action never commits — pair it with a create-PR step. Ready-to-copy workfl
   `CLAUDE_CODE_USE_BEDROCK=1` / `CLAUDE_CODE_USE_VERTEX=1` and cloud credentials in the step's `env`.
 - **Permissions:** `pull-requests: write` to post reviews; `contents: read` otherwise.
 - **Security:** trigger reviews on `pull_request`, not `pull_request_target` — the agent reads untrusted PR
-  code and must not run with secrets on fork PRs. The agent only *proposes* findings: it gets read-only `git`/`gh`
-  subcommands, the two clean-eval scripts, and write access only to the output dir (plus `.clean-eval/` for
-  `eval` with `apply: true`). Risk tiers come from `risk.py`; verdict and blocker count are derived from validated
+  code and must not run with secrets on fork PRs. The agent only *proposes* findings: it gets `git`/`gh` read
+  subcommands, the two clean-eval scripts, and file-tool writes only to the output dir (plus `.clean-eval/` for
+  `eval` with `apply: true`). This narrows rather than sandboxes the agent (e.g. `git diff --output=` can still
+  write files), so keep secrets out of PR jobs from untrusted forks. Risk tiers come from `risk.py`; verdict and blocker count are derived from validated
   findings by `ci/result.py`, which also does all posting and step outputs. PR reviews read `.clean-eval/`
   config from the PR's base commit, so a PR can't relax the rules it's judged by.
 
