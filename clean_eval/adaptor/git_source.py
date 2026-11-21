@@ -1,11 +1,11 @@
-"""SourceReaders over git: the Python files of a working tree, or of any revision read straight from git objects.
-Files are only read as text; nothing from the repository is imported or run."""
+"""SourceReaders over the git and file-system gateways: the Python files of a working tree, or of any revision read
+straight from git objects. Files are only read as text; nothing from the repository is imported or run."""
 import hashlib
-import os
 import re
 
-from ...domain.source import Snapshot, SourceFile
-from ...use_cases.rules.classify import is_test
+from ..domain.errors import HeatmapError
+from ..domain.source import Snapshot, SourceFile
+from ..use_cases.rules.classify import is_test
 
 GENERATED = re.compile(r"(_pb2(_grpc)?\.py$|/generated/|/vendor/|/site-packages/)")
 MAX_FILE_BYTES = 1_500_000
@@ -28,8 +28,8 @@ def content_id(text):
 class WorkingTreeSource:
     """The tracked Python files of the working tree, as they are on disk now."""
 
-    def __init__(self, git, policy):
-        self.git, self.policy = git, policy
+    def __init__(self, git, fs, policy):
+        self.git, self.fs, self.policy = git, fs, policy
         self.root = git.toplevel()
 
     def snapshot(self):
@@ -41,13 +41,13 @@ class WorkingTreeSource:
         for rel in self.git.ls_files():
             if not _wanted(rel):
                 continue
-            path = os.path.join(self.root, rel)
+            path = self.fs.join(self.root, rel)
+            # a symlink could point outside the repository; a tracked file may be gone from the working tree
+            if self.fs.is_link(path) or not self.fs.is_file(path) or self.fs.size(path) > MAX_FILE_BYTES:
+                continue
             try:
-                if os.path.islink(path) or os.path.getsize(path) > MAX_FILE_BYTES:
-                    continue  # a symlink could point outside the repository
-                with open(path, encoding="utf-8", errors="ignore") as fh:
-                    text = fh.read()
-            except OSError:
+                text = self.fs.read_text(path)
+            except HeatmapError:
                 continue
             out.append(SourceFile(path=rel, text=text, loc=count_loc(text), is_test=is_test(rel, self.policy),
                                   blob=content_id(text)))

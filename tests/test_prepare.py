@@ -5,11 +5,12 @@ import unittest
 
 from helpers import Repo, days_ago, read
 
-from clean_eval.adaptor.gateways.files import Folder
-from clean_eval.adaptor.gateways.git_cli import Git
+from clean_eval.adaptor.files import Folder
 from clean_eval.domain.errors import HeatmapError
 from clean_eval.domain.policy import Policy
 from clean_eval.domain.review import DiffIndex
+from clean_eval.external.filesystem import FileSystemGateway
+from clean_eval.external.git import GitGateway
 from clean_eval.use_cases.prepare_review import policy_at, write_split_diff
 from clean_eval.use_cases.rules.diff import split_patch
 
@@ -29,9 +30,9 @@ class SplitDiffTest(unittest.TestCase):
             r.write('src/a/we"ird name.py', "w\n")
             r.write("src/a/keep.py", "k2\n")
             head = r.commit("change", when=days_ago(2))
-            git = Git(r.path)
+            git = GitGateway(r.path)
             files = git.diff_files(base, head)
-            index = write_split_diff(git, Folder(out), base, head, files, {f: "src/a" for f in files})
+            index = write_split_diff(git, Folder(FileSystemGateway(), out), base, head, files, {f: "src/a" for f in files})
             self.assertEqual(len(index), len(files))
             for e in index:
                 patch = read(os.path.join(out, e.patch))
@@ -52,7 +53,7 @@ class PolicyAtBaseTest(unittest.TestCase):
 
     def setUp(self):
         self.repo = Repo()
-        self.git = Git(self.repo.path)
+        self.git = GitGateway(self.repo.path)
 
     def tearDown(self):
         self.repo.cleanup()

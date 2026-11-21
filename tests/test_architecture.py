@@ -1,6 +1,7 @@
 """The dependency rule of Clean Architecture, enforced on the imports: domain <- use_cases <- adaptor <- external.
 Inner layers know nothing of outer ones and do no I/O, and the domain holds data models only: pydantic models whose
-invariants are validators, plus the constants and error types they use. The business rules live in use_cases/rules."""
+invariants are validators, plus the constants and error types they use. The business rules live in use_cases/rules.
+Everything that reaches outside the process does so in the external layer, each dependency through its one gateway."""
 import ast
 import fnmatch
 import importlib
@@ -27,6 +28,21 @@ PURE_IMPORTS = {"__future__", "abc", "base64", "collections", "copy", "dataclass
                 "functools", "hashlib", "itertools", "json", "math", "re", "typing", "pydantic"}
 CLOCK_CALLS = {"now", "today", "utcnow"}  # datetime's clock reads (the time module isn't importable here at all)
 MODEL_METHOD_DECORATORS = {"field_validator", "model_validator", "computed_field", "property", "classmethod"}
+# Standard modules that reach outside the process (processes, files, databases, the network, the environment).
+REACHING_OUT = {"subprocess", "sqlite3", "os", "shutil", "filecmp", "pathlib", "tempfile", "glob", "io", "socket", "ssl",
+                "urllib", "http", "ftplib", "smtplib", "multiprocessing", "ctypes", "webbrowser"}
+# Each external dependency has one gateway, the only module allowed what reaches it.
+GATEWAYS = {
+    "external/git.py": {"subprocess"},                                  # the git CLI
+    "external/github.py": {"subprocess"},                               # the gh CLI
+    "external/code_review_graph.py": {"subprocess"},                    # the code-review-graph CLI
+    "external/sqlite.py": {"sqlite3"},                                  # SQLite
+    "external/filesystem.py": {"os", "shutil", "filecmp", "pathlib"},   # files and folders
+    "external/environment.py": {"os"},                                  # environment variables
+    "external/clock.py": {"datetime"},                                  # today's date
+}
+DRIVERS = {"external/cli.py", "external/ci.py", "external/agent_guard.py"}  # the console is theirs (they are driven by it)
+BOOTSTRAP = {"__main__.py"}  # puts the checkout on sys.path before any of the package can be imported
 
 
 def imports(path):
@@ -47,6 +63,16 @@ def imports(path):
 
 def layer_files(layer):
     return sorted((PACKAGE / layer).rglob("*.py"))
+
+
+def clock_reads(path):
+    """Lines that read the clock: `today()`, `now()` or `utcnow()` called on `date` or `datetime` (the time module
+    isn't importable outside the gateways at all)."""
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in CLOCK_CALLS:
+            receiver = node.func.value
+            if (receiver.attr if isinstance(receiver, ast.Attribute) else getattr(receiver, "id", "")) in {"date", "datetime"}:
+                yield node.lineno
 
 
 def _decorator_name(d):
@@ -99,9 +125,7 @@ class DependencyRule(unittest.TestCase):
     def test_domain_and_use_cases_never_read_the_clock(self):
         for layer in PURE_ONLY:
             for path in layer_files(layer):
-                for node in ast.walk(ast.parse(path.read_text())):
-                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                        self.assertNotIn(node.func.attr, CLOCK_CALLS, "%s:%d" % (path.relative_to(PACKAGE), node.lineno))
+                self.assertEqual(list(clock_reads(path)), [], path.relative_to(PACKAGE))
 
     def test_the_launcher_only_reaches_the_external_layer(self):
         names = [n for n in imports(PACKAGE / "__main__.py") if n.startswith(TOP + ".")]
@@ -111,10 +135,69 @@ class DependencyRule(unittest.TestCase):
         self.assertIn("clean_eval.domain.values", imports(PACKAGE / "use_cases" / "rules" / "scoring.py"))
         self.assertIn("clean_eval.use_cases.rate_repository", imports(PACKAGE / "external" / "wiring.py"))
         self.assertTrue(any(n.startswith("clean_eval.adaptor") for n in imports(PACKAGE / "external" / "cli.py")))
-        self.assertIn("os", [n.split(".")[0] for n in imports(PACKAGE / "adaptor" / "gateways" / "files.py")])
+        self.assertIn("os", [n.split(".")[0] for n in imports(PACKAGE / "external" / "filesystem.py")])
         self.assertEqual(data_model_violations("def score(x):\n    return x\nclass M(BaseModel):\n    def rate(self):\n"
                                                "        pass\nprint(1)\n"),
                          ["function score", "method M.rate", "statement on line 6"])
+
+
+def package_files():
+    return sorted(p for p in PACKAGE.rglob("*.py") if "__pycache__" not in p.parts)
+
+
+def calls(path):
+    """(callee, line) of every call in a file: `open` for a bare name, `today` for `x.today()`."""
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.Call):
+            f = node.func
+            yield (f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")), node.lineno
+
+
+class ExternalDependenciesStayInTheirGateways(unittest.TestCase):
+    def test_only_a_gateway_imports_what_reaches_outside_the_process(self):
+        for path in package_files():
+            rel = path.relative_to(PACKAGE).as_posix()
+            if rel in BOOTSTRAP:
+                continue
+            reaching = {n.split(".")[0] for n in imports(path)} & (REACHING_OUT | {"datetime"} if rel.startswith("external/")
+                                                                    else REACHING_OUT)
+            self.assertLessEqual(reaching, GATEWAYS.get(rel, set()), rel)
+
+    def test_each_gateway_is_one_gateway_class(self):
+        for rel in GATEWAYS:
+            tree = ast.parse((PACKAGE / rel).read_text())
+            classes = [n.name for n in tree.body if isinstance(n, ast.ClassDef) and not n.name.startswith("_")]
+            self.assertEqual(len(classes), 1, rel)
+            self.assertTrue(classes[0].endswith("Gateway"), rel)
+
+    def test_files_the_clock_and_the_environment_are_reached_only_through_their_gateways(self):
+        for path in package_files():
+            rel = path.relative_to(PACKAGE).as_posix()
+            for callee, line in calls(path):
+                if callee == "open":
+                    self.assertEqual(rel, "external/filesystem.py", "%s:%d opens a file" % (rel, line))
+            if rel != "external/clock.py":
+                self.assertEqual(list(clock_reads(path)), [], "%s reads the clock" % rel)
+            if rel != "external/environment.py":
+                for node in ast.walk(ast.parse(path.read_text())):
+                    self.assertFalse(isinstance(node, ast.Attribute) and node.attr in {"environ", "getenv", "putenv"},
+                                     "%s:%d" % (rel, getattr(node, "lineno", 0)))
+
+    def test_only_the_drivers_use_the_console(self):
+        for path in package_files():
+            rel = path.relative_to(PACKAGE).as_posix()
+            if rel in DRIVERS:
+                continue
+            for callee, line in calls(path):
+                self.assertNotIn(callee, {"print", "input"}, "%s:%d" % (rel, line))
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "sys":
+                    self.assertNotIn(node.attr, {"stdin", "stdout", "stderr", "exit", "argv"}, "%s:%d" % (rel, node.lineno))
+
+    def test_the_rule_is_able_to_fail(self):
+        self.assertIn("subprocess", {n.split(".")[0] for n in imports(PACKAGE / "external" / "git.py")})
+        self.assertTrue(list(clock_reads(PACKAGE / "external" / "clock.py")))  # the one clock read is found
+        self.assertIn("open", {callee for callee, _ in calls(PACKAGE / "external" / "filesystem.py")})
 
 
 class DomainHoldsDataModels(unittest.TestCase):

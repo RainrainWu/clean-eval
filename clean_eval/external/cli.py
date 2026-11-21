@@ -13,14 +13,11 @@ The GitHub Action also runs prepare, finalize, post, redact and guard around its
 """
 import argparse
 import json
-import os
 import sys
 
 from pydantic import ValidationError
 from pydantic_core import to_jsonable_python
 
-from ..adaptor.gateways.files import FileReadmeStore, Workspace, load_policy, read_json, write_text
-from ..adaptor.gateways.git_cli import Git
 from ..adaptor.presenters.diagram import SvgDiagramPresenter
 from ..adaptor.presenters.markdown_report import MarkdownReportPresenter
 from ..adaptor.presenters.style import DIAGRAM_PATH
@@ -31,6 +28,7 @@ from ..use_cases.rules.history import rules_warning
 from ..use_cases.summarize_heatmap import SummarizeHeatmap
 from ..use_cases.update_readme import UpdateReadme
 from . import ci, wiring
+from .wiring import FS, load_policy
 
 
 def _policy(args):
@@ -39,7 +37,7 @@ def _policy(args):
 
 
 def _loaded(args):
-    ws = Workspace()
+    ws = wiring.workspace()
     judgement = ws.load_judgement(args.judgement) if getattr(args, "judgement", None) else None
     return ws.load_heatmap(args.data), judgement
 
@@ -51,12 +49,12 @@ def rate(args):
             raise HeatmapError("--rev reads git objects; only --graph builtin works there")
         rater = wiring.RevisionRaters(args.repo).at(args.rev, policy)
     else:
-        rater = wiring.working_tree_rater(args.repo, policy, args.graph, os.path.join(args.out, "graph"))
+        rater = wiring.working_tree_rater(args.repo, policy, args.graph, FS.join(args.out, "graph"))
     heatmap = rater.execute(policy, wiring.today(), args.depth, args.max_modules)
     heatmap.notes.append("Policy: %s" % source)
-    Workspace().save_heatmap(heatmap, os.path.join(args.out, "data.json"))
+    wiring.workspace().save_heatmap(heatmap, FS.join(args.out, "data.json"))
     print("%s @ %s (%s): %d modules, %d source lines -> %s"
-          % (heatmap.repo, heatmap.ref, heatmap.sha, len(heatmap.modules), heatmap.loc_total, os.path.join(args.out, "data.json")))
+          % (heatmap.repo, heatmap.ref, heatmap.sha, len(heatmap.modules), heatmap.loc_total, FS.join(args.out, "data.json")))
     for m in sorted(heatmap.modules, key=lambda m: -m.scores.overall)[:10]:
         s = m.scores
         print("%-45s loc %-7d overall %-3d biz %-3d effects %-3d entropy %-3d unverified %-3s"
@@ -67,11 +65,11 @@ def rate(args):
 
 def readme(args):
     heatmap, judgement = _loaded(args)
-    root = os.path.abspath(args.repo)
-    store = FileReadmeStore(os.path.join(root, args.readme), os.path.join(root, args.svg))
+    root = FS.absolute(args.repo)
+    store = wiring.readme_store(FS.join(root, args.readme), FS.join(root, args.svg))
     result = UpdateReadme(SvgDiagramPresenter(), store).execute(heatmap, judgement, _policy(args)[0])
     if args.status_json:
-        write_text(args.status_json, json.dumps({"readme_changed": result.changed, "action": result.action,
+        FS.write_text(args.status_json, json.dumps({"readme_changed": result.changed, "action": result.action,
                                                  "fingerprint": result.fingerprint, "modules": len(result.heatmap.modules)}))
     if result.changed:
         verb = {"ADD": "added", "UPDATE": "updated"}[result.action]
@@ -84,9 +82,9 @@ def report(args):
     heatmap, judgement = _loaded(args)
     final, text = SummarizeHeatmap(MarkdownReportPresenter()).execute(heatmap, judgement, _policy(args)[0])
     if args.json_out:
-        Workspace().save_heatmap(final, args.json_out)
+        wiring.workspace().save_heatmap(final, args.json_out)
     if args.out:
-        write_text(args.out, text)
+        FS.write_text(args.out, text)
     else:
         sys.stdout.write(text)
 
@@ -98,7 +96,7 @@ def assess(args):
     out.update(base=args.base, head=args.head, model_source=source, model_version=policy.version, notes=heatmap.notes)
     text = json.dumps(out, indent=1)
     if args.out:
-        write_text(args.out, text)
+        FS.write_text(args.out, text)
         print("%s..%s: %s (max score %d) across %d modules -> %s" % (args.base[:8], args.head[:8], risk.max_band, risk.max_score,
                                                                    len(risk.modules), args.out))
     else:
@@ -106,13 +104,13 @@ def assess(args):
 
 
 def history(args):
-    root = Git(args.repo).toplevel()
+    root = wiring.repository_root(args.repo)
     policy, source = load_policy(root, args.model)
     if args.replay or args.sensitivity:
         if not args.from_history:
             raise InvalidRequest("--replay/--sensitivity need --from-history")
         try:
-            collected = EvalHistory.model_validate(read_json(args.from_history))
+            collected = EvalHistory.model_validate(wiring.read_json(args.from_history))
         except ValidationError as e:
             raise HeatmapError.from_validation(e, "%s is not a collected history" % args.from_history)
         out = replay(collected, load_policy(root, args.replay)[0]) if args.replay else sensitivity(collected, policy)
@@ -128,7 +126,7 @@ def history(args):
     if not args.out:
         print(text)
         return
-    write_text(args.out, text)
+    FS.write_text(args.out, text)
     if isinstance(out, EvalHistory):
         print("wrote %s: %d PRs, %d with escaped defects" % (args.out, out.totals.prs, out.totals.defective_prs), file=sys.stderr)
 

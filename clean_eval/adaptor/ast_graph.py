@@ -9,7 +9,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 
-from ...domain.graph import Graph
+from ..domain.graph import Graph
 
 STDLIB = frozenset(getattr(sys, "stdlib_module_names", ()))
 

@@ -16,11 +16,12 @@ from pydantic import ValidationError
 
 from helpers import FakeBin, facts, read, read_json, write, write_json
 
-from clean_eval.adaptor.gateways.files import Folder
-from clean_eval.adaptor.gateways.tuning_files import TuningFiles
+from clean_eval.adaptor.files import Folder
+from clean_eval.adaptor.tuning_files import TuningFiles
 from clean_eval.domain.review import AgentReview, RiskReport
 from clean_eval.domain.tuning import PolicyEdit
 from clean_eval.external import ci, wiring
+from clean_eval.external.filesystem import FileSystemGateway
 from clean_eval.use_cases.post_review import lines_on_diff
 from clean_eval.use_cases.rules.redaction import MARKER_RE, MAX_REPORT_CHARS, Redactor, secret_values
 from clean_eval.use_cases.rules.review import check_rules, finalize_review, parse_rules, post_attempts
@@ -202,7 +203,7 @@ class FinalizeEvalTest(unittest.TestCase):
     def snapshot(self):
         snap = os.path.join(self.ctx, wiring.SNAPSHOT)
         shutil.rmtree(snap, ignore_errors=True)
-        TuningFiles(self.ws, snap).snapshot()
+        TuningFiles(FileSystemGateway(), self.ws, snap).snapshot()
 
     def use_history(self, hist):
         write_json(os.path.join(self.ctx, "eval-history.json"), hist)
@@ -405,7 +406,7 @@ class PostTest(unittest.TestCase):
                                                               "patch_lines": 8, "added": 1, "removed": 1, "truncated": False}])
         write(os.path.join(ctx, "diff", "001.patch"),
               "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,3 @@\n x\n-y\n+Y\n z\n")
-        self.assertEqual(lines_on_diff(Folder(ctx)), {"a.py": {1, 2, 3}})
+        self.assertEqual(lines_on_diff(Folder(FileSystemGateway(), ctx)), {"a.py": {1, 2, 3}})
         res = read_json(os.path.join(self.out, "result.json"))
         res["findings"][0]["line"] = 40                                       # outside the diff
         res["findings"].append({**res["findings"][0], "line": 2, "summary": "on diff"})
