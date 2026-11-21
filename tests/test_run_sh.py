@@ -81,6 +81,45 @@ class RunShTest(unittest.TestCase):
         finally:
             r.cleanup()
 
+    def test_risk_heat_map_with_claude_levels(self):
+        r = Repo()
+        try:
+            r.commit("init", {"src/billing/a.py": "def charge():\n    return 1\n" * 5, "src/users/u.py": "U = 2\n" * 10})
+            self.bin.claude({"agent_files": {"judgement.json": {"modules": {
+                "src": {"business": {"level": 0, "reason": "every payment goes through it; token " + GH_TOKEN},
+                        "unverified": {"level": 9, "reason": "out of range: ignored"}}}}}})
+            res = self.run_sh(r.path, skill="risk-heat-map", use_claude="true")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            inv = self.bin.claude_invocation()
+            for flag in ("--restricted", "--strict-mcp-config", "--settings"):
+                self.assertIn(flag, inv["argv"])
+            self.assertNotIn("GH_TOKEN", inv["env"])
+            final = read_json(self.outputs()["result"])
+            src = [m for m in final["modules"] if m["name"] == "src"][0]
+            self.assertEqual(final["judged_modules"], 1)
+            self.assertGreaterEqual(src["scores"]["biz"], 75)                 # level 0 -> Critical band
+            self.assertEqual(src["scores"]["unverified"], src["baseline"]["unverified"])  # invalid level ignored
+            self.assertNotIn(GH_TOKEN, json.dumps(final))                     # redacted before use
+            self.assertIn("[REDACTED]", src["evidence"]["biz"][0])
+            self.assertEqual(self.outputs()["readme-changed"], "true")
+        finally:
+            r.cleanup()
+
+    def test_risk_heat_map_falls_back_to_static_levels(self):
+        r = Repo()
+        try:
+            r.commit("init", {"src/a/x.py": "def f():\n    return 1\n"})
+            for plan, warning in (({"agent_files": {"judgement.json": "{not json"}}, "not a JSON object"),
+                                  ({"agent_files": {"judgement.json": [1, 2]}}, "not a JSON object"),
+                                  ({}, "wrote no judgement.json")):
+                self.bin.claude(plan)
+                res = self.run_sh(r.path, skill="risk-heat-map", use_claude="true")
+                self.assertEqual(res.returncode, 0, res.stderr)
+                self.assertIn(warning, res.stderr)
+                self.assertEqual(read_json(self.outputs()["result"])["judged_modules"], 0)
+        finally:
+            r.cleanup()
+
     # ---------------------------------------------------------------- pr-review
 
     def pr_repo(self):

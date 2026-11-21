@@ -72,6 +72,12 @@ class PolicyAtBaseTest(unittest.TestCase):
         self.repo.commit("weaken", {".clean-eval/risk-model.json": '{"unrated_band": "Low"}'}, when=days_ago(1))
         self.assertEqual(prepare.policy_at(self.git, base)[0], Policy())
 
+    def test_a_git_failure_is_not_mistaken_for_no_policy(self):
+        from clean_eval.domain.errors import HeatmapError
+        self.base_with({"a.py": "x = 1\n"})
+        with self.assertRaises(HeatmapError):
+            prepare.policy_at(self.git, "0" * 40)
+
     def test_invalid_or_v1_policy_falls_back_to_the_defaults_with_a_note(self):
         for text, expect in (('{"window_days": 30}', "v1 model"), ('{"effects_scale": 0}', "greater than 0"),
                              ("{not json", "not valid JSON")):

@@ -111,7 +111,10 @@ class GitCliTest(unittest.TestCase):
             git = Git(r.path)
             self.assertEqual(sorted(git.diff_files(base, head)), sorted(["src/résumé.py", 'src/we"ird.py']))
             self.assertEqual(git.show(head, "src/résumé.py"), "2\n")
-            self.assertIsNone(git.show(base, "src/résumé.py"))
+            self.assertIsNone(git.show(base, "src/résumé.py"))      # not there at that revision
+            self.assertIsNone(git.show(head, "src"))                  # a folder is not a file
+            with self.assertRaises(HeatmapError):                     # a real failure is not "not there"
+                git.show("0" * 40, "a.py")
             r.git("remote", "add", "origin", "git@github.com:org/My-Repo.git")
             self.assertEqual(git.repo_name(), "My-Repo")
         finally:

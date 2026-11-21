@@ -128,7 +128,15 @@ and follow its 'CI mode' section; the level standards are in $CTX/skills/risk-he
 $CTX/heatmap/data.json; the repository is checked out in the current directory. Write $AGENT/judgement.json. ${CE_EXTRA_PROMPT:-}"
       if [ -f "$AGENT/judgement.json" ]; then
         python3 "$RESULT" redact-file "$AGENT/judgement.json"
-        judged=(--judgement "$AGENT/judgement.json")
+        # levels are validated entry by entry when applied; the file as a whole must at least be a JSON object
+        if python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' \
+             "$AGENT/judgement.json" 2>/dev/null; then
+          judged=(--judgement "$AGENT/judgement.json")
+        else
+          echo "::warning::the agent's judgement.json is not a JSON object; publishing the static levels" >&2
+        fi
+      else
+        echo "::warning::the agent wrote no judgement.json; publishing the static levels" >&2
       fi
     fi
     log "Publish the heat map"

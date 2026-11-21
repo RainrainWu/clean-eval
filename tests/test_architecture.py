@@ -1,6 +1,8 @@
 """The dependency rule of Clean Architecture, enforced on the imports: domain <- use_cases <- adaptor <- external.
 Inner layers know nothing of outer ones, and the two inner layers do no I/O."""
 import ast
+import fnmatch
+import re
 import unittest
 from pathlib import Path
 
@@ -70,6 +72,25 @@ class DependencyRule(unittest.TestCase):
         self.assertIn("clean_eval.use_cases.rate_repository", imports(PACKAGE / "external" / "wiring.py"))
         self.assertTrue(any(n.startswith("clean_eval.adaptor") for n in imports(PACKAGE / "external" / "cli.py")))
         self.assertIn("os", [n.split(".")[0] for n in imports(PACKAGE / "adaptor" / "gateways" / "files.py")])
+
+
+class ReviewRulesCoverThisPackage(unittest.TestCase):
+    """The default review rules must place every clean_eval layer in the matching rules layer, so the dependency rules
+    (CA-01, CA-02) apply to this repository's own code in reviews."""
+    EXPECTED = {"domain": "domain", "use_cases": "application", "adaptor": "interface", "external": "infrastructure"}
+
+    def rules_layers(self):
+        text = (Path(ROOT) / ".claude" / "skills" / "pr-review" / "review-rules.md").read_text()
+        section = text.split("## Layers", 1)[1].split("\n## ", 1)[0]
+        rows = [l for l in section.splitlines() if l.startswith("| ") and "`" in l]
+        return {row.split("|")[1].strip(): re.findall(r"`([^`]+)`", row.split("|")[2]) for row in rows}
+
+    def test_each_package_layer_maps_to_its_rules_layer(self):
+        layers = self.rules_layers()
+        for folder, expected in self.EXPECTED.items():
+            sample = "clean_eval/%s/x.py" % folder
+            matched = [name for name, globs in layers.items() if any(fnmatch.fnmatch(sample, g) for g in globs)]
+            self.assertEqual(matched, [expected], sample)
 
 
 if __name__ == "__main__":

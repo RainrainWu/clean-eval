@@ -185,7 +185,7 @@ def validate_pr_review(raw, risk_ctx, rules):
         "pr": risk_ctx.get("pr"), "base": risk_ctx.get("base"), "head": risk_ctx.get("head"),
         # gate-relevant fields are derived, never taken from agent text
         "verdict": "request_changes" if blockers else ("comment" if majors else "approve"),
-        "max_tier": tier, "max_score": float(risk_ctx.get("max_score", 0.0)),
+        "max_tier": tier, "max_score": int(round(float(risk_ctx.get("max_score", 0)))),
         "blockers": blockers, "majors": majors,
         "rules_version": risk_ctx.get("rules_version"), "model_version": risk_ctx.get("model_version"),
         "findings": findings, "redactions": redactions,
@@ -354,7 +354,7 @@ def finalize(a):
             rules = parse_rules(_read(os.path.join(a.ctx, "review-rules.md")))
             res = validate_pr_review(raw, risk_ctx, rules)
             outputs = {"verdict": res["verdict"], "max-tier": res["max_tier"],
-                       "max-score": f"{res['max_score']:.3f}", "blockers": str(res["blockers"])}
+                       "max-score": str(res["max_score"]), "blockers": str(res["blockers"])}
         elif a.skill == "eval":
             res, outputs = finalize_eval(a)
         else:
@@ -409,7 +409,7 @@ def post(a):
     res = _read_json(os.path.join(a.out, "result.json"))
     report = _read(os.path.join(a.out, "report.md"))
     rules = sorted({f["rule"] for f in res["findings"] if f["rule"] != "NEW"})
-    marker = (f"<!-- clean-eval:pr-review tier={res['max_tier']} score={res['max_score']:.3f} "
+    marker = (f"<!-- clean-eval:pr-review tier={res['max_tier']} score={res['max_score']} "
               f"rules={','.join(rules)} rules_version={res.get('rules_version') or ''} -->")
     # Attach only comments on lines that are in the diff: GitHub rejects the whole review (422) otherwise.
     on_diff = commentable_lines(getattr(a, "ctx", None))

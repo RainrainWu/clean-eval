@@ -19,8 +19,8 @@ CA-01/CA-02.
 |---|---|
 | domain | `**/domain/**`, `**/entities/**`, `**/models/**` |
 | application | `**/application/**`, `**/usecases/**`, `**/use_cases/**`, `**/services/**` |
-| interface | `**/adapters/**`, `**/controllers/**`, `**/api/**`, `**/handlers/**`, `**/presenters/**` |
-| infrastructure | `**/infrastructure/**`, `**/infra/**`, `**/db/**`, `**/repositories/**`, `**/clients/**` |
+| interface | `**/adapters/**`, `**/adaptor/**`, `**/adaptors/**`, `**/gateways/**`, `**/controllers/**`, `**/api/**`, `**/handlers/**`, `**/presenters/**` |
+| infrastructure | `**/infrastructure/**`, `**/infra/**`, `**/external/**`, `**/drivers/**`, `**/frameworks/**`, `**/db/**`, `**/repositories/**`, `**/clients/**` |
 
 ## Tier policy
 

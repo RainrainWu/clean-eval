@@ -104,6 +104,17 @@ class Git:
         return [p for p in self.run("diff", "--name-only", "-z", base, head).split("\0") if p]
 
     def show(self, rev, path):
-        """Text of `path` at `rev`, or None when it does not exist there."""
-        r = subprocess.run(["git", "-C", self.root, "show", "%s:%s" % (rev, path)], capture_output=True)
-        return r.stdout.decode("utf-8", "replace") if r.returncode == 0 else None
+        """Text of the file `path` at `rev`, or None when `rev` has no such file. Any other git failure (a bad revision,
+        a broken repository) raises, so a caller never mistakes an error for "not configured"."""
+        listing = self.run("--literal-pathspecs", "ls-tree", "-r", "-z", rev, "--", path)
+        blob = None
+        for entry in listing.split("\0"):
+            meta, _, name = entry.partition("\t")
+            if name == path and meta.split()[1:2] == ["blob"]:
+                blob = meta.split()[2]
+        if blob is None:
+            return None
+        r = subprocess.run(["git", "-C", self.root, "cat-file", "blob", blob], capture_output=True)
+        if r.returncode != 0:
+            raise HeatmapError("git cat-file %s (%s at %s) failed: %s" % (blob, path, rev, r.stderr.decode(errors="replace")[-300:]))
+        return r.stdout.decode("utf-8", "replace")

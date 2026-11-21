@@ -21,7 +21,7 @@ RULES = """
 | Q-02 | major | Moderate | failure paths |
 | Q-04 | minor | Moderate | clarity |
 """
-RISK = {"pr": 1, "base": "b" * 40, "head": "h" * 40, "max_tier": "High", "max_score": 0.52, "rules_version": "abcd1234"}
+RISK = {"pr": 1, "base": "b" * 40, "head": "h" * 40, "max_tier": "High", "max_score": 52, "rules_version": "abcd1234"}
 
 
 def finding(**kw):
@@ -285,6 +285,7 @@ class PostTest(unittest.TestCase):
         self.assertNotIn("comments", posts[1])  # retried without inline comments
         self.assertIn("clean-eval:pr-review tier=High", posts[1]["body"])
         self.assertIn("rules=CA-01,Q-02", posts[1]["body"])
+        self.assertIn("score=52 ", posts[1]["body"])  # scores are integers 0-100
         dismissed = [c["args"] for c in calls if "PUT" in c["args"]]
         self.assertEqual(len(dismissed), 1)
         self.assertTrue(any(a.endswith("/reviews/10/dismissals") for a in dismissed[0]))
