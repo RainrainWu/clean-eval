@@ -10,9 +10,8 @@ import tempfile
 import textwrap
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for p in (ROOT, os.path.join(ROOT, ".claude", "skills", "eval", "scripts"), os.path.join(ROOT, "ci")):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 _GITCONFIG_DIR = tempfile.mkdtemp(prefix="clean-eval-gitconfig-")
 _GITCONFIG = os.path.join(_GITCONFIG_DIR, "gitconfig")

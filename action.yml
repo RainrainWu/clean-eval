@@ -134,4 +134,4 @@ runs:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key || env.ANTHROPIC_API_KEY }}
         CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token || env.CLAUDE_CODE_OAUTH_TOKEN }}
         GH_TOKEN: ${{ inputs.github-token }}
-      run: bash "$GITHUB_ACTION_PATH/ci/run.sh"
+      run: bash "$GITHUB_ACTION_PATH/action.sh"

@@ -1,19 +1,20 @@
-"""End-to-end tests of ci/run.sh with fake `claude` and `gh` executables (no network, no tokens)."""
+"""End-to-end tests of action.sh with fake `claude` and `gh` executables (no network, no tokens)."""
 import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 from helpers import FakeBin, ROOT, Repo, days_ago, read, read_json, write
 
-RUN_SH = os.path.join(ROOT, "ci", "run.sh")
+ACTION_SH = os.path.join(ROOT, "action.sh")
 FAKE_KEY = "sk-ant-api03-" + "k" * 40
 GH_TOKEN = "ghs_" + "t" * 36
 
 
-class RunShTest(unittest.TestCase):
+class ActionShTest(unittest.TestCase):
     def setUp(self):
         self.bin = FakeBin()
         self.tmp = tempfile.mkdtemp()
@@ -33,7 +34,7 @@ class RunShTest(unittest.TestCase):
                     "ANTHROPIC_API_KEY": FAKE_KEY, "GH_TOKEN": GH_TOKEN, "SOME_RUNNER_TOKEN": "x" * 20})
         env.update({f"CE_{k.upper()}": v for k, v in ce.items()})
         write(self.gh_out, '')
-        return subprocess.run(["bash", RUN_SH], capture_output=True, text=True, env=env, cwd=ws)
+        return subprocess.run(["bash", ACTION_SH], capture_output=True, text=True, env=env, cwd=ws)
 
     def outputs(self):
         return dict(l.split("=", 1) for l in read(self.gh_out).splitlines() if "=" in l)
@@ -165,7 +166,7 @@ class RunShTest(unittest.TestCase):
             self.assertEqual(inv["stdin"], "")
             self.assertEqual(os.path.realpath(inv["cwd"]), os.path.realpath(r.path))
             settings = read_json(os.path.join(self.out, "context", "claude-settings.json"))
-            self.assertIn("guard.py", settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"])
+            self.assert_hook_guards(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"], r.path)
 
             # precomputed context: risk at base, diff, rules from base
             ctx = read_json(os.path.join(self.out, "context", "context.json"))
@@ -237,6 +238,51 @@ class RunShTest(unittest.TestCase):
             self.assertIn("base rule", rules)
             self.assertNotIn("nothing to see", rules)
             self.assertFalse(any("POST" in c["args"] for c in self.bin.gh_calls()))  # post=false
+        finally:
+            r.cleanup()
+
+    def assert_hook_guards(self, command, ws):
+        """The hook command, run by a shell as Claude Code runs it, allows reads in the checkout, denies the rest, and
+        turns any failure of its own into a denial."""
+        env = {"PATH": os.environ["PATH"], "CE_GUARD_READ_ROOTS": ws, "CE_GUARD_WRITE_ROOTS": os.path.join(self.out, "agent")}
+
+        def hook(cmd, tool, **tool_input):
+            payload = json.dumps({"tool_name": tool, "tool_input": tool_input, "cwd": ws})
+            return subprocess.run(["sh", "-c", cmd], input=payload, capture_output=True, text=True, env=env, cwd=ws)
+
+        self.assertTrue(command.endswith(" guard || exit 2"), command)
+        self.assertEqual(hook(command, "Read", file_path=os.path.join(ws, "src", "billing", "a.py")).returncode, 0)
+        self.assertEqual(hook(command, "Bash", command="env").returncode, 2)
+        self.assertEqual(hook(command, "Read", file_path="/etc/hosts").returncode, 2)
+        crashing = os.path.join(self.tmp, "crashing")  # a hook that dies with status 1 must still deny
+        write(os.path.join(crashing, "__main__.py"), "raise RuntimeError('boom')\n")
+        package = os.path.join(os.path.realpath(ROOT), "clean_eval")
+        self.assertIn(package, command)
+        broken = command.replace(package, crashing)
+        self.assertEqual(subprocess.run([sys.executable, crashing], capture_output=True).returncode, 1)
+        self.assertEqual(hook(broken, "Read", file_path=os.path.join(ws, "src", "billing", "a.py")).returncode, 2)
+
+    def test_modules_planted_in_the_checkout_never_run(self):
+        """A PR can add json.py and friends at its root; with every Python run isolated, none of them is imported."""
+        r = Repo()
+        marker = os.path.join(self.tmp, "planted-module-ran")
+        planted = {name + ".py": "open(%r, 'a').write(%r)\n" % (marker, name + "\n")
+                   for name in ("json", "sys", "datetime", "shlex", "argparse", "os", "re")}
+        try:
+            base = r.commit("init", {"src/billing/a.py": "a\n" * 10}, when=days_ago(5))
+            r.git("checkout", "-q", "-b", "feature")
+            head = r.commit("feat: plant", {"src/billing/a.py": "b\n" * 10, **planted}, when=days_ago(1))
+            self.bin.gh({"pr_view": {"out": {"number": 9, "title": "t", "body": "", "author": {"login": "d"}, "url": "u",
+                                             "baseRefName": "main", "headRefName": "feature", "baseRefOid": base,
+                                             "headRefOid": head, "isCrossRepository": False}},
+                         "auth": {"exit": 1, "err": "not logged in"}})
+            self.bin.claude({"agent_files": {"report.md": "r", "result.json": {"findings": [], "recommendations": []},
+                                             "judgement.json": {"modules": {}}}})
+            for ce in ({"skill": "pr-review", "pr": "9", "post": "false"}, {"skill": "risk-heat-map", "use_claude": "true"},
+                       {"skill": "eval"}):
+                res = self.run_sh(r.path, **ce)
+                self.assertEqual(res.returncode, 0, (ce, res.stderr))
+            self.assertFalse(os.path.exists(marker), read(marker) if os.path.exists(marker) else "")
         finally:
             r.cleanup()
 

@@ -1,5 +1,6 @@
-"""The git CLI, as the rest of the adaptor layer needs it. Paths are handled raw (NUL-delimited or unquoted), so any
-filename survives; nothing in the repository is executed."""
+"""The git CLI: what the other gateways read, and the Repository port of the use cases (history, diffs, patches). Paths
+are handled raw (NUL-delimited, unquoted, or as literal pathspecs), so any filename survives; nothing in the repository
+is executed."""
 import os
 import re
 import subprocess
@@ -118,3 +119,42 @@ class Git:
         if r.returncode != 0:
             raise HeatmapError("git cat-file %s (%s at %s) failed: %s" % (blob, path, rev, r.stderr.decode(errors="replace")[-300:]))
         return r.stdout.decode("utf-8", "replace")
+
+    def ensure_commit(self, sha, refspec):
+        """Fetch `refspec` from origin when `sha` is not here yet."""
+        if not self.has_commit(sha):
+            self.run("fetch", "--quiet", "origin", refspec, check=False)
+        if not self.has_commit(sha):
+            raise HeatmapError("commit %s is not available locally (checkout with fetch-depth: 0)" % sha)
+
+    def diff(self, base, head, path=None):
+        """The patch base..head of one path (taken literally), or of every path with renames detected."""
+        if path is None:
+            return self.run("diff", "-M", base, head)
+        return self.run("--literal-pathspecs", "diff", base, head, "--", path)
+
+    def file_log(self, rev, path, limit=10):
+        return self.run("--literal-pathspecs", "log", "--format=%h %ad %an: %s", "--date=short", "-n", str(limit), rev,
+                        "--", path).strip()
+
+    def commit_patch(self, sha, paths):
+        return self.run("--literal-pathspecs", "show", "--stat", "-p", "--format=%H%n%an %ad%n%s%n%n%b", sha, "--", *paths)
+
+    def default_branch(self):
+        """origin/HEAD, else origin/main|master (CI checkouts don't set origin/HEAD), else HEAD."""
+        ref = self.run("symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False).strip()
+        if ref:
+            return ref
+        for ref in ("origin/main", "origin/master", "main", "master"):
+            if self.has_commit(ref):
+                return ref
+        return "HEAD"
+
+    def first_parent_log(self, branch, since, until):
+        """[(sha, [parent shas], author, unix time, subject)] of the first-parent commits of `branch` in the period."""
+        out = []
+        for line in self.run("log", "--first-parent", branch, "--since=%s" % since, "--until=%s" % until,
+                             "--format=%H%x1f%P%x1f%an%x1f%ct%x1f%s").splitlines():
+            sha, parents, author, ts, subject = line.split("\x1f", 4)
+            out.append((sha, parents.split(), author, int(ts), subject))
+        return out

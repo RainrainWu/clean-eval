@@ -2,10 +2,14 @@
 
     python3 -I <clean-eval checkout>/clean_eval <command> ...
 
-  rate     rate every module of the working tree (or --rev) on the four aspects -> <out>/data.json
-  readme   put the heat map into the repository's README section and its diagram file (no-op when unchanged)
-  report   a short Markdown summary (top modules, what drives them)
-  assess   the risk a change (base..head) carries, from the heat map of its base: what the PR review scales by
+  rate      rate every module of the working tree (or --rev) on the four aspects -> <out>/data.json
+  readme    put the heat map into the repository's README section and its diagram file (no-op when unchanged)
+  report    a short Markdown summary (top modules, what drives them)
+  assess    the risk a change (base..head) carries, from the heat map of its base: what the PR review scales by
+  history   merged PRs of a period, each rated at its base, with escaped defects and calibration (for the eval);
+            --replay / --sensitivity re-score a collected history under candidate policies
+
+The GitHub Action also runs prepare, finalize, post, redact and guard around its agent (see ci.py).
 """
 import argparse
 import dataclasses
@@ -13,14 +17,17 @@ import json
 import os
 import sys
 
-from ..adaptor.gateways.files import FileReadmeStore, Workspace, load_policy, write_text
+from ..adaptor.gateways.files import FileReadmeStore, Workspace, load_policy, read_json, write_text
+from ..adaptor.gateways.git_cli import Git
 from ..adaptor.presenters.diagram import SvgDiagramPresenter
 from ..adaptor.presenters.markdown_report import MarkdownReportPresenter
 from ..adaptor.presenters.style import DIAGRAM_PATH
-from ..domain.errors import HeatmapError
+from ..domain.calibration import replay, sensitivity
+from ..domain.errors import HeatmapError, InvalidRequest
+from ..domain.history import rules_warning
 from ..use_cases.summarize_heatmap import SummarizeHeatmap
 from ..use_cases.update_readme import UpdateReadme
-from . import wiring
+from . import ci, wiring
 
 
 def _policy(args):
@@ -95,6 +102,32 @@ def assess(args):
         print(text)
 
 
+def history(args):
+    root = Git(args.repo).toplevel()
+    policy, source = load_policy(root, args.model)
+    if args.replay or args.sensitivity:
+        if not args.from_history:
+            raise InvalidRequest("--replay/--sensitivity need --from-history")
+        collected = read_json(args.from_history)
+        out = replay(collected, load_policy(root, args.replay)[0]) if args.replay else sensitivity(collected, policy)
+    else:
+        if not args.since:
+            raise InvalidRequest("--since is required (or --from-history with --replay/--sensitivity)")
+        out = wiring.collect_history(root, args.with_gh).execute(
+            policy, wiring.period(args.since, args.until, args.defect_window_days), args.branch, source, args.reviewer_login)
+        warning = rules_warning(out["rules"]) if out["rules"] else None
+        if warning:
+            print("warning: " + warning, file=sys.stderr)
+    text = json.dumps(out, indent=2, default=str)
+    if not args.out:
+        print(text)
+        return
+    write_text(args.out, text)
+    if isinstance(out, dict) and "totals" in out:
+        print("wrote %s: %d PRs, %d with escaped defects" % (args.out, out["totals"]["prs"], out["totals"]["defective_prs"]),
+              file=sys.stderr)
+
+
 def parser():
     ap = argparse.ArgumentParser(prog="clean_eval", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
@@ -138,12 +171,31 @@ def parser():
     p.add_argument("--head", required=True)
     p.add_argument("--out", help="write the JSON here instead of stdout")
     p.set_defaults(run=assess)
+
+    p = sub.add_parser("history", help="merged PRs of a period, rated at their bases, with escaped defects (for the eval)")
+    common(p)
+    p.add_argument("--since", help="YYYY-MM-DD (required unless --from-history)")
+    p.add_argument("--until", default=wiring.today(), help="YYYY-MM-DD (default today)")
+    p.add_argument("--branch", help="default: origin/HEAD, origin/main|master, or HEAD")
+    p.add_argument("--defect-window-days", type=int, default=30)
+    p.add_argument("--with-gh", action="store_true", help="fetch review comments with gh (rule metrics)")
+    p.add_argument("--reviewer-login", action="append",
+                   help="login whose clean-eval markers count (repeatable; default: any [bot] login)")
+    p.add_argument("--from-history", help="reuse a collected history JSON instead of walking git")
+    p.add_argument("--replay", metavar="OVERRIDES_JSON", help="calibration of candidate risk-model overrides on --from-history")
+    p.add_argument("--sensitivity", action="store_true", help="one-knob replays of the policy on --from-history")
+    p.add_argument("--out", help="write the JSON here instead of stdout")
+    p.set_defaults(run=history)
+
+    ci.register(sub)
     return ap
 
 
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
-        args.run(args)
+        status = args.run(args)
     except HeatmapError as e:
         sys.exit("clean_eval: %s" % e)
+    if status:
+        sys.exit(status)
