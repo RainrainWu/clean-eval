@@ -122,6 +122,7 @@ class ModuleMap:
         self.explicit = model.get("modules") or {}
         self.depth = max(1, int(model.get("module_depth", 1)))
         self.exclude = model.get("exclude", [])
+        self.include = model.get("include", [])  # wins over exclude
         self.test_roots = set(model.get("test_roots", []))
         self.test_re = re.compile(model.get("test_file_pattern", r"$^"))
         self.roots = [r.strip("/") for r in model.get("module_roots", [])
@@ -129,6 +130,8 @@ class ModuleMap:
         self.uses_roots = bool(self.roots)
 
     def excluded(self, path):
+        if any(fnmatch.fnmatch(path, pat) for pat in self.include):
+            return False
         return any(fnmatch.fnmatch(path, pat) for pat in self.exclude)
 
     def is_test(self, path):
@@ -259,7 +262,10 @@ def compute(repo, model, rev=None):
 
 
 def classify(repo, model, files, rev=None, result=None):
+    """Tier of each touched module at rev. Modules that don't exist yet get `new_module_tier`
+    (default Medium): no history means unknown risk, not low risk."""
     result = result or compute(repo, model, rev)
+    new_tier = model.get("new_module_tier", "Medium")
     mm = result["_map"]
     by_name = {r["module"]: r for r in result["modules"]}
     file_map, touched = {}, {}
@@ -269,7 +275,7 @@ def classify(repo, model, files, rev=None, result=None):
         if m in by_name:
             touched[m] = by_name[m]
         elif m:
-            touched.setdefault(m, {"module": m, "tier": "Low", "score": 0.0, "new_module": True})
+            touched.setdefault(m, {"module": m, "tier": new_tier, "score": 0.0, "new_module": True})
     tiers = [t["tier"] for t in touched.values()] or ["Low"]
     return {"rev": result["rev"], "as_of": result["as_of"],
             "max_tier": max(tiers, key=TIER_ORDER.index),

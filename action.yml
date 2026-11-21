@@ -30,7 +30,7 @@ inputs:
     required: false
     default: ${{ github.event.pull_request.number }}
   post:
-    description: "pr-review: post the review on the PR (true|false)"
+    description: "pr-review: post the review on the PR (true|false). The action posts one review from the validated result; the agent never gets write access."
     required: false
     default: "true"
   fail-on:
@@ -73,9 +73,9 @@ inputs:
     required: false
     default: "60"
   claude-code-version:
-    description: "@anthropic-ai/claude-code npm version to install if claude is not on PATH"
+    description: "@anthropic-ai/claude-code npm version to install if claude is not on PATH (pinned; bump deliberately)"
     required: false
-    default: latest
+    default: "2.1.328"
   extra-prompt:
     description: Extra instructions appended to the skill prompt
     required: false
@@ -91,7 +91,7 @@ outputs:
     description: "risk-heat-map: whether the README section changed (true|false)"
     value: ${{ steps.run.outputs.readme-changed }}
   verdict:
-    description: "pr-review: approve | comment | request_changes"
+    description: "pr-review: approve | comment | request_changes — derived from validated findings (any blocker → request_changes)"
     value: ${{ steps.run.outputs.verdict }}
   max-tier:
     description: "pr-review: highest risk tier touched (Low | Medium | High | Critical)"

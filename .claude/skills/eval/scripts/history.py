@@ -27,9 +27,18 @@ RISK_DIR = os.path.normpath(os.path.join(HERE, "..", "..", "risk-heat-map", "scr
 sys.path.insert(0, RISK_DIR)
 import risk  # noqa: E402
 
-RULE_ID = re.compile(r"\b([A-Z]{2,4}-\d{2,3})\b")
+RULE_ID = re.compile(r"\[([A-Z]{1,4}-\d{2,3}|NEW)\]")  # pr-review tags findings as [CA-01] / [NEW]
 MARKER = re.compile(r"<!--\s*clean-eval:pr-review\s+([^>]*)-->")
-PR_NUM = re.compile(r"(?:#|pull request #)(\d+)")
+MERGE_PR = re.compile(r"Merge pull request #(\d+)")
+SQUASH_PR = re.compile(r"\(#(\d+)\)")  # GitHub squash subjects end with "(#123)"; take the last one
+
+
+def pr_number(subject):
+    m = MERGE_PR.search(subject)
+    if m:
+        return int(m.group(1))
+    found = SQUASH_PR.findall(subject)
+    return int(found[-1]) if found else None
 SIGNALS = ["churn", "fix_ratio", "test_gap", "size", "coupling", "criticality"]
 
 
@@ -62,9 +71,8 @@ def first_parent_units(repo, branch, since, until):
         if not parents:
             continue
         files = [f for f in git(repo, "diff", "--name-only", parents[0], sha).splitlines() if f]
-        m = PR_NUM.search(subject)
         units.append({"sha": sha, "base": parents[0], "author": author, "ts": int(ts),
-                      "subject": subject, "pr": int(m.group(1)) if m else None, "files": files})
+                      "subject": subject, "pr": pr_number(subject), "files": files})
     units.sort(key=lambda u: u["ts"])
     return units
 
@@ -96,7 +104,8 @@ def gh_review_data(pr):
         "labels": [l.get("name") for l in view.get("labels", [])],
         "size": (view.get("additions") or 0) + (view.get("deletions") or 0),
         "review_comment_count": len([b for b in bodies if b.strip()]),
-        "rules_cited": sorted(set(RULE_ID.findall(text))),
+        "rules_cited": sorted(set(RULE_ID.findall(text)) - {"NEW"}),
+        "new_findings": len(re.findall(r"\[NEW\]", text)),
         "clean_eval_marker": marker or None,
     }
 

@@ -20,10 +20,13 @@ jobs:
         with:
           skill: risk-heat-map
       - name: Check outputs
+        env:
+          RESULT: ${{ steps.heatmap.outputs.result }}
+          README_CHANGED: ${{ steps.heatmap.outputs.readme-changed }}
         run: |
-          test -s "${{ steps.heatmap.outputs.result }}"
-          echo "readme-changed=${{ steps.heatmap.outputs.readme-changed }}"
-          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d['modules']), 'modules')" "${{ steps.heatmap.outputs.result }}"
+          test -s "$RESULT"
+          echo "readme-changed=$README_CHANGED"
+          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d['modules']), 'modules')" "$RESULT"
 
   pr-review:
     if: github.event_name == 'pull_request'

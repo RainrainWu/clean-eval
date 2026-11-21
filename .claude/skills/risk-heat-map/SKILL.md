@@ -42,8 +42,8 @@ Always write commands with the literal `${CLEAN_EVAL_SKILLS:-.claude/skills}` pr
 
 ## CI mode
 
-When the prompt says you're running in CI: skip steps 1–2's questions (never edit the model), run step 3 with
-the README path given, and write the step-4 report as Markdown to `<output dir>/report.md`.
+In CI the action computes and writes the heat map itself (no agent needed). With `use-claude: true` you're only
+asked to write the step-4 narrative to `<output dir>/report.md` from the JSON it gives you; never edit other files.
 
 ## Options
 

@@ -50,7 +50,7 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
    - `defective_prs_with_no_rule_cited` and verified defects → name the defect pattern from the fix diff and
      either map it to an existing rule (sharpen its check or lower its min tier) or draft a **new rule**
      (next free ID in its section, severity, min tier, one-sentence check).
-   - Recurring `[NEW]` findings in pr-review comments → promote to rules.
+   - Recurring `[NEW]` findings in pr-review comments (`new_findings` per PR) → promote to rules.
    - Low share of PRs carrying the `clean-eval:pr-review` marker → rule metrics cover only those PRs; say so.
 
 6. **Report**:
@@ -71,8 +71,10 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
 
 ## CI mode
 
-When the prompt says you're running in CI (no human): don't ask anything; apply recommendations only if
-`apply=true` (and only those whose replay didn't lower AUC; never with a too-small sample); then write
+When the prompt says you're running in CI (no human): history is already collected at the path the prompt gives
+(skip step 2 unless replaying a candidate model). Don't ask anything; apply recommendations only if `apply=true`
+(and only those whose replay didn't lower AUC; never with a too-small sample) — edits are allowed only under
+`.clean-eval/`. Then write
 - `<output dir>/report.md` — the step-6 report, noting which recommendations were applied.
 - `<output dir>/result.json` — exactly:
   ```json
