@@ -1,126 +1,108 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="t d" font-family="system-ui, -apple-system, Segoe UI, sans-serif">
-<title id="t">clean-eval risk heat map</title><desc id="d">Tile area is lines of code; colour is the overall risk band at ab97855.</desc>
+<title id="t">clean-eval risk heat map</title><desc id="d">Tile area is lines of code; colour is the overall risk band at ee84f6c.</desc>
 <style>.t{fill:#e6edf3}</style>
 <rect width="960" height="540" rx="6" fill="#0d1117"/>
-<g><title>clean_eval/adaptor/gateways: overall 59 (High), 497 lines. Business Impact 68 · Side Effects &amp; Reversibility 34 · Entropy 33 · Unverified 40</title>
-<rect x="2.0" y="2.0" width="275.2" height="294.2" rx="4" fill="#ec835a" fill-opacity="0.35" stroke="#ec835a" stroke-width="2"/>
+<g><title>clean_eval/adaptor/gateways: overall 54 (High), 508 lines. Business Impact 68 · Side Effects &amp; Reversibility 34 · Entropy 8 · Unverified 40</title>
+<rect x="2.0" y="2.0" width="297.2" height="296.5" rx="4" fill="#ec835a" fill-opacity="0.35" stroke="#ec835a" stroke-width="2"/>
 <text class="t" x="10.0" y="22.0" font-size="13" font-weight="600">adaptor/gateways</text>
-<text class="t" x="10.0" y="39.0" font-size="12">▲ 59 · 497</text>
+<text class="t" x="10.0" y="39.0" font-size="12">▲ 54 · 508</text>
 </g>
-<g><title>ci/result.py: overall 61 (High), 403 lines. Business Impact 54 · Side Effects &amp; Reversibility 79 · Entropy 31 · Unverified 16</title>
-<rect x="2.0" y="300.2" width="275.2" height="237.8" rx="4" fill="#ec835a" fill-opacity="0.35" stroke="#ec835a" stroke-width="2"/>
-<text class="t" x="10.0" y="320.2" font-size="13" font-weight="600">ci/result.py</text>
-<text class="t" x="10.0" y="337.2" font-size="12">▲ 61 · 403</text>
+<g><title>ci/result.py: overall 61 (High), 405 lines. Business Impact 54 · Side Effects &amp; Reversibility 79 · Entropy 31 · Unverified 15</title>
+<rect x="2.0" y="302.5" width="297.2" height="235.5" rx="4" fill="#ec835a" fill-opacity="0.35" stroke="#ec835a" stroke-width="2"/>
+<text class="t" x="10.0" y="322.5" font-size="13" font-weight="600">ci/result.py</text>
+<text class="t" x="10.0" y="339.5" font-size="12">▲ 61 · 405</text>
 </g>
-<g><title>.claude: overall 41 (Moderate), 339 lines. Business Impact 27 · Side Effects &amp; Reversibility 1 · Entropy 36 · Unverified 49</title>
-<rect x="281.2" y="2.0" width="220.3" height="249.2" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
-<text class="t" x="289.2" y="22.0" font-size="13" font-weight="600">.claude</text>
-<text class="t" x="289.2" y="39.0" font-size="12">! 41 · 339</text>
+<g><title>.claude: overall 41 (Moderate), 348 lines. Business Impact 27 · Side Effects &amp; Reversibility 26 · Entropy 35 · Unverified 49</title>
+<rect x="303.2" y="2.0" width="233.8" height="256.6" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
+<text class="t" x="311.2" y="22.0" font-size="13" font-weight="600">.claude</text>
+<text class="t" x="311.2" y="39.0" font-size="12">! 41 · 348</text>
 </g>
-<g><title>ci/prepare.py: overall 44 (Moderate), 193 lines. Business Impact 52 · Side Effects &amp; Reversibility 29 · Entropy 4 · Unverified 45</title>
-<rect x="281.2" y="255.2" width="220.3" height="140.1" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
-<text class="t" x="289.2" y="275.2" font-size="13" font-weight="600">ci/prepare.py</text>
-<text class="t" x="289.2" y="292.2" font-size="12">! 44 · 193</text>
+<g><title>ci/prepare.py: overall 61 (High), 193 lines. Business Impact 52 · Side Effects &amp; Reversibility 79 · Entropy 4 · Unverified 42</title>
+<rect x="303.2" y="262.6" width="233.8" height="140.5" rx="4" fill="#ec835a" fill-opacity="0.35" stroke="#ec835a" stroke-width="2"/>
+<text class="t" x="311.2" y="282.6" font-size="13" font-weight="600">ci/prepare.py</text>
+<text class="t" x="311.2" y="299.6" font-size="12">▲ 61 · 193</text>
 </g>
-<g><title>clean_eval/external: overall 49 (Moderate), 191 lines. Business Impact 58 · Side Effects &amp; Reversibility 4 · Entropy 4 · Unverified 49</title>
-<rect x="281.2" y="399.3" width="220.3" height="138.7" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
-<text class="t" x="289.2" y="419.3" font-size="13" font-weight="600">clean_eval/external</text>
-<text class="t" x="289.2" y="436.3" font-size="12">! 49 · 191</text>
+<g><title>clean_eval/domain/policy.py: overall 59 (High), 180 lines. Business Impact 90 · Side Effects &amp; Reversibility 7 · Entropy 7 · Unverified 11</title>
+<rect x="303.2" y="407.2" width="233.8" height="130.8" rx="4" fill="#ec835a" fill-opacity="0.35" stroke="#ec835a" stroke-width="2"/>
+<text class="t" x="311.2" y="427.2" font-size="13" font-weight="600">domain/policy.py</text>
+<text class="t" x="311.2" y="444.2" font-size="12">▲ 59 · 180</text>
 </g>
-<g><title>clean_eval/domain/policy.py: overall 67 (High), 173 lines. Business Impact 90 · Side Effects &amp; Reversibility 32 · Entropy 32 · Unverified 11</title>
-<rect x="505.4" y="2.0" width="176.8" height="156.3" rx="4" fill="#ec835a" fill-opacity="0.35" stroke="#ec835a" stroke-width="2"/>
-<text class="t" x="513.4" y="22.0" font-size="13" font-weight="600">domain/policy.py</text>
-<text class="t" x="513.4" y="39.0" font-size="12">▲ 67 · 173</text>
+<g><title>clean_eval/use_cases: overall 39 (Moderate), 180 lines. Business Impact 54 · Side Effects &amp; Reversibility 1 · Entropy 3 · Unverified 19</title>
+<rect x="541.0" y="2.0" width="214.4" height="142.8" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
+<text class="t" x="549.0" y="22.0" font-size="13" font-weight="600">clean_eval/use_cases</text>
+<text class="t" x="549.0" y="39.0" font-size="12">! 39 · 180</text>
 </g>
-<g><title>clean_eval/adaptor/presenters: overall 21 (Low), 149 lines. Business Impact 29 · Side Effects &amp; Reversibility 26 · Entropy 3 · Unverified 9</title>
-<rect x="686.2" y="2.0" width="151.7" height="156.3" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
-<text class="t" x="694.2" y="22.0" font-size="13" font-weight="600">adaptor/presenters</text>
-<text class="t" x="694.2" y="39.0" font-size="12">✓ 21 · 149</text>
+<g><title>clean_eval/external: overall 49 (Moderate), 167 lines. Business Impact 58 · Side Effects &amp; Reversibility 4 · Entropy 4 · Unverified 49</title>
+<rect x="759.4" y="2.0" width="198.6" height="142.8" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
+<text class="t" x="767.4" y="22.0" font-size="13" font-weight="600">clean_eval/external</text>
+<text class="t" x="767.4" y="39.0" font-size="12">! 49 · 167</text>
 </g>
-<g><title>clean_eval/domain/entities.py: overall 40 (Moderate), 115 lines. Business Impact 64 · Side Effects &amp; Reversibility 32 · Entropy 3 · Unverified 5</title>
-<rect x="841.8" y="2.0" width="116.2" height="156.3" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
-<text class="t" x="849.8" y="22.0" font-size="13" font-weight="600">domain/entiti…</text>
-<text class="t" x="849.8" y="39.0" font-size="12">! 40 · 115</text>
+<g><title>clean_eval/adaptor/presenters: overall 20 (Low), 123 lines. Business Impact 28 · Side Effects &amp; Reversibility 1 · Entropy 3 · Unverified 8</title>
+<rect x="541.0" y="148.8" width="150.5" height="137.8" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
+<text class="t" x="549.0" y="168.8" font-size="13" font-weight="600">adaptor/presenters</text>
+<text class="t" x="549.0" y="185.8" font-size="12">✓ 20 · 123</text>
 </g>
-<g><title>clean_eval/domain/aspects.py: overall 58 (High), 103 lines. Business Impact 78 · Side Effects &amp; Reversibility 1 · Entropy 4 · Unverified 35</title>
-<rect x="505.4" y="162.3" width="112.0" height="144.7" rx="4" fill="#ec835a" fill-opacity="0.35" stroke="#ec835a" stroke-width="2"/>
-<text class="t" x="513.4" y="182.3" font-size="13" font-weight="600">domain/aspect…</text>
-<text class="t" x="513.4" y="199.3" font-size="12">▲ 58 · 103</text>
+<g><title>clean_eval/domain/entities.py: overall 39 (Moderate), 115 lines. Business Impact 62 · Side Effects &amp; Reversibility 6 · Entropy 3 · Unverified 5</title>
+<rect x="541.0" y="290.6" width="150.5" height="128.6" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
+<text class="t" x="549.0" y="310.6" font-size="13" font-weight="600">domain/entities.py</text>
+<text class="t" x="549.0" y="327.6" font-size="12">! 39 · 115</text>
 </g>
-<g><title>clean_eval/use_cases/rate_repository.py: overall 44 (Moderate), 87 lines. Business Impact 53 · Side Effects &amp; Reversibility 1 · Entropy 4 · Unverified 44</title>
-<rect x="505.4" y="311.0" width="112.0" height="121.6" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
-<text class="t" x="513.4" y="331.0" font-size="13" font-weight="600">use_cases/rat…</text>
-<text class="t" x="513.4" y="348.0" font-size="12">! 44 · 87</text>
+<g><title>clean_eval/domain/aspects.py: overall 43 (Moderate), 103 lines. Business Impact 53 · Side Effects &amp; Reversibility 1 · Entropy 4 · Unverified 35</title>
+<rect x="541.0" y="423.2" width="150.5" height="114.8" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
+<text class="t" x="549.0" y="443.2" font-size="13" font-weight="600">domain/aspects.py</text>
+<text class="t" x="549.0" y="460.2" font-size="12">! 43 · 103</text>
 </g>
-<g><title>clean_eval/domain/modules.py: overall 45 (Moderate), 73 lines. Business Impact 55 · Side Effects &amp; Reversibility 2 · Entropy 4 · Unverified 41</title>
-<rect x="505.4" y="436.6" width="112.0" height="101.4" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
-<text class="t" x="513.4" y="456.6" font-size="13" font-weight="600">domain/module…</text>
-<text class="t" x="513.4" y="473.6" font-size="12">! 45 · 73</text>
+<g><title>clean_eval/domain/modules.py: overall 39 (Moderate), 73 lines. Business Impact 55 · Side Effects &amp; Reversibility 2 · Entropy 4 · Unverified 16</title>
+<rect x="695.5" y="148.8" width="134.0" height="90.3" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
+<text class="t" x="703.5" y="168.8" font-size="13" font-weight="600">domain/modules.py</text>
+<text class="t" x="703.5" y="185.8" font-size="12">! 39 · 73</text>
 </g>
-<g><title>ci/guard.py: overall 49 (Moderate), 68 lines. Business Impact 51 · Side Effects &amp; Reversibility 75 · Entropy 10 · Unverified 4</title>
-<rect x="621.4" y="162.3" width="116.5" height="90.5" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
-<text class="t" x="629.4" y="182.3" font-size="13" font-weight="600">ci/guard.py</text>
-<text class="t" x="629.4" y="199.3" font-size="12">! 49 · 68</text>
+<g><title>ci/guard.py: overall 57 (High), 68 lines. Business Impact 51 · Side Effects &amp; Reversibility 75 · Entropy 10 · Unverified 29</title>
+<rect x="833.5" y="148.8" width="124.5" height="90.3" rx="4" fill="#ec835a" fill-opacity="0.35" stroke="#ec835a" stroke-width="2"/>
+<text class="t" x="841.5" y="168.8" font-size="13" font-weight="600">ci/guard.py</text>
+<text class="t" x="841.5" y="185.8" font-size="12">▲ 57 · 68</text>
 </g>
-<g><title>clean_eval/domain/classify.py: overall 38 (Moderate), 38 lines. Business Impact 59 · Side Effects &amp; Reversibility 5 · Entropy 3 · Unverified 7</title>
-<rect x="741.9" y="162.3" width="69.4" height="90.5" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
+<g><title>clean_eval/domain/classify.py: overall 38 (Moderate), 38 lines. Business Impact 59 · Side Effects &amp; Reversibility 5 · Entropy 3 · Unverified 6</title>
+<rect x="695.5" y="243.1" width="84.8" height="77.5" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
 </g>
-<g><title>clean_eval/use_cases/ports.py: overall 12 (Low), 38 lines. Business Impact 0 · Side Effects &amp; Reversibility 0 · Entropy 0 · Unverified 24</title>
-<rect x="815.3" y="162.3" width="69.4" height="90.5" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
+<g><title>clean_eval/domain/graph.py: overall 34 (Moderate), 35 lines. Business Impact 55 · Side Effects &amp; Reversibility 2 · Entropy 3 · Unverified 4</title>
+<rect x="784.3" y="243.1" width="84.8" height="77.5" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
 </g>
-<g><title>clean_eval/use_cases/present_heatmap.py: overall 21 (Low), 36 lines. Business Impact 28 · Side Effects &amp; Reversibility 1 · Entropy 3 · Unverified 12</title>
-<rect x="888.6" y="162.3" width="69.4" height="90.5" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
+<g><title>clean_eval/domain/readme.py: overall 19 (Low), 35 lines. Business Impact 30 · Side Effects &amp; Reversibility 2 · Entropy 3 · Unverified 1</title>
+<rect x="873.2" y="243.1" width="84.8" height="77.5" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
 </g>
-<g><title>clean_eval/domain/graph.py: overall 35 (Moderate), 35 lines. Business Impact 55 · Side Effects &amp; Reversibility 2 · Entropy 3 · Unverified 5</title>
-<rect x="621.4" y="256.9" width="69.0" height="91.0" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
+<g><title>clean_eval/domain/scoring.py: overall 39 (Moderate), 35 lines. Business Impact 63 · Side Effects &amp; Reversibility 7 · Entropy 3 · Unverified 5</title>
+<rect x="695.5" y="324.6" width="95.9" height="68.5" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
+<text class="t" x="703.5" y="344.6" font-size="13" font-weight="600">domain/sco…</text>
+<text class="t" x="703.5" y="361.6" font-size="12">! 39 · 35</text>
 </g>
-<g><title>clean_eval/domain/readme.py: overall 20 (Low), 35 lines. Business Impact 32 · Side Effects &amp; Reversibility 29 · Entropy 3 · Unverified 1</title>
-<rect x="621.4" y="351.9" width="69.0" height="91.0" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
-</g>
-<g><title>clean_eval/domain/scoring.py: overall 54 (High), 35 lines. Business Impact 89 · Side Effects &amp; Reversibility 32 · Entropy 3 · Unverified 5</title>
-<rect x="621.4" y="447.0" width="69.0" height="91.0" rx="4" fill="#ec835a" fill-opacity="0.35" stroke="#ec835a" stroke-width="2"/>
-</g>
-<g><title>clean_eval/domain/change.py: overall 38 (Moderate), 34 lines. Business Impact 55 · Side Effects &amp; Reversibility 2 · Entropy 4 · Unverified 11</title>
-<rect x="694.4" y="256.9" width="85.2" height="73.8" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
-</g>
-<g><title>clean_eval/use_cases/update_readme.py: overall 20 (Low), 26 lines. Business Impact 27 · Side Effects &amp; Reversibility 1 · Entropy 3 · Unverified 9</title>
-<rect x="783.6" y="256.9" width="85.2" height="73.8" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
+<g><title>clean_eval/domain/change.py: overall 37 (Moderate), 34 lines. Business Impact 55 · Side Effects &amp; Reversibility 2 · Entropy 4 · Unverified 10</title>
+<rect x="695.5" y="397.1" width="95.9" height="68.5" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
+<text class="t" x="703.5" y="417.1" font-size="13" font-weight="600">domain/cha…</text>
+<text class="t" x="703.5" y="434.1" font-size="12">! 37 · 34</text>
 </g>
 <g><title>clean_eval/domain/judgement.py: overall 18 (Low), 25 lines. Business Impact 27 · Side Effects &amp; Reversibility 1 · Entropy 4 · Unverified 1</title>
-<rect x="872.8" y="256.9" width="85.2" height="73.8" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
+<rect x="695.5" y="469.5" width="95.9" height="68.5" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
+<text class="t" x="703.5" y="489.5" font-size="13" font-weight="600">domain/jud…</text>
+<text class="t" x="703.5" y="506.5" font-size="12">✓ 18 · 25</text>
 </g>
 <g><title>clean_eval/domain/rating.py: overall 35 (Moderate), 21 lines. Business Impact 55 · Side Effects &amp; Reversibility 2 · Entropy 3 · Unverified 5</title>
-<rect x="694.4" y="334.6" width="96.3" height="65.1" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
-<text class="t" x="702.4" y="354.6" font-size="13" font-weight="600">domain/rati…</text>
-<text class="t" x="702.4" y="371.6" font-size="12">! 35 · 21</text>
+<rect x="795.5" y="324.6" width="79.3" height="83.0" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
 </g>
-<g><title>clean_eval/use_cases/assess_change.py: overall 34 (Moderate), 16 lines. Business Impact 52 · Side Effects &amp; Reversibility 1 · Entropy 3 · Unverified 7</title>
-<rect x="694.4" y="403.7" width="96.3" height="65.1" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
-<text class="t" x="702.4" y="423.7" font-size="13" font-weight="600">use_cases/a…</text>
-<text class="t" x="702.4" y="440.7" font-size="12">! 34 · 16</text>
-</g>
-<g><title>clean_eval/(files): overall 18 (Low), 12 lines. Business Impact 25 · Side Effects &amp; Reversibility 0 · Entropy 4 · Unverified 5</title>
-<rect x="694.4" y="472.9" width="96.3" height="65.1" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
-<text class="t" x="702.4" y="492.9" font-size="13" font-weight="600">clean_eval/…</text>
-<text class="t" x="702.4" y="509.9" font-size="12">✓ 18 · 12</text>
+<g><title>clean_eval/(files): overall 55 (High), 12 lines. Business Impact 50 · Side Effects &amp; Reversibility 75 · Entropy 4 · Unverified 30</title>
+<rect x="878.7" y="324.6" width="79.3" height="83.0" rx="4" fill="#ec835a" fill-opacity="0.35" stroke="#ec835a" stroke-width="2"/>
 </g>
 <g><title>clean_eval/domain/errors.py: overall 26 (Moderate), 9 lines. Business Impact 38 · Side Effects &amp; Reversibility 7 · Entropy 4 · Unverified 5</title>
-<rect x="794.8" y="334.6" width="79.6" height="79.0" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
-</g>
-<g><title>clean_eval/use_cases/finalize_heatmap.py: overall 18 (Low), 6 lines. Business Impact 29 · Side Effects &amp; Reversibility 2 · Entropy 3 · Unverified 1</title>
-<rect x="878.4" y="334.6" width="79.6" height="79.0" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
+<rect x="795.5" y="411.6" width="107.0" height="61.2" rx="4" fill="#fab219" fill-opacity="0.35" stroke="#fab219" stroke-width="2"/>
+<text class="t" x="803.5" y="431.6" font-size="13" font-weight="600">domain/error…</text>
+<text class="t" x="803.5" y="448.6" font-size="12">! 26 · 9</text>
 </g>
 <g><title>clean_eval/domain/__init__.py: overall 2 (Low), 2 lines. Business Impact 0 · Side Effects &amp; Reversibility 0 · Entropy 4 · Unverified 5</title>
-<rect x="794.8" y="417.6" width="107.5" height="58.2" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
-<text class="t" x="802.8" y="437.6" font-size="13" font-weight="600">domain/__ini…</text>
-<text class="t" x="802.8" y="454.6" font-size="12">✓ 2 · 2</text>
+<rect x="795.5" y="476.8" width="107.0" height="61.2" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
+<text class="t" x="803.5" y="496.8" font-size="13" font-weight="600">domain/__ini…</text>
+<text class="t" x="803.5" y="513.8" font-size="12">✓ 2 · 2</text>
 </g>
 <g><title>clean_eval/adaptor/(files): overall 2 (Low), 1 lines. Business Impact 0 · Side Effects &amp; Reversibility 0 · Entropy 4 · Unverified 5</title>
-<rect x="794.8" y="479.8" width="107.5" height="58.2" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
-<text class="t" x="802.8" y="499.8" font-size="13" font-weight="600">adaptor/(fil…</text>
-<text class="t" x="802.8" y="516.8" font-size="12">✓ 2 · 1</text>
-</g>
-<g><title>clean_eval/use_cases/__init__.py: overall 2 (Low), 1 lines. Business Impact 0 · Side Effects &amp; Reversibility 0 · Entropy 4 · Unverified 5</title>
-<rect x="906.3" y="417.6" width="51.7" height="120.4" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
+<rect x="906.5" y="411.6" width="51.5" height="126.4" rx="4" fill="#0ca30c" fill-opacity="0.35" stroke="#0ca30c" stroke-width="2"/>
 </g>
 </svg>

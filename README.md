@@ -22,11 +22,11 @@ Architecture layers whose dependencies point inward (enforced by `tests/test_arc
 | Layer | Holds | May import |
 |---|---|---|
 | `clean_eval/domain/` | entities, the risk policy, the four aspect rules, scoring, judgement, change assessment, README convention | nothing outside the stdlib's pure modules |
-| `clean_eval/use_cases/` | rate a repository, assess a change, update the README, render; and the ports they need | `domain` |
-| `clean_eval/adaptor/` | gateways (git, `ast` graph, code-review-graph, files) and presenters (SVG, HTML, Markdown) | `domain`, `use_cases` |
+| `clean_eval/use_cases/` | rate a repository, assess a change, refresh the README section, summarize; and the ports they need | `domain` |
+| `clean_eval/adaptor/` | gateways (git, `ast` graph, code-review-graph, files) and presenters (SVG, Markdown) | `domain`, `use_cases` |
 | `clean_eval/external/` | the command line and the composition root | everything |
 
-Run it as `python3 -I clean_eval <rate|render|diagram|readme|report|assess> ...` (`-I` keeps the rated repository off
+Run it as `python3 -I clean_eval <rate|readme|report|assess> ...` (`-I` keeps the rated repository off
 `sys.path`, so none of its code can be imported).
 
 ### Per-repo configuration
@@ -55,7 +55,7 @@ Use the skills from any repo's workflow via the composite action in this repo:
 
 | Skill | Needs Claude credentials | Key inputs | Outputs |
 |---|---|---|---|
-| `risk-heat-map` | no (static scores; `use-claude: true` adds the levelling read-through) | `readme`, `diagram` | `readme-changed`, `page`, `result` |
+| `risk-heat-map` | no (static scores; `use-claude: true` adds the levelling read-through) | `readme`, `diagram` | `readme-changed`, `result` |
 | `pr-review` | yes | `pr` (defaults to the triggering PR), `post`, `fail-on: never\|request_changes\|blocker` | `verdict`, `max-tier`, `blockers`, `result` |
 | `eval` | yes | `since`, `until`, `apply` | `auc`, `result` |
 
@@ -100,11 +100,11 @@ python3 -m unittest discover -s tests      # stdlib only; fake gh/claude, no net
 ## Risk Heat Map
 
 <!-- risk-heat-map:start -->
-<!-- risk-heat-map:fingerprint=e8f28bb546fd -->
+<!-- risk-heat-map:fingerprint=801b34699227 -->
 
-![Risk heat map of clean-eval at ab97855](docs/risk-heatmap.svg)
+![Risk heat map of clean-eval at ee84f6c](docs/risk-heatmap.svg)
 
-Tile area is module size (lines of code, tests excluded); colour is the overall risk of changing it. Heuristics from static analysis of `feat/risk-heatmap-clean-arch` at `ab97855` (2026-11-22), not a verdict. Regenerate with the `risk-heat-map` skill.
+Tile area is module size (lines of code, tests excluded); colour is the overall risk of changing it. Heuristics from static analysis of `chore/readme-only-heat-map` at `ee84f6c` (2026-11-22), not a verdict. Regenerate with the `risk-heat-map` skill.
 
 🟢 Low 0-24 · 🟡 Moderate 25-49 · 🟠 High 50-74 · 🔴 Critical 75-100
 <!-- risk-heat-map:end -->

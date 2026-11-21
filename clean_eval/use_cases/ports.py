@@ -28,11 +28,6 @@ class CoverageReader(Protocol):
         """{file path: line rate 0-1} from a coverage report in the snapshot, or {} when there is none."""
 
 
-class PagePresenter(Protocol):
-    def present(self, heatmap: Heatmap, suffix: str) -> str:
-        """The interactive heat-map page."""
-
-
 class DiagramPresenter(Protocol):
     def svg(self, heatmap: Heatmap) -> str:
         """The static treemap for a README."""

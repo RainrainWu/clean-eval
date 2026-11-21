@@ -94,9 +94,6 @@ outputs:
   readme-changed:
     description: "risk-heat-map: whether the README section and diagram changed (true|false)"
     value: ${{ steps.run.outputs.readme-changed }}
-  page:
-    description: "risk-heat-map: path of the interactive heat-map page (HTML)"
-    value: ${{ steps.run.outputs.page }}
   verdict:
     description: "pr-review: approve | comment | request_changes — derived from validated findings (any blocker → request_changes)"
     value: ${{ steps.run.outputs.verdict }}

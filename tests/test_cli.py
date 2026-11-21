@@ -36,20 +36,20 @@ class CliTest(unittest.TestCase):
         cls.repo.cleanup()
         shutil.rmtree(cls.out, ignore_errors=True)
 
-    def test_rate_render_report_and_diagram(self):
+    def test_rate_and_report(self):
         r = run(self.repo.path, "rate", "--depth", "2", "--out", self.out)
         self.assertEqual(r.returncode, 0, r.stderr)
         data = json.loads(read(os.path.join(self.out, "data.json")))
         self.assertEqual(sorted(m["name"] for m in data["modules"]), ["src/billing", "src/users"])
         self.assertIn("Policy: clean-eval default", data["notes"])
-        page = os.path.join(self.out, "page.html")
-        self.assertEqual(run(self.repo.path, "render", os.path.join(self.out, "data.json"), "--out", page).returncode, 0)
-        self.assertIn("Risk Heat Map", read(page))
         report = run(self.repo.path, "report", os.path.join(self.out, "data.json"))
         self.assertIn("| `src/", report.stdout)
-        d = run(self.repo.path, "diagram", os.path.join(self.out, "data.json"), "--out-dir", os.path.join(self.out, "dg"))
-        self.assertEqual(d.returncode, 0, d.stderr)
-        self.assertTrue(os.path.exists(os.path.join(self.out, "dg", "risk-heatmap.svg")))
+
+    def test_the_readme_section_is_the_only_publishing_output(self):
+        usage = run(self.repo.path, "--help").stdout
+        self.assertIn("{rate,readme,report,assess}", usage)
+        for gone in ("render", "diagram"):
+            self.assertNotEqual(run(self.repo.path, gone, "x").returncode, 0, gone)
 
     def test_rate_a_past_revision(self):
         out = os.path.join(self.out, "rev")

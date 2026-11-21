@@ -44,7 +44,7 @@ mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd -P)"
 CTX="$OUT/context"      # precomputed inputs — read-only for the agent
 AGENT="$OUT/agent"      # the only place the agent may write
-rm -rf "$CTX" "$AGENT" "$OUT/result.json" "$OUT/report.md" "$OUT/claude.log" "$OUT/heatmap.md" "$OUT/heatmap.html"
+rm -rf "$CTX" "$AGENT" "$OUT/result.json" "$OUT/report.md" "$OUT/claude.log" "$OUT/heatmap.md"
 mkdir -p "$CTX" "$AGENT"
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$WS is not a git repository"
@@ -142,7 +142,6 @@ $CTX/heatmap/data.json; the repository is checked out in the current directory. 
     log "Publish the heat map"
     python3 -I "$CE" readme "$CTX/heatmap/data.json" ${judged[@]+"${judged[@]}"} --repo "$WS" --readme "$README" --svg "$SVG" \
       --status-json "$CTX/heatmap-status.json"
-    python3 -I "$CE" render "$CTX/heatmap/data.json" ${judged[@]+"${judged[@]}"} --repo "$WS" --out "$OUT/heatmap.html"
     python3 -I "$CE" report "$CTX/heatmap/data.json" ${judged[@]+"${judged[@]}"} --repo "$WS" --out "$OUT/heatmap.md" \
       --json-out "$OUT/result.json"
     endlog
@@ -151,7 +150,6 @@ $CTX/heatmap/data.json; the repository is checked out in the current directory. 
       || die "could not finalize the report"
     { echo "## clean-eval · Risk Heat Map"; echo; cat "$OUT/report.md"; } >> "$SUMMARY"
     echo "readme-changed=$changed" >> "$GH_OUT"
-    echo "page=$OUT/heatmap.html" >> "$GH_OUT"
     ;;
 
   pr-review)

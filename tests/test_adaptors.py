@@ -18,7 +18,6 @@ from clean_eval.adaptor.gateways.git_source import GENERATED, RevisionSource, Wo
 from clean_eval.adaptor.gateways.python_signals import PythonSignals, python_stats, write_calls
 from clean_eval.adaptor.presenters import style
 from clean_eval.adaptor.presenters.diagram import SvgDiagramPresenter
-from clean_eval.adaptor.presenters.html_page import HtmlPagePresenter
 from clean_eval.adaptor.presenters.markdown_report import MarkdownReportPresenter
 from clean_eval.adaptor.presenters.treemap import squarify
 from clean_eval.domain.entities import Snapshot
@@ -243,17 +242,6 @@ class Presenters(unittest.TestCase):
         rects = squarify([("a", 6000.0), ("b", 3000.0), ("c", 1000.0)], 0, 0, 100, 100)
         self.assertEqual(len(rects), 3)
         self.assertAlmostEqual(sum(w * h for _, _, _, w, h in rects), 10000.0)
-
-    def test_page_escapes_script_close_sets_title_and_drops_facts(self):
-        h = heatmap(rating(fact=facts()))
-        h.modules[0].evidence["biz"] = ["</script><b>"]
-        html = HtmlPagePresenter("<title>__TITLE__</title><style>:root{/*__BAND_VARS__*/}</style><script>__DATA__</script>").present(h, " Detail")
-        self.assertIn("<title>demo Risk Heat Map Detail</title>", html)
-        self.assertNotIn("</script><b>", html)
-        self.assertNotIn('"facts"', html)
-        self.assertIn("--crit: %s; --crit-rgb: 208,59,59;" % style.BAND_STYLE["Critical"][0], html)
-        for label in [a[2] for a in ASPECTS] + [name for _, name in BANDS]:
-            self.assertIn(label, html)
 
     def test_svg_has_one_tile_per_module_and_escapes_names(self):
         svg = SvgDiagramPresenter().svg(self.mixed())

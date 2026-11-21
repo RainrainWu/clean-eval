@@ -3,8 +3,6 @@
     python3 -I <clean-eval checkout>/clean_eval <command> ...
 
   rate     rate every module of the working tree (or --rev) on the four aspects -> <out>/data.json
-  render   the interactive heat-map page (HTML)
-  diagram  the README diagram (SVG treemap) and its README block, as files
   readme   put the heat map into the repository's README section and its diagram file (no-op when unchanged)
   report   a short Markdown summary (top modules, what drives them)
   assess   the risk a change (base..head) carries, from the heat map of its base: what the PR review scales by
@@ -14,15 +12,13 @@ import dataclasses
 import json
 import os
 import sys
-from pathlib import Path
 
 from ..adaptor.gateways.files import FileReadmeStore, Workspace, load_policy, write_text
 from ..adaptor.presenters.diagram import SvgDiagramPresenter
-from ..adaptor.presenters.html_page import HtmlPagePresenter
 from ..adaptor.presenters.markdown_report import MarkdownReportPresenter
 from ..adaptor.presenters.style import DIAGRAM_PATH
 from ..domain.errors import HeatmapError
-from ..use_cases.present_heatmap import BLOCK_NAME, SVG_NAME, BuildDiagram, RenderPage, SummarizeHeatmap
+from ..use_cases.summarize_heatmap import SummarizeHeatmap
 from ..use_cases.update_readme import UpdateReadme
 from . import wiring
 
@@ -57,22 +53,6 @@ def rate(args):
               % (m.name, m.loc, s["overall"], s["biz"], s["effects"], s["entropy"], "N/A" if s["unverified"] is None else s["unverified"]))
     for note in heatmap.notes:
         print("note:", note)
-
-
-def render(args):
-    heatmap, judgement = _loaded(args)
-    template = Path(wiring.TEMPLATE).read_text()
-    page = RenderPage(HtmlPagePresenter(template)).execute(heatmap, judgement, _policy(args)[0], args.suffix)
-    write_text(args.out, page.html)
-    print("wrote %s (%d bytes), %d modules, %d with judgement" % (args.out, len(page.html), len(page.heatmap.modules), page.heatmap.judged_modules))
-
-
-def diagram(args):
-    heatmap, judgement = _loaded(args)
-    built = BuildDiagram(SvgDiagramPresenter()).execute(heatmap, judgement, _policy(args)[0], args.image_link)
-    write_text(os.path.join(args.out_dir, SVG_NAME), built.svg)
-    write_text(os.path.join(args.out_dir, BLOCK_NAME), built.readme_block)
-    print("wrote %s and %s (%d modules)" % (os.path.join(args.out_dir, SVG_NAME), os.path.join(args.out_dir, BLOCK_NAME), len(built.heatmap.modules)))
 
 
 def readme(args):
@@ -136,20 +116,6 @@ def parser():
     p.add_argument("--max-modules", type=int, help="at most this many modules (default from the policy: 60)")
     p.add_argument("--out", required=True, help="folder for data.json")
     p.set_defaults(run=rate)
-
-    p = sub.add_parser("render", help="the interactive heat-map page")
-    common(p)
-    data(p)
-    p.add_argument("--suffix", default="", help="appended to the page title, to tell variants apart")
-    p.add_argument("--out", required=True)
-    p.set_defaults(run=render)
-
-    p = sub.add_parser("diagram", help="the README diagram (SVG) and its README block, as files")
-    common(p)
-    data(p)
-    p.add_argument("--image-link", default=DIAGRAM_PATH, help="link to the SVG from the README (default %s)" % DIAGRAM_PATH)
-    p.add_argument("--out-dir", required=True, help="receives %s and %s" % (SVG_NAME, BLOCK_NAME))
-    p.set_defaults(run=diagram)
 
     p = sub.add_parser("readme", help="put the heat map into the README section and the diagram file")
     common(p)
