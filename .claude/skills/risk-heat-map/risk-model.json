@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "window_days": 180,
+
+  "module_roots": ["src", "lib", "app", "apps", "packages", "services", "internal", "pkg"],
+  "module_depth": 1,
+  "modules": {},
+  "exclude": [
+    ".*/*", "docs/*", "node_modules/*", "vendor/*", "dist/*", "build/*",
+    "*.md", "*.lock", "package-lock.json", "*.min.js", "*.svg", "*.png", "*.jpg"
+  ],
+
+  "test_roots": ["tests", "test", "spec", "__tests__", "e2e"],
+  "test_file_pattern": "(^test_.*|.*_test\\.[a-z]+$|.*\\.(test|spec)\\.[a-z]+$|.*Test\\.[a-z]+$)",
+  "test_ratio_target": 0.5,
+
+  "fix_pattern": "(?i)\\b(fix(es|ed)?|bug|hotfix|regression|patch|revert)\\b",
+  "revert_pattern": "(?i)^revert\\b",
+  "fix_ratio_prior": 2,
+  "_fix_ratio_prior": "smoothing added to the denominator of fix_ratio and coupling so low-commit modules aren't extreme",
+
+  "likelihood_weights": { "churn": 0.35, "fix_ratio": 0.40, "test_gap": 0.25 },
+  "impact_weights":     { "size": 0.30, "coupling": 0.40, "criticality": 0.30 },
+
+  "criticality_default": 0.5,
+  "criticality": {},
+
+  "level_thresholds": { "medium": 0.33, "high": 0.66 },
+
+  "notes": "Edit weights/thresholds here; /eval proposes changes with evidence. criticality maps module name -> 0..1 (business impact a human asserts). modules maps module name -> list of path globs to override auto-detection."
+}

@@ -1,0 +1,35 @@
+# Review every PR with clean-eval, depth scaled by module risk.
+name: clean-eval PR review
+on:
+  pull_request:            # not pull_request_target: never expose secrets to fork code
+    types: [opened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: clean-eval-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # risk scoring needs full history
+      - id: review
+        uses: RainrainWu/clean-eval@v1
+        with:
+          skill: pr-review
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          post: "true"
+          fail-on: blocker     # never | request_changes | blocker
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-eval-review
+          path: ${{ steps.review.outputs.output-dir }}

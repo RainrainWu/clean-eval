@@ -1,0 +1,51 @@
+# Dogfood: run this repo's action on its own PRs.
+name: self-test
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  risk-heat-map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: heatmap
+        uses: ./
+        with:
+          skill: risk-heat-map
+      - name: Check outputs
+        run: |
+          test -s "${{ steps.heatmap.outputs.result }}"
+          echo "readme-changed=${{ steps.heatmap.outputs.readme-changed }}"
+          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d['modules']), 'modules')" "${{ steps.heatmap.outputs.result }}"
+
+  pr-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+    steps:
+      - if: env.HAS_KEY != 'true'
+        run: echo "::notice::ANTHROPIC_API_KEY secret not set — skipping pr-review self-test"
+      - if: env.HAS_KEY == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - if: env.HAS_KEY == 'true'
+        id: review
+        uses: ./
+        with:
+          skill: pr-review
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+      - if: always() && env.HAS_KEY == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-eval-review
+          path: ${{ steps.review.outputs.output-dir }}
