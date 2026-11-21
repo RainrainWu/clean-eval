@@ -16,6 +16,33 @@ def model(**overrides):
     return Policy.from_overrides(overrides)
 
 
+class CleanEvalHomeTest(unittest.TestCase):
+    """history.py finds the clean_eval package even when the skill is installed outside the checkout."""
+
+    def run_copy(self, env):
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+        from helpers import ROOT
+        d = tempfile.mkdtemp()
+        try:
+            shutil.copy(os.path.join(ROOT, ".claude", "skills", "eval", "scripts", "history.py"), d)
+            clean = {k: v for k, v in os.environ.items() if k != "CLEAN_EVAL_HOME"}
+            return subprocess.run([sys.executable, os.path.join(d, "history.py"), "--help"], cwd=d,
+                                  capture_output=True, text=True, env={**clean, **env})
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_installed_copy_needs_clean_eval_home(self):
+        from helpers import ROOT
+        self.assertEqual(self.run_copy({"CLEAN_EVAL_HOME": ROOT}).returncode, 0)
+        missing = self.run_copy({})
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("set CLEAN_EVAL_HOME", missing.stderr)
+        self.assertNotIn("Traceback", missing.stderr)
+
+
 class ParsingTest(unittest.TestCase):
     def test_pr_number(self):
         self.assertEqual(history.pr_number("Fix #45 (#67)"), 67)

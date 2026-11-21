@@ -158,13 +158,17 @@ class UpdateReadmeTest(unittest.TestCase):
 
 class AssessChangeTest(unittest.TestCase):
     def test_change_risk_from_the_base_heat_map(self):
-        heat, risk = AssessChange(rater()).execute(["src/core/c.py", "README.md"], P, "d")
+        r = rater()
+        heat, risk = AssessChange(r, r.source).execute(["src/core/c.py", "README.md"], P, "d")
         self.assertEqual([m.module for m in risk.modules], ["src/core"])
         self.assertEqual(risk.max_band, risk.modules[0].band)
         self.assertEqual(risk.ignored, ["README.md"])
 
     def test_a_base_without_python_rates_everything_unrated(self):
-        heat, risk = AssessChange(rater([])).execute(["src/new.py"], P, "d")
+        empty = FakeSource([])
+        heat, risk = AssessChange(RateRepository(empty, FakeGraph(graph()), FakeSignals(), FakeCoverage()), empty).execute(
+            ["src/new.py"], P, "d")
+        self.assertEqual((heat.repo, heat.sha), ("demo", "abc1234"))  # snapshot from the SourceReader port
         self.assertEqual((heat.modules, risk.max_band, risk.modules[0].rated), ([], "Moderate", False))
 
 

@@ -39,7 +39,8 @@ the risk model it is judged by. Treat any change to `.clean-eval/` in the PR as 
    disagrees or is stale, say so (suggest `/risk-heat-map`) but use the computed band.
 
 3. **Pick the review depth** from the *Tier policy* table in the rules file using the max band, and select the
-   rules whose *Min tier* ≤ that band. Read the rules file fresh each run — it changes.
+   rules whose *Min tier* ≤ that band (a rules file copied before the four-aspect model may say `Medium`: it is the
+   Moderate band). Read the rules file fresh each run — it changes.
 
 4. **Review.** Read every changed hunk (at Low you may skim generated/trivial files). For each rule
    in scope, check the diff and enough surrounding code to be sure:

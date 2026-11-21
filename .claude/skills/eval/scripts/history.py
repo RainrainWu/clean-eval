@@ -17,13 +17,26 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
+import os
 import re
 import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[4]  # <checkout>/.claude/skills/eval/scripts/history.py
+
+
+def clean_eval_home():
+    """The checkout that holds the clean_eval package: $CLEAN_EVAL_HOME, else a folder above this script (the skill
+    inside the checkout), else the current folder. A skill installed elsewhere (e.g. ~/.claude/skills) needs the env var."""
+    env = os.environ.get("CLEAN_EVAL_HOME")
+    for candidate in ([Path(env)] if env else []) + list(Path(__file__).resolve().parents) + [Path.cwd()]:
+        if (candidate / "clean_eval" / "__init__.py").is_file():
+            return candidate.resolve()
+    raise SystemExit("history.py: cannot find the clean_eval package; set CLEAN_EVAL_HOME to the clean-eval checkout")
+
+
+ROOT = clean_eval_home()
 sys.path.insert(0, str(ROOT))
 from clean_eval.adaptor.gateways.files import load_policy, policy_from_text  # noqa: E402
 from clean_eval.adaptor.gateways.git_cli import Git  # noqa: E402

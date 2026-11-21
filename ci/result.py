@@ -41,9 +41,10 @@ from clean_eval.domain.policy import BAND_NAMES, TUNABLE, Policy  # noqa: E402
 import history  # noqa: E402
 
 RULE_RE = re.compile(r"^([A-Z]{1,4}-\d{2,3}|NEW)$")
-RULE_ROW = re.compile(r"^\|\s*([A-Z]{1,4}-\d{2,3})\s*\|\s*(blocker|major|minor)\s*\|\s*(Low|Moderate|High|Critical)\s*\|",
+RULE_ROW = re.compile(r"^\|\s*([A-Z]{1,4}-\d{2,3})\s*\|\s*(blocker|major|minor)\s*\|\s*(Low|Moderate|Medium|High|Critical)\s*\|",
                       re.M)
 SEVERITIES = ("minor", "major", "blocker")  # ascending
+LEGACY_BANDS = {"Medium": "Moderate"}
 TIERS = BAND_NAMES
 MARKER_RE = re.compile(r"<!--\s*clean-eval:[^>]*-->")
 MAX_REPORT_CHARS = 60_000  # GitHub caps review bodies at 65,536
@@ -135,7 +136,9 @@ def _str(v, field, maxlen, one_line=False):
 
 def parse_rules(text):
     """{rule_id: {"severity", "min_tier"}} from the rules tables."""
-    return {m.group(1): {"severity": m.group(2), "min_tier": m.group(3)} for m in RULE_ROW.finditer(text)}
+    # "Medium" is the pre-v2 name of the Moderate band: rules files copied from the old default keep working.
+    return {m.group(1): {"severity": m.group(2), "min_tier": LEGACY_BANDS.get(m.group(3), m.group(3))}
+            for m in RULE_ROW.finditer(text)}
 
 
 def validate_pr_review(raw, risk_ctx, rules):
@@ -294,7 +297,7 @@ def _check_clean_eval_edits(a, hist, context):
             if after < before:
                 raise Invalid(f"replay AUC {after} is below the current model's {before}")
             model_change = {"accepted": True, "changed_keys": sorted(changed), "auc_before": before, "auc_after": after}
-        except (Invalid, InvalidPolicy, ValueError, KeyError, TypeError, AttributeError) as e:
+        except (Invalid, InvalidPolicy, ArithmeticError, ValueError, KeyError, TypeError, AttributeError) as e:
             revert_model()
             model_change = {"accepted": False, "reason": str(e)}
     if os.path.exists(rules_path) and _read(rules_path) != orig_rules:

@@ -61,8 +61,10 @@ class Policy:
     split_min_loc: int = 200
     split_max_files: int = 25
     exclude: tuple = ()  # globs of source paths that are not rated (vendored or generated code)
-    # Paths a change may touch without carrying risk of its own (docs and images).
-    ignore_paths: tuple = ("*.md", "*.rst", "docs/*", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg", "LICENSE*")
+    # Paths a change may touch without carrying risk of its own: documentation and images. Not every Markdown file:
+    # agent instructions (SKILL.md, CLAUDE.md, AGENTS.md) and review rules steer behaviour, so they stay risky.
+    ignore_paths: tuple = ("README*", "*/README*", "CHANGELOG*", "*/CHANGELOG*", "LICENSE*", "*/LICENSE*", "docs/*",
+                           "*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg")
     # Path conventions (regular expressions over repo-relative paths).
     test_dirs: tuple = ("tests", "test", "spec", "specs", "e2e")
     test_file: str = r"(^test_.*\.py$|.*_test\.py$|^conftest\.py$)"
@@ -150,11 +152,18 @@ class Policy:
         for name in ("depth", "max_modules", "split_min_loc", "split_max_files"):
             if getattr(self, name) < 1:
                 raise InvalidPolicy("%s must be at least 1" % name)
+        for name in DIVISORS:  # these divide a measurement; 0 would crash every rating
+            value = getattr(self, name)
+            if any(v <= 0 for v in (value.values() if isinstance(value, dict) else [value])):
+                raise InvalidPolicy("%s must be greater than 0" % name)
         if not isinstance(self.version, int) or isinstance(self.version, bool):
             raise InvalidPolicy("version must be an integer")
         return self
 
 
+# Knobs that divide a measurement (every value of a dictionary knob): they must stay above 0.
+DIVISORS = ("business_saturation", "effects_scale", "effects_dependents_saturation", "entropy_saturation", "longest_range",
+            "avg_complexity_range", "unverified_ratio_target")
 # Knobs a calibration may change on its own; the rest decide what is measured (module shape, path conventions).
 STRUCTURAL = frozenset({"depth", "max_modules", "split_min_loc", "split_max_files", "exclude", "ignore_paths", "test_dirs",
                         "test_file", "tooling", "keywords", "migration_path", "not_applicable"})

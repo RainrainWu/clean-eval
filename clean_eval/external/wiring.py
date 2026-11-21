@@ -40,12 +40,18 @@ class RevisionRaters:
         self.git = Git(repo)
         self.blobs, self.graph, self.signals = {}, BuiltinGraph(), PythonSignals()
 
+    def source(self, rev, policy):
+        return RevisionSource(self.git, rev, policy, self.blobs)
+
+    def rater(self, source):
+        return RateRepository(source, self.graph, self.signals, NoCoverage())
+
     def at(self, rev, policy):
-        return RateRepository(RevisionSource(self.git, rev, policy, self.blobs), self.graph, self.signals, NoCoverage())
+        return self.rater(self.source(rev, policy))
 
 
 def assess_change(repo, base, head, policy):
     """(heatmap at base, ChangeRisk of base..head): what the PR review scales its depth by."""
-    git = Git(repo)
-    paths = git.diff_files(base, head)
-    return AssessChange(RevisionRaters(repo).at(base, policy)).execute(paths, policy, today())
+    raters = RevisionRaters(repo)
+    source = raters.source(base, policy)
+    return AssessChange(raters.rater(source), source).execute(raters.git.diff_files(base, head), policy, today())

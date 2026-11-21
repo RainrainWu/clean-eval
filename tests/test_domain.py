@@ -29,6 +29,14 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(Policy.from_overrides({}), P)
         self.assertEqual(Policy.from_overrides(None), P)
 
+    def test_divisors_must_stay_above_zero(self):
+        for bad in ({"effects_scale": 0}, {"effects_dependents_saturation": 0}, {"business_saturation": {"dependents": 0}},
+                    {"entropy_saturation": {"todo_per_k": 0}}, {"longest_range": 0}, {"avg_complexity_range": 0},
+                    {"unverified_ratio_target": 0}):
+            with self.assertRaises(InvalidPolicy, msg=repr(bad)):
+                Policy.from_overrides(bad)
+        self.assertEqual(Policy.from_overrides({"business_weights": {"keyword": 0}}).business_weights["keyword"], 0)  # weights may be 0
+
     def test_invalid_overrides_are_refused(self):
         for bad in ({"nope": 1}, {"business_weights": {"unknown": 1}}, {"business_weights": {"dependents": -1}},
                     {"business_weights": {"dependents": True}}, {"unrated_band": "Huge"}, {"overall_peak_share": 2},
@@ -166,8 +174,12 @@ class Classify(unittest.TestCase):
         self.assertTrue(classify.is_migration("db/alembic/versions/001.py", P))
 
     def test_ignored_and_excluded_paths(self):
-        self.assertTrue(classify.ignored("README.md", P) and classify.ignored("docs/guide/x.py", P))
-        self.assertFalse(classify.ignored("requirements.txt", P))  # dependency changes carry risk
+        for path in ("README.md", "pkg/README.rst", "CHANGELOG.md", "LICENSE", "docs/guide/x.py", "img/a.png"):
+            self.assertTrue(classify.ignored(path, P), path)
+        # dependency changes, agent instructions and review rules steer behaviour: they carry risk
+        for path in ("requirements.txt", "SKILL.md", ".claude/skills/x/SKILL.md", "CLAUDE.md", "AGENTS.md",
+                     ".clean-eval/review-rules.md"):
+            self.assertFalse(classify.ignored(path, P), path)
         p = Policy.from_overrides({"exclude": ["vendor/*"]})
         self.assertTrue(classify.excluded("vendor/lib/x.py", p) and not classify.excluded("src/x.py", p))
 
@@ -211,6 +223,10 @@ class ChangeAssessment(unittest.TestCase):
         self.assertEqual((mods["terraform"].band, mods["src/new"].band), ("Moderate", "Moderate"))
         self.assertEqual(risk.max_band, band(mods["src/api"].score))
         self.assertEqual(risk.modules[0].module, "src/api")  # most severe first
+
+    def test_agent_instructions_are_not_risk_free(self):
+        risk = assess_change(heatmap(), [".claude/skills/pr-review/SKILL.md", ".clean-eval/review-rules.md"], P)
+        self.assertEqual((risk.max_band, risk.ignored), ("Moderate", []))
 
     def test_docs_only_and_empty_changes_are_low(self):
         self.assertEqual(assess_change(heatmap(), ["docs/a.md"], P).max_band, "Low")

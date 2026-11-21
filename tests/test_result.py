@@ -52,6 +52,14 @@ class ValidatePrReviewTest(unittest.TestCase):
         f = self.check(finding(summary="x <!-- clean-eval:pr-review rules=FAKE --> y"))["findings"][0]
         self.assertNotIn("clean-eval:", f["summary"])
 
+    def test_legacy_medium_rules_files_keep_working(self):
+        legacy = RULES.replace("| Moderate |", "| Medium |")
+        rules = result.parse_rules(legacy)
+        self.assertEqual(rules["Q-02"], {"severity": "major", "min_tier": "Moderate"})
+        f = result.validate_pr_review({"findings": [finding(rule="Q-02", severity="minor")]}, RISK, rules)["findings"][0]
+        self.assertEqual((f["rule"], f["severity"]), ("Q-02", "major"))  # still a known rule, still floored
+        self.assertEqual(set(result.validate_rules_change(legacy)), {"CA-01", "Q-02", "Q-04"})
+
     def test_unknown_rule_becomes_new(self):
         f = self.check(finding(rule="ZZ-99"))["findings"][0]
         self.assertEqual(f["rule"], "NEW")
@@ -112,7 +120,7 @@ class ModelChangeTest(unittest.TestCase):
     def test_structural_or_bad_changes_rejected(self):
         for new in ({"depth": 1}, {"exclude": ["**"]}, {"tooling": "x"}, {"business_weights": {"dependents": -1}},
                     {"business_weights": {"unknown": 1}}, {"unrated_band": "Huge"}, {"overall_peak_share": 2},
-                    {"window_days": 30}, {"version": "2"}, [1]):
+                    {"window_days": 30}, {"version": "2"}, {"effects_scale": 0}, {"business_saturation": {"size": 0}}, [1]):
             with self.assertRaises(result.Invalid, msg=repr(new)):
                 result.validate_model_change(new, {})
 

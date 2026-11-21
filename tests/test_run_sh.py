@@ -162,6 +162,24 @@ class RunShTest(unittest.TestCase):
         finally:
             r.cleanup()
 
+    def test_pr_review_with_an_invalid_base_policy_falls_back_with_a_note(self):
+        r = Repo()
+        try:
+            base = r.commit("init", {"src/a.py": "1\n", ".clean-eval/risk-model.json": '{"window_days": 30}'}, when=days_ago(3))
+            r.git("checkout", "-q", "-b", "feature")
+            head = r.commit("change", {"src/a.py": "2\n"}, when=days_ago(1))
+            self.bin.gh({"pr_view": {"out": {"number": 4, "title": "t", "body": "", "author": {"login": "d"}, "url": "u",
+                                             "baseRefName": "main", "headRefName": "feature", "baseRefOid": base,
+                                             "headRefOid": head, "isCrossRepository": False}}})
+            self.bin.claude({"agent_files": {"report.md": "r", "result.json": {"findings": []}}})
+            res = self.run_sh(r.path, skill="pr-review", pr="4", post="false")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            risk_ctx = read_json(os.path.join(self.out, "context", "risk.json"))
+            self.assertEqual(risk_ctx["model_source"], "clean-eval default")
+            self.assertTrue(any("ignored .clean-eval/risk-model.json at the base" in n and "v1 model" in n for n in risk_ctx["notes"]))
+        finally:
+            r.cleanup()
+
     def test_pr_review_uses_base_commit_config(self):
         r = Repo()
         try:
