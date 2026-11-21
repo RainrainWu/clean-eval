@@ -100,11 +100,11 @@ python3 -m unittest discover -s tests      # stdlib only; fake gh/claude, no net
 ## Risk Heat Map
 
 <!-- risk-heat-map:start -->
-<!-- risk-heat-map:fingerprint=e8f28bb546fd -->
+<!-- risk-heat-map:fingerprint=801b34699227 -->
 
-![Risk heat map of clean-eval at ab97855](docs/risk-heatmap.svg)
+![Risk heat map of clean-eval at ee84f6c](docs/risk-heatmap.svg)
 
-Tile area is module size (lines of code, tests excluded); colour is the overall risk of changing it. Heuristics from static analysis of `feat/risk-heatmap-clean-arch` at `ab97855` (2026-11-22), not a verdict. Regenerate with the `risk-heat-map` skill.
+Tile area is module size (lines of code, tests excluded); colour is the overall risk of changing it. Heuristics from static analysis of `chore/readme-only-heat-map` at `ee84f6c` (2026-11-22), not a verdict. Regenerate with the `risk-heat-map` skill.
 
 🟢 Low 0-24 · 🟡 Moderate 25-49 · 🟠 High 50-74 · 🔴 Critical 75-100
 <!-- risk-heat-map:end -->
