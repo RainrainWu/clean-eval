@@ -1,4 +1,5 @@
-"""The GitHub CLI (`gh`): the CodeHost of the repository in the current folder. Failures raise RemoteError, classified as
+"""The GitHub CLI (`gh`): every call clean-eval makes to GitHub, for the repository in the current folder. It is the use
+cases' CodeHost port: what it reads is validated into domain models. Failures raise RemoteError, classified as
 "not_found" (no such PR) or "error" (anything else, e.g. auth, rate limits, the network)."""
 import json
 import re
@@ -6,8 +7,8 @@ import subprocess
 
 from pydantic import ValidationError
 
-from ...domain.errors import HeatmapError, RemoteError
-from ...domain.review import HostReview, PullRequest
+from ..domain.errors import HeatmapError, RemoteError
+from ..domain.review import HostReview, PullRequest
 
 NOT_FOUND = re.compile(r"Could not resolve to a PullRequest|HTTP 404|Not Found", re.I)
 PR_FIELDS = "number,title,body,author,url,baseRefName,headRefName,baseRefOid,headRefOid,isCrossRepository"
@@ -28,7 +29,7 @@ def loads_multi(text):
     return docs
 
 
-class GitHubCli:
+class GitHubGateway:
     def _run(self, *args, stdin=None):
         r = subprocess.run(["gh", *args], input=stdin, capture_output=True, text=True)
         if r.returncode != 0:

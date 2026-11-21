@@ -11,12 +11,12 @@ from unittest import mock
 
 from helpers import ROOT, FakeBin, Repo, write_json
 
-from clean_eval.adaptor.gateways.github_cli import GitHubCli, loads_multi
 from clean_eval.domain.change import ModuleRecord
 from clean_eval.domain.errors import HeatmapError, InvalidRequest
 from clean_eval.domain.history import FetchFailure, MergedPR, ReviewSignal
 from clean_eval.domain.policy import BAND_NAMES, Policy
 from clean_eval.external import wiring
+from clean_eval.external.github import GitHubGateway, loads_multi
 from clean_eval.use_cases.collect_history import review_of
 from clean_eval.use_cases.rules import calibration, history
 
@@ -183,20 +183,20 @@ class GhReviewDataTest(unittest.TestCase):
             "comments": []}},
             "inline_comments": {"out": '[{"user":{"login":"clean-eval[bot]"},"body":"[NEW][major] y"}]'
                                        '[{"user":{"login":"clean-eval[bot]"},"body":"[R-03][blocker] z"}]'}})
-        d = review_of(GitHubCli(), 7)
+        d = review_of(GitHubGateway(), 7)
         self.assertIsInstance(d, ReviewSignal)
         self.assertEqual(d.rules_cited, ["CA-01", "R-03"])  # human's [Q-02] ignored; 2nd page parsed
         self.assertEqual(d.new_findings, 1)
         self.assertEqual(d.clean_eval_marker, {"tier": "High"})  # the human's forged marker didn't count
         self.assertEqual(d.untrusted_markers_ignored, 1)
-        pinned = review_of(GitHubCli(), 7, reviewer_logins=["human"])
+        pinned = review_of(GitHubGateway(), 7, reviewer_logins=["human"])
         self.assertEqual(pinned.clean_eval_marker, {"tier": "Low"})
 
     def test_errors_are_classified(self):
         self.bin.gh({"pr_view_8": {"exit": 1, "err": "GraphQL: Could not resolve to a PullRequest with the number of 8."},
                      "pr_view": {"exit": 1, "err": "HTTP 502: Bad Gateway"}})
-        self.assertEqual(review_of(GitHubCli(), 8), FetchFailure(error="not_found", message=review_of(GitHubCli(), 8).message))
-        self.assertEqual(review_of(GitHubCli(), 9).error, "error")
+        self.assertEqual(review_of(GitHubGateway(), 8), FetchFailure(error="not_found", message=review_of(GitHubGateway(), 8).message))
+        self.assertEqual(review_of(GitHubGateway(), 9).error, "error")
 
     def test_collect_with_gh_flags_unreliable_rules(self):
         r = Repo()

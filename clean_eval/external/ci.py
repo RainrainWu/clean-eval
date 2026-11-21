@@ -6,23 +6,21 @@
   redact FILE              scrub secrets from a file in place (e.g. the agent transcript)
   guard                    the agent's PreToolUse hook: allow or deny one tool call
 """
-import os
 import sys
 
-from ..adaptor.gateways.files import append_step_outputs, load_policy, read_text, write_text
-from ..adaptor.gateways.git_cli import Git
 from ..domain.errors import InvalidOutput
 from ..use_cases.finalize_run import SKILLS
 from . import agent_guard, wiring
+from .wiring import FS
 
 
 def prepare(args):
-    repo = Git(args.repo).toplevel()
-    os.makedirs(args.ctx, exist_ok=True)
+    repo = wiring.repository_root(args.repo)
+    FS.make_dirs(args.ctx)
     if args.skill == "pr-review":
         context = wiring.prepare_review(repo, args.ctx).execute(args.pr)
     else:
-        policy, source = load_policy(repo)
+        policy, source = wiring.load_policy(repo)
         context = wiring.prepare_eval(repo, args.ctx, args.with_gh).execute(
             policy, source, wiring.period(args.since, args.until), args.branch)
     print(context.model_dump_json())
@@ -37,7 +35,7 @@ def finalize(args):
     if result is not None and result.redactions:
         print("::warning::clean-eval redacted %d secret-looking value(s) from agent output" % result.redactions,
               file=sys.stderr)
-    append_step_outputs(args.gh_output, outputs)
+    wiring.append_step_outputs(args.gh_output, outputs)
     print(outputs.model_dump_json())
 
 
@@ -52,11 +50,11 @@ def post(args):
 
 
 def redact(args):
-    if os.path.exists(args.path):
-        text, n = wiring.redactor().redact(read_text(args.path))
+    if FS.exists(args.path):
+        text, n = wiring.redactor().redact(FS.read_text(args.path))
         if n:
-            write_text(args.path, text)
-            print("::warning::clean-eval redacted %d secret-looking value(s) from %s" % (n, os.path.basename(args.path)),
+            FS.write_text(args.path, text)
+            print("::warning::clean-eval redacted %d secret-looking value(s) from %s" % (n, FS.name(args.path)),
                   file=sys.stderr)
 
 

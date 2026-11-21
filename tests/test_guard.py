@@ -60,8 +60,7 @@ class GuardTest(unittest.TestCase):
     def test_symlinked_roots_dropped(self):
         link = os.path.join(self.base, "agent-link")
         os.symlink(self.base, link)
-        env = {"CE_GUARD_WRITE_ROOTS": os.pathsep.join([link, self.agent])}
-        self.assertEqual(guard.roots(env, "CE_GUARD_WRITE_ROOTS"), [self.agent])
+        self.assertEqual(guard.roots([link, self.agent]), [self.agent])
 
     def test_writes_only_in_write_roots(self):
         self.assertIsNone(self.decide("Write", file_path=os.path.join(self.agent, "result.json")))

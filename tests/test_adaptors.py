@@ -1,4 +1,5 @@
-"""Adaptors: the gateways against real temporary repositories, files and databases, and the presenters."""
+"""Adaptors: the sources, stores, graph builders and coverage reader over real gateways (temporary repositories, files
+and databases), and the presenters."""
 import json
 import os
 import shutil
@@ -9,13 +10,12 @@ import unittest
 
 from helpers import Repo, days_ago, facts, heatmap, rating, read, sf, write
 
-from clean_eval.adaptor.gateways.ast_graph import BuiltinGraph
-from clean_eval.adaptor.gateways.code_review_graph import read_graph_db
-from clean_eval.adaptor.gateways.coverage_xml import CoverageXmlReader
-from clean_eval.adaptor.gateways.files import FileReadmeStore, Workspace, load_policy
-from clean_eval.adaptor.gateways.git_cli import Git, unquote_path
-from clean_eval.adaptor.gateways.git_source import GENERATED, RevisionSource, WorkingTreeSource, content_id, count_loc
-from clean_eval.adaptor.gateways.python_signals import PythonSignals, python_stats, write_calls
+from clean_eval.adaptor.ast_graph import BuiltinGraph
+from clean_eval.adaptor.code_review_graph import CodeReviewGraph, read_graph_db
+from clean_eval.adaptor.coverage_xml import CoverageXmlReader
+from clean_eval.adaptor.files import FileReadmeStore, Workspace, load_policy
+from clean_eval.adaptor.git_source import GENERATED, RevisionSource, WorkingTreeSource, content_id, count_loc
+from clean_eval.adaptor.python_signals import PythonSignals, python_stats, write_calls
 from clean_eval.adaptor.presenters import style
 from clean_eval.adaptor.presenters.diagram import SvgDiagramPresenter
 from clean_eval.adaptor.presenters.markdown_report import MarkdownReportPresenter
@@ -24,9 +24,13 @@ from clean_eval.domain.errors import HeatmapError, InvalidPolicy
 from clean_eval.domain.judgement import Judgement
 from clean_eval.domain.policy import ASPECTS, BANDS, Policy
 from clean_eval.domain.source import Snapshot
+from clean_eval.external.filesystem import FileSystemGateway
+from clean_eval.external.git import GitGateway
+from clean_eval.external.sqlite import SqliteGateway
 from clean_eval.use_cases.rules.readme import MARKERS
 
 P = Policy()
+FS = FileSystemGateway()
 SAMPLE = '''
 def typed(a: int) -> int:
     if a and a > 1:
@@ -74,7 +78,7 @@ class GitSourcesTest(unittest.TestCase):
         self.repo.cleanup()
 
     def test_working_tree_reads_tracked_python_only(self):
-        src = WorkingTreeSource(Git(self.repo.path), P)
+        src = WorkingTreeSource(GitGateway(self.repo.path), FS, P)
         files = {f.path: f for f in src.read()}
         self.assertEqual(sorted(files), ["src/a.py", "tests/test_a.py"])  # no untracked, generated or symlinked file
         self.assertTrue(files["tests/test_a.py"].is_test)
@@ -84,10 +88,10 @@ class GitSourcesTest(unittest.TestCase):
 
     def test_revision_reads_git_objects_and_shares_contents(self):
         cache = {}
-        old = {f.path: f for f in RevisionSource(Git(self.repo.path), self.old, P, cache).read()}
+        old = {f.path: f for f in RevisionSource(GitGateway(self.repo.path), self.old, P, cache).read()}
         self.assertEqual(old["src/a.py"].text, "def f():\n    return 1\n")
         self.assertEqual(len(cache), 2)
-        RevisionSource(Git(self.repo.path), "HEAD", P, cache).read()
+        RevisionSource(GitGateway(self.repo.path), "HEAD", P, cache).read()
         self.assertEqual(len(cache), 3)  # the unchanged test file is read once
 
     def test_helpers(self):
@@ -95,30 +99,6 @@ class GitSourcesTest(unittest.TestCase):
         self.assertTrue(all(GENERATED.search("/" + p) for p in ("x_pb2.py", "a/generated/b.py", "vendor/x.py")))
         self.assertEqual(content_id("hi\n"), subprocess.run(["git", "hash-object", "--stdin"], input="hi\n", capture_output=True,
                                                             text=True).stdout.strip())
-
-
-class GitCliTest(unittest.TestCase):
-    def test_unquote_path(self):
-        self.assertEqual(unquote_path("src/a.py"), "src/a.py")
-        self.assertEqual(unquote_path('"src/r\\303\\251sum\\303\\251.py"'), "src/résumé.py")
-        self.assertEqual(unquote_path('"src/we\\"ird\\\\x.py"'), 'src/we"ird\\x.py')
-
-    def test_diff_show_and_names(self):
-        r = Repo()
-        try:
-            base = r.commit("init", {"a.py": "1\n"}, when=days_ago(2))
-            head = r.commit("odd names", {"src/résumé.py": "2\n", 'src/we"ird.py': "3\n"}, when=days_ago(1))
-            git = Git(r.path)
-            self.assertEqual(sorted(git.diff_files(base, head)), sorted(["src/résumé.py", 'src/we"ird.py']))
-            self.assertEqual(git.show(head, "src/résumé.py"), "2\n")
-            self.assertIsNone(git.show(base, "src/résumé.py"))      # not there at that revision
-            self.assertIsNone(git.show(head, "src"))                  # a folder is not a file
-            with self.assertRaises(HeatmapError):                     # a real failure is not "not there"
-                git.show("0" * 40, "a.py")
-            r.git("remote", "add", "origin", "git@github.com:org/My-Repo.git")
-            self.assertEqual(git.repo_name(), "My-Repo")
-        finally:
-            r.cleanup()
 
 
 def snap(root="/r"):
@@ -165,34 +145,61 @@ class BuiltinGraphTest(unittest.TestCase):
         self.assertEqual(builder._cache, before)
 
 
+def write_graph_db(db):
+    """A code-review-graph database: two functions linked by a call, one test, a flow, and a non-Python node."""
+    con = sqlite3.connect(db)
+    con.executescript("""
+        create table nodes (id integer primary key, kind text, qualified_name text, file_path text, language text, is_test integer);
+        create table edges (kind text, source_qualified text, target_qualified text, confidence_tier text, target_resolution text);
+        create table flows (id integer primary key, criticality real, entry_point_id integer);
+        create table flow_memberships (flow_id integer, node_id integer);
+        insert into nodes values (1, 'Function', '/r/src/a.py::f', '/r/src/a.py', 'python', 0), (2, 'Function', '/r/src/b.py::g', '/r/src/b.py', 'python', 0),
+            (3, 'Test', '/r/tests/test_a.py::test_f', '/r/tests/test_a.py', 'python', 1), (4, 'Function', '/r/x.tf::r', '/r/x.tf', 'hcl', 0);
+        insert into edges values ('CALLS', '/r/src/a.py::f', '/r/src/b.py::g', 'EXTRACTED', 'direct'),
+            ('TESTED_BY', '/r/src/a.py::f', '/r/tests/test_a.py::test_f', 'EXTRACTED', null),
+            ('CALLS', '/r/src/a.py::f', 'print', 'UNRESOLVED', 'unresolved');
+        insert into flows values (1, 0.9, 1), (2, null, 2);
+        insert into flow_memberships values (1, 1), (1, 2);
+    """)
+    con.commit()
+    con.close()
+
+
+class FakeBuilder:
+    """The code-review-graph CLI, as a fake: it writes the database a build would (or nothing)."""
+
+    def __init__(self, writes=True):
+        self.writes, self.builds = writes, []
+
+    def build(self, repo_root, data_dir):
+        self.builds.append((repo_root, data_dir))
+        if self.writes:
+            write_graph_db(os.path.join(data_dir, "graph.db"))
+
+
 class CodeReviewGraphTest(unittest.TestCase):
     def test_reads_links_tests_and_flows_with_repo_relative_paths(self):
         with tempfile.TemporaryDirectory() as d:
             db = os.path.join(d, "graph.db")
-            con = sqlite3.connect(db)
-            con.executescript("""
-                create table nodes (id integer primary key, kind text, qualified_name text, file_path text, language text, is_test integer);
-                create table edges (kind text, source_qualified text, target_qualified text, confidence_tier text, target_resolution text);
-                create table flows (id integer primary key, criticality real, entry_point_id integer);
-                create table flow_memberships (flow_id integer, node_id integer);
-                insert into nodes values (1, 'Function', '/r/src/a.py::f', '/r/src/a.py', 'python', 0), (2, 'Function', '/r/src/b.py::g', '/r/src/b.py', 'python', 0),
-                    (3, 'Test', '/r/tests/test_a.py::test_f', '/r/tests/test_a.py', 'python', 1), (4, 'Function', '/r/x.tf::r', '/r/x.tf', 'hcl', 0);
-                insert into edges values ('CALLS', '/r/src/a.py::f', '/r/src/b.py::g', 'EXTRACTED', 'direct'),
-                    ('TESTED_BY', '/r/src/a.py::f', '/r/tests/test_a.py::test_f', 'EXTRACTED', null),
-                    ('CALLS', '/r/src/a.py::f', 'print', 'UNRESOLVED', 'unresolved');
-                insert into flows values (1, 0.9, 1);
-                insert into flow_memberships values (1, 1), (1, 2);
-            """)
-            con.commit()
-            con.close()
-            g = read_graph_db(db, "/r")
+            write_graph_db(db)
+            with SqliteGateway(db) as database:
+                g = read_graph_db(database, "/r")
         self.assertEqual(g.links, {"src/a.py": {"src/b.py"}})
         self.assertEqual(g.tested, {"/r/src/a.py::f": {"tests/test_a.py"}})
-        self.assertEqual(g.flows, [(0.9, "src/a.py", {"src/a.py", "src/b.py"})])
+        self.assertEqual(g.flows, [(0.9, "src/a.py", {"src/a.py", "src/b.py"}), (0.0, "src/b.py", set())])
         self.assertTrue(g.has_flows)
         self.assertNotIn("/r/x.tf::r", g.nodes)  # Python only
-        with self.assertRaises(HeatmapError):
-            read_graph_db("/nonexistent/graph.db", "/r")
+
+    def test_the_provider_builds_then_reads_the_database(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = os.path.join(d, "graph-data")
+            builder = FakeBuilder()
+            g = CodeReviewGraph(FS, builder, SqliteGateway, data_dir).graph_for(snap("/r"), [])
+            self.assertEqual(builder.builds, [("/r", data_dir)])
+            self.assertEqual(g.stats["nodes"], 4)
+            with self.assertRaises(HeatmapError) as cm:  # a build that writes no database
+                CodeReviewGraph(FS, FakeBuilder(writes=False), SqliteGateway, os.path.join(d, "empty")).graph_for(snap(), [])
+            self.assertIn("produced no graph.db", str(cm.exception))
 
 
 class FilesTest(unittest.TestCase):
@@ -203,12 +210,12 @@ class FilesTest(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def test_coverage_report_line_rates(self):
-        self.assertEqual(CoverageXmlReader().line_rates(snap(self.dir)), {})
+        self.assertEqual(CoverageXmlReader(FS).line_rates(snap(self.dir)), {})
         write(os.path.join(self.dir, "coverage.xml"), '<coverage><class name="a" filename="src/a.py" line-rate="0.75"/></coverage>')
-        self.assertEqual(CoverageXmlReader().line_rates(snap(self.dir)), {"src/a.py": 0.75})
+        self.assertEqual(CoverageXmlReader(FS).line_rates(snap(self.dir)), {"src/a.py": 0.75})
 
     def test_workspace_round_trips_the_heatmap_with_facts(self):
-        ws, path = Workspace(), os.path.join(self.dir, "out", "data.json")
+        ws, path = Workspace(FS), os.path.join(self.dir, "out", "data.json")
         h = heatmap(rating("a", 10, fact=facts(name="a")), rating("b", 20, unverified=None))
         ws.save_heatmap(h, path)
         self.assertEqual(ws.load_heatmap(path), h)
@@ -222,23 +229,23 @@ class FilesTest(unittest.TestCase):
     def test_judgements_keep_only_valid_levels(self):
         path = os.path.join(self.dir, "judgement.json")
         write(path, json.dumps({"modules": {"m": {"business": {"level": 1, "reason": "core"}, "entropy": {"level": 7}}}}))
-        judgement = Workspace().load_judgement(path)
+        judgement = Workspace(FS).load_judgement(path)
         self.assertIsInstance(judgement, Judgement)
         self.assertEqual(list(judgement.modules["m"]), ["business"])
 
     def test_policy_sources(self):
-        self.assertEqual(load_policy(self.dir), (Policy(), "clean-eval default"))
+        self.assertEqual(load_policy(FS, self.dir), (Policy(), "clean-eval default"))
         write(os.path.join(self.dir, ".clean-eval", "risk-model.json"), json.dumps({"unrated_band": "High"}))
-        policy, source = load_policy(self.dir)
+        policy, source = load_policy(FS, self.dir)
         self.assertEqual((policy.unrated_band, source), ("High", os.path.join(".clean-eval", "risk-model.json")))
         write(os.path.join(self.dir, "bad.json"), "{nope")
         with self.assertRaises(InvalidPolicy):
-            load_policy(self.dir, os.path.join(self.dir, "bad.json"))
+            load_policy(FS, self.dir, os.path.join(self.dir, "bad.json"))
 
     def test_readme_store_links_relative_to_the_readme(self):
-        root = FileReadmeStore(os.path.join(self.dir, "README.md"), os.path.join(self.dir, "docs", "risk-heatmap.svg"))
+        root = FileReadmeStore(FS, os.path.join(self.dir, "README.md"), os.path.join(self.dir, "docs", "risk-heatmap.svg"))
         self.assertEqual(root.image_link(), "docs/risk-heatmap.svg")
-        nested = FileReadmeStore(os.path.join(self.dir, "docs", "README.md"), os.path.join(self.dir, "docs", "risk-heatmap.svg"))
+        nested = FileReadmeStore(FS, os.path.join(self.dir, "docs", "README.md"), os.path.join(self.dir, "docs", "risk-heatmap.svg"))
         self.assertEqual(nested.image_link(), "risk-heatmap.svg")
         self.assertIsNone(root.read_readme())
         root.write("# R", "<svg/>")
