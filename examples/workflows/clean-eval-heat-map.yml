@@ -21,10 +21,6 @@ jobs:
         uses: RainrainWu/clean-eval@v1
         with:
           skill: risk-heat-map
-      - uses: actions/upload-artifact@v4
-        with:
-          name: risk-heat-map
-          path: ${{ steps.heatmap.outputs.page }}
       - if: steps.heatmap.outputs.readme-changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:

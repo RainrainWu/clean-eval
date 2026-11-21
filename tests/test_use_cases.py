@@ -10,7 +10,7 @@ from clean_eval.domain.policy import Policy
 from clean_eval.domain.readme import MARKERS, fingerprint
 from clean_eval.use_cases.assess_change import AssessChange
 from clean_eval.use_cases.finalize_heatmap import finalize_heatmap
-from clean_eval.use_cases.present_heatmap import BuildDiagram, RenderPage, SummarizeHeatmap
+from clean_eval.use_cases.summarize_heatmap import SummarizeHeatmap
 from clean_eval.use_cases.rate_repository import RateRepository
 from clean_eval.use_cases.update_readme import UpdateReadme
 
@@ -93,10 +93,6 @@ class RateRepositoryTest(unittest.TestCase):
 
 class PresentationUseCases(unittest.TestCase):
     class Recorder:
-        def present(self, heatmap, suffix):
-            self.seen = (heatmap, suffix)
-            return "<html/>"
-
         def svg(self, heatmap):
             return "<svg/>"
 
@@ -109,16 +105,10 @@ class PresentationUseCases(unittest.TestCase):
     def judged(self):
         return {"modules": {"m": {"business": {"level": 0, "reason": "r"}}}}
 
-    def test_levels_are_applied_before_presenting(self):
-        presenter = self.Recorder()
-        page = RenderPage(presenter).execute(heatmap(rating()), self.judged(), P, " Detail")
-        self.assertEqual((page.html, presenter.seen[1]), ("<html/>", " Detail"))
-        self.assertGreaterEqual(presenter.seen[0].modules[0].scores["biz"], 75)
-        built = BuildDiagram(self.Recorder()).execute(heatmap(rating()), None, P, "docs/x.svg")
-        self.assertEqual(built.svg, "<svg/>")
-        self.assertIn("img docs/x.svg fp %s" % built.fingerprint, built.readme_block)
+    def test_levels_are_applied_before_summarizing(self):
         final, text = SummarizeHeatmap(self.Recorder()).execute(heatmap(rating()), self.judged(), P)
         self.assertEqual((text, final.judged_modules), ("report", 1))
+        self.assertGreaterEqual(final.modules[0].scores["biz"], 75)
         self.assertEqual(finalize_heatmap(heatmap(rating()), None, P).judged_modules, 0)
 
 

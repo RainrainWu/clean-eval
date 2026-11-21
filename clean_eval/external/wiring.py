@@ -14,7 +14,6 @@ from ..use_cases.assess_change import AssessChange
 from ..use_cases.rate_repository import RateRepository
 
 GRAPHS = ("builtin", "code-review-graph")
-TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "template.html")
 
 
 def today():

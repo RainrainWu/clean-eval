@@ -1,12 +1,13 @@
 ---
 name: risk-heat-map
-description: Rate how risky each sub-module of this repository is to change on four aspects (Business Impact, Side Effects & Reversibility, Entropy, Unverified) and put the heat map - a treemap whose tile area is module size and colour is severity - into the README's "Risk Heat Map" section, with an optional interactive page. Static analysis of the Python code plus a read-through that levels each aspect. Use when asked to compute, refresh or explain the risk heat map, "which modules are riskiest", "where is the code least tested", or "which parts are risky to change".
+description: Rate how risky each sub-module of this repository is to change on four aspects (Business Impact, Side Effects & Reversibility, Entropy, Unverified) and put the heat map - a treemap whose tile area is module size and colour is severity - into the README's "Risk Heat Map" section. Static analysis of the Python code plus a read-through that levels each aspect. Use when asked to compute, refresh or explain the risk heat map, "which modules are riskiest", "where is the code least tested", or "which parts are risky to change".
 ---
 
 # Risk Heat Map
 
-Rate every sub-module of **this** repository and publish a heat map: tile **area** is module size, tile **colour** is
-severity. Aspects, levels and weights: [rate.md](references/rate.md). Outputs: [publish.md](references/publish.md).
+Rate every sub-module of **this** repository and refresh the README's heat map: tile **area** is module size, tile
+**colour** is severity. Aspects, levels and weights: [rate.md](references/rate.md). The README section:
+[publish.md](references/publish.md).
 `CE` below is `python3 -I ${CLEAN_EVAL_HOME:-.}/clean_eval`: the clean-eval package (Python 3 stdlib only, outside this
 skill folder), where `CLEAN_EVAL_HOME` is the clean-eval checkout (this repository by default).
 
@@ -36,8 +37,8 @@ fails or writes invalid JSON, continue without it and say the levels are static-
 
 `CE readme <OUT>/data.json [--judgement <OUT>/judgement.json]` puts the treemap into the `## Risk Heat Map` section of
 `README.md` (between `<!-- risk-heat-map:start -->` and `<!-- risk-heat-map:end -->`) and writes
-`docs/risk-heatmap.svg`. It writes nothing when the ratings are unchanged. Offer the interactive page per
-[publish.md](references/publish.md). Don't commit unless asked.
+`docs/risk-heatmap.svg`. It writes nothing when the ratings are unchanged. That is the only output: don't publish the
+heat map anywhere else. Don't commit unless asked.
 
 ## Step 4 - Report
 

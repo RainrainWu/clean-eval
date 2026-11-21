@@ -72,7 +72,7 @@ class RunShTest(unittest.TestCase):
             self.assertIn("](docs/risk-heatmap.svg)", readme)
             self.assertTrue(os.path.exists(os.path.join(r.path, "docs", "risk-heatmap.svg")))
             self.assertIn("`src", read(self.summary))
-            self.assertIn("Risk Heat Map", read(self.outputs()["page"]))
+            self.assertNotIn("page", self.outputs())
             self.assertEqual(read_json(self.outputs()["result"])["repo"], os.path.basename(r.path))
             r.commit("docs: heat map")
             self.run_sh(r.path, skill="risk-heat-map")
