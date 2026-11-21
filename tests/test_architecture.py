@@ -17,8 +17,8 @@ LAYERS = {  # layer -> the layers it may import from
     "external": {"domain", "use_cases", "adaptor", "external"},
 }
 PURE_ONLY = {"domain", "use_cases"}
-PURE_STDLIB = {"__future__", "abc", "collections", "copy", "dataclasses", "enum", "fnmatch", "functools", "hashlib",
-               "itertools", "json", "math", "re", "typing"}
+PURE_STDLIB = {"__future__", "abc", "base64", "collections", "copy", "dataclasses", "enum", "fnmatch", "functools",
+               "hashlib", "itertools", "json", "math", "re", "typing"}  # computation only: no files, network, env or clock
 
 
 def imports(path):

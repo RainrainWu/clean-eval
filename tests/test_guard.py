@@ -5,12 +5,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 from helpers import ROOT, write
-import guard
 
-GUARD = os.path.join(ROOT, "ci", "guard.py")
+from clean_eval.external import agent_guard as guard
+
+CE = os.path.join(ROOT, "clean_eval")
 
 
 class GuardTest(unittest.TestCase):
@@ -60,13 +60,13 @@ class GuardTest(unittest.TestCase):
     def test_symlinked_roots_dropped(self):
         link = os.path.join(self.base, "agent-link")
         os.symlink(self.base, link)
-        with mock.patch.dict(os.environ, {"CE_GUARD_WRITE_ROOTS": os.pathsep.join([link, self.agent])}):
-            self.assertEqual(guard._roots("CE_GUARD_WRITE_ROOTS"), [self.agent])
+        env = {"CE_GUARD_WRITE_ROOTS": os.pathsep.join([link, self.agent])}
+        self.assertEqual(guard.roots(env, "CE_GUARD_WRITE_ROOTS"), [self.agent])
 
     def test_writes_only_in_write_roots(self):
         self.assertIsNone(self.decide("Write", file_path=os.path.join(self.agent, "result.json")))
         self.assertIsNone(self.decide("Edit", file_path=os.path.join(self.agent, "report.md")))
-        self.assertIn("outside", self.decide("Write", file_path=os.path.join(self.ws, "ci", "result.py")))
+        self.assertIn("outside", self.decide("Write", file_path=os.path.join(self.ws, "clean_eval", "domain", "review.py")))
         self.assertIn("outside", self.decide("Edit", file_path=os.path.join(self.ctx, "risk.json")))
         self.assertIn("missing", self.decide("Write"))
 
@@ -77,7 +77,8 @@ class GuardTest(unittest.TestCase):
             self.assertIsNone(self.decide(tool), tool)
 
     def run_hook(self, payload, env=None):
-        return subprocess.run([sys.executable, GUARD], input=payload, capture_output=True, text=True,
+        """The hook as Claude Code runs it: `python3 -I <checkout>/clean_eval guard`, from the checkout under review."""
+        return subprocess.run([sys.executable, "-I", CE, "guard"], input=payload, capture_output=True, text=True, cwd=self.ws,
                               env={**os.environ, "CE_GUARD_READ_ROOTS": os.pathsep.join(self.read),
                                    "CE_GUARD_WRITE_ROOTS": self.agent, **(env or {})})
 
@@ -92,6 +93,8 @@ class GuardTest(unittest.TestCase):
     def test_hook_fails_closed(self):
         self.assertEqual(self.run_hook("not json").returncode, 2)
         self.assertEqual(self.run_hook(json.dumps({"tool_name": "Read", "tool_input": "x"})).returncode, 2)
+        self.assertEqual(self.run_hook(json.dumps([1, 2])).returncode, 2)
+        self.assertEqual(self.run_hook(json.dumps({"tool_name": ["Read"], "tool_input": {}})).returncode, 2)
         # no roots configured → nothing is readable
         r = self.run_hook(json.dumps({"tool_name": "Read", "tool_input": {"file_path": os.path.join(self.ws, "a")}}),
                           env={"CE_GUARD_READ_ROOTS": "", "CE_GUARD_WRITE_ROOTS": ""})

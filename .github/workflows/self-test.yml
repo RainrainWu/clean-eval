@@ -1,5 +1,5 @@
-# Dogfood: test the scripts, and run this repo's action on its own PRs (`uses: ./` runs the PR's own action code,
-# so this is a smoke test, not an independent review).
+# Dogfood: run this repo's action on its own PRs (`uses: ./` runs the PR's own action code, so this is a smoke test,
+# not an independent review). The test suite runs in tests.yml.
 name: self-test
 on:
   pull_request:
@@ -10,17 +10,6 @@ permissions:
   pull-requests: write
 
 jobs:
-  tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: python -m unittest discover -s tests -v
-
   risk-heat-map:
     runs-on: ubuntu-latest
     steps:

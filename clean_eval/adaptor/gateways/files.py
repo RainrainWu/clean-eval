@@ -1,14 +1,21 @@
-"""The files of one run: the policy overrides, the rated heatmap, the reviewer's judgement, and the README with its diagram."""
+"""The files of one run: the policy overrides, the rated heatmap, the reviewer's judgement, the README with its diagram,
+and the folders of a CI run (precomputed context, the agent's output, the final output) with its step outputs."""
 import dataclasses
 import json
 import os
 from pathlib import Path
 
 from ...domain.entities import Heatmap, ModuleRating
-from ...domain.errors import HeatmapError, InvalidPolicy
-from ...domain.policy import Policy
+from ...domain.errors import HeatmapError
+from ...domain.policy import REPO_POLICY, Policy, policy_from_text
 
-REPO_POLICY = os.path.join(".clean-eval", "risk-model.json")
+
+def read_text(path):
+    """The file's text (undecodable bytes replaced); HeatmapError when it can't be read."""
+    try:
+        return Path(path).read_text(errors="replace")
+    except OSError as e:
+        raise HeatmapError("cannot read %s: %s" % (path, e))
 
 
 def read_json(path):
@@ -24,24 +31,13 @@ def write_text(path, text):
     p.write_text(text)
 
 
-def policy_from_text(text, source):
-    try:
-        overrides = json.loads(text) if text and text.strip() else {}
-    except ValueError as e:
-        raise InvalidPolicy("%s is not valid JSON: %s" % (source, e))
-    try:
-        return Policy.from_overrides(overrides)
-    except InvalidPolicy as e:
-        raise InvalidPolicy("%s: %s" % (source, e))
-
-
 def load_policy(repo_root=None, path=None):
     """(Policy, source): `path`, else <repo>/.clean-eval/risk-model.json when present, else the defaults."""
     if path:
-        return policy_from_text(Path(path).read_text(), path), path
+        return policy_from_text(read_text(path), path), path
     local = os.path.join(repo_root or ".", REPO_POLICY)
     if os.path.isfile(local) and not os.path.islink(local):
-        return policy_from_text(Path(local).read_text(), REPO_POLICY), REPO_POLICY
+        return policy_from_text(read_text(local), REPO_POLICY), REPO_POLICY
     return Policy(), "clean-eval default"
 
 
@@ -81,3 +77,40 @@ class FileReadmeStore:
     def write(self, readme_text, svg_text):
         write_text(self.svg_path, svg_text)
         write_text(self.readme_path, readme_text if readme_text.endswith("\n") else readme_text + "\n")
+
+
+class Folder:
+    """One folder of a CI run; names are relative to it."""
+
+    def __init__(self, root):
+        self.root = root
+
+    def path(self, name):
+        return os.path.join(self.root, name)
+
+    def exists(self, name):
+        return os.path.exists(self.path(name))
+
+    def read_text(self, name):
+        return read_text(self.path(name))
+
+    def read_json(self, name):
+        return read_json(self.path(name))
+
+    def write_text(self, name, text):
+        write_text(self.path(name), text)
+
+    def write_json(self, name, obj):
+        self.write_text(name, json.dumps(obj, indent=2, default=str))
+
+
+def append_step_outputs(path, outputs):
+    """Append `name=value` lines to a GitHub Actions step-outputs file. The values are enums and numbers clean-eval built;
+    one with a line break, which could start another output, is refused."""
+    lines = []
+    for name, value in outputs.items():
+        if "\n" in str(value) or "\r" in str(value):
+            raise HeatmapError("step output %s has a line break" % name)
+        lines.append("%s=%s\n" % (name, value))
+    with open(path, "a") as f:
+        f.writelines(lines)

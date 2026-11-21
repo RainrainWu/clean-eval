@@ -4,10 +4,16 @@ The risk-heat-map skill's `references/rate.md` documents these numbers; change b
 nothing here knows how files are read or results are shown. A repository overrides tunable numbers in
 `.clean-eval/risk-model.json`; `Policy.from_overrides` checks every override.
 """
+import json
 import re
 from dataclasses import dataclass, field, fields, replace
 
 from .errors import InvalidPolicy
+
+# Where a repository keeps its own tuning (git paths, so always "/"-separated).
+REPO_DIR = ".clean-eval"
+REPO_POLICY = REPO_DIR + "/risk-model.json"
+REPO_RULES = REPO_DIR + "/review-rules.md"
 
 # Score bands, ascending: (upper bound, name). Level n of an aspect takes the band at position 3 - n (0 Critical ... 3 Low).
 BANDS = ((24, "Low"), (49, "Moderate"), (74, "High"), (100, "Critical"))
@@ -159,6 +165,18 @@ class Policy:
         if not isinstance(self.version, int) or isinstance(self.version, bool):
             raise InvalidPolicy("version must be an integer")
         return self
+
+
+def policy_from_text(text, source):
+    """The policy a risk-model overrides file describes (empty text means the defaults); `source` names it in errors."""
+    try:
+        overrides = json.loads(text) if text and text.strip() else {}
+    except ValueError as e:
+        raise InvalidPolicy("%s is not valid JSON: %s" % (source, e))
+    try:
+        return Policy.from_overrides(overrides)
+    except InvalidPolicy as e:
+        raise InvalidPolicy("%s: %s" % (source, e))
 
 
 # Knobs that divide a measurement (every value of a dictionary knob): they must stay above 0.

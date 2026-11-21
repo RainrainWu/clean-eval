@@ -47,7 +47,7 @@ class CliTest(unittest.TestCase):
 
     def test_the_readme_section_is_the_only_publishing_output(self):
         usage = run(self.repo.path, "--help").stdout
-        self.assertIn("{rate,readme,report,assess}", usage)
+        self.assertIn("{rate,readme,report,assess,history,prepare,finalize,post,redact,guard}", usage)
         for gone in ("render", "diagram"):
             self.assertNotEqual(run(self.repo.path, gone, "x").returncode, 0, gone)
 

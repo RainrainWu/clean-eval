@@ -17,17 +17,19 @@ Optional: the `code-review-graph` CLI, for call and execution-flow data in the h
 ### Code layout
 
 The skills hold only instructions; the logic is the `clean_eval/` package (Python 3 stdlib only), in Clean
-Architecture layers whose dependencies point inward (enforced by `tests/test_architecture.py`):
+Architecture layers whose dependencies point inward (enforced by `tests/test_architecture.py`). The GitHub Action is
+the same package behind one entry script, `action.sh`:
 
 | Layer | Holds | May import |
 |---|---|---|
-| `clean_eval/domain/` | entities, the risk policy, the four aspect rules, scoring, judgement, change assessment, README convention | nothing outside the stdlib's pure modules |
-| `clean_eval/use_cases/` | rate a repository, assess a change, refresh the README section, summarize; and the ports they need | `domain` |
-| `clean_eval/adaptor/` | gateways (git, `ast` graph, code-review-graph, files) and presenters (SVG, Markdown) | `domain`, `use_cases` |
-| `clean_eval/external/` | the command line and the composition root | everything |
+| `clean_eval/domain/` | entities, the risk policy, the four aspect rules, scoring, judgement, change assessment, README convention; for CI: review validation, redaction, diffs, merged-PR history, calibration and the tuning gates | nothing outside the stdlib's pure modules |
+| `clean_eval/use_cases/` | rate a repository, assess a change, refresh the README section, summarize, collect history; for CI: prepare the agent's context, finalize its output, post the review; and the ports they need | `domain` |
+| `clean_eval/adaptor/` | gateways (git, `gh`, `ast` graph, code-review-graph, files, the `.clean-eval/` snapshot) and presenters (SVG, Markdown) | `domain`, `use_cases` |
+| `clean_eval/external/` | the command line (with the CI commands and the agent's guard hook) and the composition root | everything |
 
-Run it as `python3 -I clean_eval <rate|readme|report|assess> ...` (`-I` keeps the rated repository off
-`sys.path`, so none of its code can be imported).
+Run it as `python3 -I clean_eval <rate|readme|report|assess|history> ...` (`-I` keeps the rated repository off
+`sys.path`, so none of its code can be imported). `action.sh` also runs `prepare`, `finalize`, `post`, `redact` and
+`guard`.
 
 ### Per-repo configuration
 
@@ -74,28 +76,32 @@ The action never commits — pair it with a create-PR step. Ready-to-copy workfl
 The agent reads untrusted text (PR diffs and descriptions, commit messages, comments), so in CI it only
 *proposes*; deterministic code decides and acts:
 
-1. **Precompute** (`ci/prepare.py`): the PR diff, per-file history, the change's risk from the heat map of its
+1. **Precompute** (`clean_eval prepare`): the PR diff, per-file history, the change's risk from the heat map of its
    base commit, and the `.clean-eval/` config **from the base commit** (a PR can't relax the rules it's judged by);
    for `eval`, the history (every PR rated against its base), defect patches and one-knob sensitivity replays.
-2. **Sandboxed agent** (`ci/run.sh`): `claude --restricted --strict-mcp-config` — no shell, no web, no MCP, and
+2. **Sandboxed agent** (`action.sh`): `claude --restricted --strict-mcp-config` — no shell, no web, no MCP, and
    no user/project settings or hooks from the checkout — with a scrubbed environment (no `GH_TOKEN` or runner
    tokens) and stdin from `/dev/null`. File tools are confined to the checkout and the precomputed context
    (read) and the agent's output folder (write; plus `.clean-eval/` for `eval` with `apply: true`), enforced
-   both by Claude Code and independently by a PreToolUse hook (`ci/guard.py`) that resolves real paths, so
-   symlinks and `.git/` are off-limits.
-3. **Finalize** (`ci/result.py`): validates the agent's output, turns unknown rule IDs into `NEW`, raises each
+   both by Claude Code and independently by a PreToolUse hook (`clean_eval guard`) that resolves real paths, so
+   symlinks and `.git/` are off-limits; a hook that fails for any reason denies. The checkout is untrusted too:
+   every Python call runs isolated (`python3 -I`), so a module a PR adds (say a `json.py`) can't shadow the
+   standard library.
+3. **Finalize** (`clean_eval finalize`): validates the agent's output, turns unknown rule IDs into `NEW`, raises each
    finding to at least its rule's severity, and derives the verdict, blocker count and tier itself. Secrets
    (values of secret-looking env vars and known token formats) are redacted from everything that leaves the
    runner; step outputs carry only enums and numbers. `eval` edits to `.clean-eval/` are kept only if they
-   touch tunable keys and don't lower AUC on replay.
-4. **Post**: one review with inline comments; earlier "changes requested" reviews from the action are
-   dismissed so a fixed PR isn't left blocked.
+   touch tunable keys and don't lower AUC on replay; anything else under `.clean-eval/` is restored.
+4. **Post** (`clean_eval post`): one review with inline comments; earlier "changes requested" reviews from the
+   action are dismissed so a fixed PR isn't left blocked.
 
 ## Development
 
 ```bash
 python3 -m unittest discover -s tests      # stdlib only; fake gh/claude, no network
 ```
+
+The `tests` workflow runs the same suite on every push to a pull request and to `master`.
 
 ## Risk Heat Map
 
