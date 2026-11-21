@@ -16,9 +16,10 @@ Roots come from the environment action.sh gives the agent:
 Protocol: the tool call as JSON on stdin; exit 0 = allow, exit 2 = deny (stderr is shown to the agent). Anything
 unexpected denies; action.sh also turns any other exit status of the hook command into a denial.
 """
-import json
 import os
 import sys
+
+from ..domain.ci import ToolCall
 
 READ_TOOLS = {"Read": "file_path", "Grep": "path", "Glob": "path", "LS": "path"}
 WRITE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path"}
@@ -70,15 +71,11 @@ def hook(stdin=None, stderr=None, environ=None):
     """Decide one tool call (default: the hook protocol on this process's stdin and stderr); the exit status."""
     stdin, stderr, environ = stdin or sys.stdin, stderr or sys.stderr, os.environ if environ is None else environ
     try:
-        event = json.load(stdin)
-        tool = event.get("tool_name") or ""
-        tool_input = event.get("tool_input") or {}
-        cwd = event.get("cwd") or os.getcwd()
-        if not isinstance(tool_input, dict) or not isinstance(tool, str) or not isinstance(cwd, str):
-            raise ValueError("unexpected hook input")
-        reason = decide(tool, tool_input, cwd, roots(environ, "CE_GUARD_READ_ROOTS"), roots(environ, "CE_GUARD_WRITE_ROOTS"))
-    except Exception as e:  # fail closed on anything unexpected
-        reason = "unreadable hook input (%s)" % e
+        call = ToolCall.model_validate_json(stdin.read())
+        reason = decide(call.tool_name, call.tool_input, call.cwd or os.getcwd(), roots(environ, "CE_GUARD_READ_ROOTS"),
+                        roots(environ, "CE_GUARD_WRITE_ROOTS"))
+    except Exception as e:  # fail closed on anything unexpected, a ToolCall that doesn't validate included
+        reason = "unreadable hook input (%s)" % str(e).splitlines()[0]
     if reason:
         print("clean-eval guard: %s" % reason, file=stderr)
         return DENY

@@ -20,8 +20,9 @@ with open(_GITCONFIG, "w") as f:
             "[tag]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n")
 from collections import Counter  # noqa: E402
 
-from clean_eval.domain.entities import Facts, Heatmap, ModuleRating, SourceFile, facts_to_dict  # noqa: E402
-from clean_eval.domain.scoring import overall  # noqa: E402
+from clean_eval.domain.rating import AspectScores, Evidence, Facts, Heatmap, ModuleRating, ModuleTests, Scores  # noqa: E402
+from clean_eval.domain.source import SourceFile  # noqa: E402
+from clean_eval.use_cases.rules.scoring import overall  # noqa: E402
 
 # Every git call in the tests (and in the code under test) ignores the developer's git config.
 os.environ["GIT_CONFIG_GLOBAL"] = _GITCONFIG
@@ -199,7 +200,7 @@ def write(path, text):
         f.write(text)
 
 
-# ---------------------------------------------------------------- builders of domain entities
+# ---------------------------------------------------------------- builders of domain models
 
 def facts(**kw):
     base = dict(name="src/x", loc=1000, files=5, share=0.1, funcs=[(10, 2)] * 20, typed_share=1.0, broad=0, swallow=0, todo=0,
@@ -211,17 +212,17 @@ def facts(**kw):
 
 
 def sf(path, loc, text="", test=False, blob=""):
-    return SourceFile(path, text, loc, test, blob)
+    return SourceFile(path=path, text=text, loc=loc, is_test=test, blob=blob)
 
 
 def rating(name="m", loc=100, biz=40, effects=10, entropy=20, unverified=30, fact=None):
-    scores = {"biz": biz, "effects": effects, "entropy": entropy, "unverified": unverified}
-    return ModuleRating(name=name, loc=loc, files=1, scores=dict(scores, overall=overall(scores)), baseline=dict(scores),
-                        tests={"functions": 0, "tested": 0, "coverage": None, "files": 0, "loc": 0, "ratio": 0, "scales": {}},
-                        evidence={k: ["e"] for k in scores}, top_files=[], facts=facts_to_dict(fact) if fact else None)
+    aspect = AspectScores(biz=biz, effects=effects, entropy=entropy, unverified=unverified)
+    return ModuleRating(name=name, loc=loc, files=1, scores=Scores(**aspect.model_dump(), overall=overall(aspect)),
+                        baseline=aspect, evidence=Evidence(biz=["e"], effects=["e"], entropy=["e"], unverified=["e"]),
+                        tests=ModuleTests(functions=0, tested=0, coverage=None, files=0, loc=0, ratio=0), facts=fact)
 
 
 def heatmap(*modules):
     mods = list(modules) or [rating()]
     return Heatmap(repo="demo", ref="main", sha="abc1234", generated_at="2026-11-16", loc_total=sum(m.loc for m in mods),
-                   modules=mods, notes=[])
+                   modules=mods)

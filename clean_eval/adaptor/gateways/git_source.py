@@ -4,8 +4,8 @@ import hashlib
 import os
 import re
 
-from ...domain.classify import is_test
-from ...domain.entities import SourceFile, Snapshot
+from ...domain.source import Snapshot, SourceFile
+from ...use_cases.rules.classify import is_test
 
 GENERATED = re.compile(r"(_pb2(_grpc)?\.py$|/generated/|/vendor/|/site-packages/)")
 MAX_FILE_BYTES = 1_500_000
@@ -49,7 +49,8 @@ class WorkingTreeSource:
                     text = fh.read()
             except OSError:
                 continue
-            out.append(SourceFile(rel, text, count_loc(text), is_test(rel, self.policy), content_id(text)))
+            out.append(SourceFile(path=rel, text=text, loc=count_loc(text), is_test=is_test(rel, self.policy),
+                                  blob=content_id(text)))
         return out
 
 
@@ -68,5 +69,5 @@ class RevisionSource:
         entries = [(p, b) for p, b, size in self.git.ls_tree(self.rev) if _wanted(p) and size <= MAX_FILE_BYTES]
         missing = [b for _, b in entries if b not in self.cache]
         self.cache.update(self.git.read_blobs(missing))
-        return [SourceFile(p, self.cache[b], count_loc(self.cache[b]), is_test(p, self.policy), b)
+        return [SourceFile(path=p, text=self.cache[b], loc=count_loc(self.cache[b]), is_test=is_test(p, self.policy), blob=b)
                 for p, b in entries if b in self.cache]

@@ -4,15 +4,16 @@ and the base's config.
 
 Config always comes from the PR's *base* commit (or the defaults), so a PR can't relax the rules or the risk model it is
 judged by."""
-from ..domain.diff import line_counts, split_patch, truncate
 from ..domain.errors import InvalidPolicy
-from ..domain.policy import REPO_POLICY, REPO_RULES, Policy, policy_from_text
-from ..domain.review import rules_version
+from ..domain.policy import REPO_POLICY, REPO_RULES, Policy
+from ..domain.review import DiffIndex, PatchEntry, ReviewContext, RiskReport
+from .rules.diff import line_counts, split_patch, truncate
+from .rules.review import rules_version
 
 MAX_HISTORY_FILES = 60
 MAX_PATCH_CHARS = 200_000
 DEFAULT_SOURCE = "clean-eval default"
-PR_FIELDS = ("number", "title", "body", "url", "baseRefName", "headRefName", "isCrossRepository")
+PR_META = {"number", "title", "body", "url", "baseRefName", "headRefName", "isCrossRepository", "author"}
 
 
 def policy_at(repo, base):
@@ -22,7 +23,7 @@ def policy_at(repo, base):
     if text is None:
         return Policy(), DEFAULT_SOURCE, "{}", None
     try:
-        return policy_from_text(text, REPO_POLICY), "%s@%s" % (REPO_POLICY, base[:8]), text, None
+        return Policy.from_text(text, REPO_POLICY), "%s@%s" % (REPO_POLICY, base[:8]), text, None
     except InvalidPolicy as e:
         return Policy(), DEFAULT_SOURCE, "{}", "ignored %s at the base: %s" % (REPO_POLICY, e)
 
@@ -39,9 +40,9 @@ def write_split_diff(repo, ctx, base, head, files, file_modules):
         name = "diff/%03d.patch" % i
         ctx.write_text(name, text)
         added, removed = line_counts(chunk)
-        index.append({"file": f, "module": file_modules.get(f), "patch": name, "patch_lines": text.count("\n"),
-                      "added": added, "removed": removed, "truncated": cut})
-    ctx.write_json("diff/index.json", index)
+        index.append(PatchEntry(file=f, module=file_modules.get(f), patch=name, patch_lines=text.count("\n"),
+                                added=added, removed=removed, truncated=cut))
+    ctx.write_json("diff/index.json", DiffIndex(index))
     return index
 
 
@@ -51,10 +52,10 @@ class PrepareReview:
 
     def execute(self, pr):
         info = self.host.pull_request(pr)
-        head = info["headRefOid"]
+        head = info.headRefOid
         self.repo.ensure_commit(head, "pull/%d/head" % pr)
-        self.repo.ensure_commit(info["baseRefOid"], info["baseRefOid"])
-        base = self.repo.merge_base(info["baseRefOid"], head)
+        self.repo.ensure_commit(info.baseRefOid, info.baseRefOid)
+        base = self.repo.merge_base(info.baseRefOid, head)
 
         policy, model_src, model_text, model_note = policy_at(self.repo, base)
         self.ctx.write_text("risk-model.json", model_text)
@@ -65,23 +66,17 @@ class PrepareReview:
 
         heatmap, risk = self.risk.assess(base, head, policy)
         files = list(risk.files)
-        context = {"pr": pr, "base": base, "head": head, "max_tier": risk.max_band, "max_score": risk.max_score,
-                   "model_source": model_src, "model_version": policy.version,
-                   "rules_source": rules_src, "rules_version": rules_version(rules), "files_changed": len(files)}
-        modules = [{"module": m.module, "band": m.band, "score": m.score, "scores": m.scores, "rated": m.rated,
-                    "evidence": m.evidence} for m in risk.modules]
+        header = dict(pr=pr, base=base, head=head, max_tier=risk.max_band, max_score=risk.max_score, model_source=model_src,
+                      model_version=policy.version, rules_source=rules_src, rules_version=rules_version(rules),
+                      files_changed=len(files))
+        modules = [m.model_copy(update={"facts": None}) for m in risk.modules]  # the reviewer reads evidence, not facts
         notes = heatmap.notes + ([model_note] if model_note else [])
-        self.ctx.write_json("risk.json", {**context, "modules": modules, "files": risk.files, "ignored": risk.ignored,
-                                          "notes": notes})
-
-        meta = {k: info.get(k) for k in PR_FIELDS}
-        meta["author"] = (info.get("author") or {}).get("login")
-        meta["files"] = files
-        self.ctx.write_json("pr.json", meta)
+        self.ctx.write_json("risk.json", RiskReport(**header, modules=modules, files=risk.files, ignored=risk.ignored,
+                                                    notes=notes))
+        self.ctx.write_json("pr.json", {**info.model_dump(include=PR_META), "files": files})
 
         index = write_split_diff(self.repo, self.ctx, base, head, files, risk.files)
-        context["diff_patches"] = len(index)
-        context["diff_truncated"] = any(e["truncated"] for e in index)
+        context = ReviewContext(**header, diff_patches=len(index), diff_truncated=any(e.truncated for e in index))
 
         lines = []
         for f in files[:MAX_HISTORY_FILES]:

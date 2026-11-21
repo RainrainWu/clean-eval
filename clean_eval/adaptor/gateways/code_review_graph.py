@@ -36,13 +36,13 @@ def read_graph_db(db_path, root):
                                             "join nodes n on n.id = f.entry_point_id").fetchall():
             files = {rel(r[0]) for r in con.execute("select n.file_path from flow_memberships m join nodes n on n.id = m.node_id "
                                                     "where m.flow_id = ?", (fid,))}
-            flows.append((crit, fof(entry), files))
+            flows.append((crit or 0.0, fof(entry), files))  # a flow without a criticality weighs nothing
         stats = {"source": "code-review-graph", "nodes": con.execute("select count(*) from nodes").fetchone()[0],
                  "edges": con.execute("select count(*) from edges").fetchone()[0], "flows": len(flows)}
         con.close()
     except sqlite3.Error as e:
         raise HeatmapError("cannot read the knowledge graph %s: %s" % (db_path, e))
-    return Graph(nodes, dict(links), dict(tested), flows, stats, has_flows=True)
+    return Graph(nodes=nodes, links=dict(links), tested=dict(tested), flows=flows, stats=stats, has_flows=True)
 
 
 class CodeReviewGraph:

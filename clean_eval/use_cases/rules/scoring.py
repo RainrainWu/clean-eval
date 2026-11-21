@@ -1,7 +1,7 @@
 """Combine aspect scores into the overall score, and map scores and levels to bands."""
 import math
 
-from .policy import BANDS
+from ...domain.values import BANDS
 
 
 def clamp(v, lo=0.0, hi=1.0):
@@ -10,11 +10,11 @@ def clamp(v, lo=0.0, hi=1.0):
 
 def overall(s, peak_share=0.5):
     """(1 - peak_share) of the geometric mean of impact and weakness, plus peak_share of the worst single aspect.
-    `s` holds biz, effects, entropy, unverified; an N/A aspect (None) is left out."""
-    impact = max(s["biz"], s["effects"])
-    rated = [v for v in (s["entropy"], s["unverified"]) if v is not None]
+    `s` (AspectScores or Scores) holds biz, effects, entropy, unverified; an N/A aspect (None) is left out."""
+    impact = max(s.biz, s.effects)
+    rated = [v for v in (s.entropy, s.unverified) if v is not None]
     weakness = sum(rated) / len(rated)
-    worst = max(v for v in (s["biz"], s["effects"], s["entropy"], s["unverified"]) if v is not None)
+    worst = max(v for v in (s.biz, s.effects, s.entropy, s.unverified) if v is not None)
     return round((1 - peak_share) * math.sqrt(impact * weakness) + peak_share * worst)
 
 

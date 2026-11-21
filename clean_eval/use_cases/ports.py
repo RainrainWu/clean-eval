@@ -1,9 +1,12 @@
 """Ports: what the use cases need from the outside world. Adaptors implement them; nothing here knows how."""
 from typing import Optional, Protocol
 
-from ..domain.entities import FileSignals, Heatmap, Snapshot, SourceFile
+from ..domain.change import ChangeRisk
 from ..domain.graph import Graph
 from ..domain.policy import Policy
+from ..domain.rating import Heatmap
+from ..domain.review import HostReview, PullRequest, ReviewPost
+from ..domain.source import FileSignals, Snapshot, SourceFile
 
 
 class SourceReader(Protocol):
@@ -11,7 +14,7 @@ class SourceReader(Protocol):
         """Which code is being read: repository name, ref, short sha and root folder."""
 
     def read(self) -> list:
-        """The Python source files of the snapshot, as SourceFile entities (tests flagged)."""
+        """The Python source files of the snapshot, as SourceFile models (tests flagged)."""
 
 
 class GraphProvider(Protocol):
@@ -114,26 +117,26 @@ class RevisionRisk(Protocol):
     def heatmap_at(self, rev: str, policy: Policy) -> Heatmap:
         """The heat map of `rev`; NoPythonSource when it has no Python source."""
 
-    def assess(self, base: str, head: str, policy: Policy) -> tuple:
+    def assess(self, base: str, head: str, policy: Policy) -> "tuple[Heatmap, ChangeRisk]":
         """(heat map at base, ChangeRisk of base..head)."""
 
 
 class CodeHost(Protocol):
     """The pull requests of the repository on its code host. Failures raise RemoteError."""
 
-    def pull_request(self, number: int) -> dict:
+    def pull_request(self, number: int) -> PullRequest:
         """Title, body, author, URL, base and head refs and commits of a PR."""
 
     def require_auth(self) -> None:
         """HeatmapError unless the host can be called."""
 
     def review_threads(self, number: int) -> tuple:
-        """(the PR with its reviews, comments, labels and size; its inline review comments)."""
+        """(the PR with its reviews, comments, labels and size; its inline review comments), as the host gives them."""
 
-    def post_review(self, number: int, payload: dict) -> dict:
+    def post_review(self, number: int, post: ReviewPost) -> HostReview:
         """Post one review; the review as posted."""
 
-    def reviews(self, number: int) -> list:
+    def reviews(self, number: int) -> "list[HostReview]":
         """Every review of the PR."""
 
     def dismiss_review(self, number: int, review_id: int, message: str) -> None:

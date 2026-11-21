@@ -77,7 +77,7 @@ class GuardTest(unittest.TestCase):
             self.assertIsNone(self.decide(tool), tool)
 
     def run_hook(self, payload, env=None):
-        """The hook as Claude Code runs it: `python3 -I <checkout>/clean_eval guard`, from the checkout under review."""
+        """The hook as Claude Code runs it: `<python> -I <checkout>/clean_eval guard`, from the checkout under review."""
         return subprocess.run([sys.executable, "-I", CE, "guard"], input=payload, capture_output=True, text=True, cwd=self.ws,
                               env={**os.environ, "CE_GUARD_READ_ROOTS": os.pathsep.join(self.read),
                                    "CE_GUARD_WRITE_ROOTS": self.agent, **(env or {})})

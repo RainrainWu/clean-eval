@@ -11,7 +11,7 @@ FINGERPRINT = re.compile(r"<!-- risk-heat-map:fingerprint=([0-9a-f]{12}) -->")
 
 def fingerprint(heatmap):
     """Stable id of what the diagram shows (modules, sizes, scores), independent of the commit and the date."""
-    shown = sorted((m.name, m.loc, sorted((k, v) for k, v in m.scores.items())) for m in heatmap.modules)
+    shown = sorted((m.name, m.loc, sorted(m.scores.model_dump().items())) for m in heatmap.modules)
     return hashlib.sha1(json.dumps(shown).encode()).hexdigest()[:12]
 
 

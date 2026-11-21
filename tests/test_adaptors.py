@@ -20,10 +20,11 @@ from clean_eval.adaptor.presenters import style
 from clean_eval.adaptor.presenters.diagram import SvgDiagramPresenter
 from clean_eval.adaptor.presenters.markdown_report import MarkdownReportPresenter
 from clean_eval.adaptor.presenters.treemap import squarify
-from clean_eval.domain.entities import Snapshot
 from clean_eval.domain.errors import HeatmapError, InvalidPolicy
+from clean_eval.domain.judgement import Judgement
 from clean_eval.domain.policy import ASPECTS, BANDS, Policy
-from clean_eval.domain.readme import MARKERS
+from clean_eval.domain.source import Snapshot
+from clean_eval.use_cases.rules.readme import MARKERS
 
 P = Policy()
 SAMPLE = '''
@@ -121,7 +122,7 @@ class GitCliTest(unittest.TestCase):
 
 
 def snap(root="/r"):
-    return Snapshot("demo", "main", "abc", root)
+    return Snapshot(repo="demo", ref="main", sha="abc", root=root)
 
 
 class BuiltinGraphTest(unittest.TestCase):
@@ -213,6 +214,17 @@ class FilesTest(unittest.TestCase):
         self.assertEqual(ws.load_heatmap(path), h)
         with self.assertRaises(HeatmapError):
             ws.load_heatmap(os.path.join(self.dir, "missing.json"))
+        write(path, json.dumps({"repo": "x", "modules": [{"name": "m"}]}))
+        with self.assertRaises(HeatmapError) as cm:
+            ws.load_heatmap(path)
+        self.assertIn("is not a heat map", str(cm.exception))
+
+    def test_judgements_keep_only_valid_levels(self):
+        path = os.path.join(self.dir, "judgement.json")
+        write(path, json.dumps({"modules": {"m": {"business": {"level": 1, "reason": "core"}, "entropy": {"level": 7}}}}))
+        judgement = Workspace().load_judgement(path)
+        self.assertIsInstance(judgement, Judgement)
+        self.assertEqual(list(judgement.modules["m"]), ["business"])
 
     def test_policy_sources(self):
         self.assertEqual(load_policy(self.dir), (Policy(), "clean-eval default"))

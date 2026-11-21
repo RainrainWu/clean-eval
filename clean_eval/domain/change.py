@@ -1,38 +1,37 @@
-"""The risk a change carries: each changed path takes the band of the module it belongs to, as rated at the change's base."""
-from .classify import ignored
-from .entities import ChangeRisk, ModuleRisk
-from .modules import module_of
-from .scoring import band, band_floor, severity
+"""The risk a change carries: every module it touches, as rated at the change's base."""
+from typing import Optional
+
+from pydantic import BaseModel, model_validator
+
+from .rating import Evidence, Facts, Scores
+from .values import Band, Score
 
 
-def _unrated_key(path, names):
-    """Name for a path outside every rated module: the first folder level that leaves the rated tree (or the file)."""
-    parts = path.split("/")
-    for i in range(1, len(parts)):
-        prefix = "/".join(parts[:i])
-        if not any(n == prefix or n.startswith(prefix + "/") for n in names):
-            return prefix
-    return path
+class ModuleRecord(BaseModel):
+    """A module a change touched, with its band at the change's base. A path no rated module covers (a new module, or
+    non-Python code) is unrated: it has a band (the policy's unrated band) but no score."""
+    module: str
+    band: Band
+    score: Optional[Score] = None
+    scores: Optional[Scores] = None
+    rated: bool
+    facts: Optional[Facts] = None  # what a calibration re-scores under another policy
+
+    @model_validator(mode="after")
+    def _rated_means_scored(self):
+        if self.rated != (self.score is not None):
+            raise ValueError("a rated module has a score and an unrated one has none")
+        return self
 
 
-def assess_change(heatmap, paths, policy):
-    by_name = {m.name: m for m in heatmap.modules}
-    files, touched, skipped = {}, {}, []
-    for path in paths:
-        if ignored(path, policy):
-            files[path] = None
-            skipped.append(path)
-            continue
-        name = module_of(path, by_name)
-        files[path] = name
-        if name:
-            m = by_name[name]
-            touched.setdefault(name, ModuleRisk(module=name, band=band(m.scores["overall"]), score=m.scores["overall"],
-                                                scores=dict(m.scores), evidence=m.evidence, rated=True, facts=m.facts))
-        else:
-            key = _unrated_key(path, by_name)
-            touched.setdefault(key, ModuleRisk(module=key, band=policy.unrated_band, score=None, scores={}, evidence={}, rated=False))
-    risks = sorted(touched.values(), key=lambda r: (-severity(r.band), -(r.score or 0), r.module))
-    scores = [r.score for r in risks if r.rated] + [band_floor(r.band) for r in risks if not r.rated]
-    return ChangeRisk(files=files, modules=risks, ignored=skipped,
-                      max_band=risks[0].band if risks else "Low", max_score=max(scores, default=0))
+class ModuleRisk(ModuleRecord):
+    evidence: Optional[Evidence] = None
+
+
+class ChangeRisk(BaseModel):
+    """The risk of a change: every touched module, and the most severe band among them."""
+    files: dict[str, Optional[str]]  # changed path -> module name (None when unrated or ignored)
+    modules: list[ModuleRisk]
+    ignored: list[str]               # changed paths that carry no risk of their own (docs, images)
+    max_band: Band
+    max_score: Score

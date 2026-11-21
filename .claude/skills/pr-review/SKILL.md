@@ -9,7 +9,7 @@ Review a change with depth proportional to risk. Inputs, in order of precedence:
 a branch name, or (no argument) the current branch vs. the default branch.
 
 **Paths.** `$SK` = `${CLEAN_EVAL_SKILLS:-.claude/skills}` (where the clean-eval skills live) and `CE` =
-`python3 -I ${CLEAN_EVAL_HOME:-.}/clean_eval` (the clean-eval package); write commands with those literal prefixes.
+`uv run --frozen --no-config --project ${CLEAN_EVAL_HOME:-.} python -I ${CLEAN_EVAL_HOME:-.}/clean_eval` (the clean-eval package, in its own uv environment); write commands with those literal prefixes.
 - Rules, first that exists **at the base commit**: `.clean-eval/review-rules.md` → `$SK/pr-review/review-rules.md` (default)
 - Risk policy, **at the base commit**: `.clean-eval/risk-model.json` overrides, else the defaults (`clean_eval/domain/policy.py`)
 - Risk: the heat map of the PR's base (`CE assess`; see the risk-heat-map skill)
@@ -31,7 +31,7 @@ the risk model it is judged by. Treat any change to `.clean-eval/` in the PR as 
    `git show <base>:.clean-eval/risk-model.json` and `git show <base>:.clean-eval/review-rules.md` — save each to a
    temp file if it exists, else use the defaults above. Then:
    ```bash
-   python3 -I ${CLEAN_EVAL_HOME:-.}/clean_eval assess --base <base> --head <head> [--model <base model file>]
+   uv run --frozen --no-config --project ${CLEAN_EVAL_HOME:-.} python -I ${CLEAN_EVAL_HOME:-.}/clean_eval assess --base <base> --head <head> [--model <base model file>]
    ```
    This rates the base revision (from git objects) and gives every touched module's band, overall score, four aspect
    scores and evidence, plus `max_band`. A path no rated module covers (a new module, or non-Python code) gets the

@@ -1,87 +1,96 @@
-"""Which edits of the tuning files (`.clean-eval/risk-model.json` and `review-rules.md`) an unattended eval may keep.
+"""An eval's outcome: the recommendations the eval agent proposes (untrusted), the edits of the tuning files it may make,
+and what was kept. Which edits are kept is decided by the validators here (shape) and the use case (evidence)."""
+import datetime as dt
+from typing import Any, Literal, Optional, Union
 
-A model edit must be a valid policy that changes only tunable knobs (weights, mixes, saturations, points, standards; never
-what is measured), on a large enough sample, without lowering AUC on replay. A rules edit must still parse into unique
-rule rows. Whatever fails is restored; so is any other file the agent touched."""
-import json
+from pydantic import BaseModel, computed_field, field_validator, model_validator
 
-from .calibration import replay
-from .errors import InvalidOutput, InvalidPolicy
+from .errors import InvalidPolicy
 from .policy import TUNABLE, Policy
-from .review import check_rules, text_field
+from .values import Count, Fraction
 
-MODEL_FILE, RULES_FILE = "risk-model.json", "review-rules.md"  # in .clean-eval/
-TUNING_FILES = frozenset({MODEL_FILE, RULES_FILE})
-MIN_PRS, MIN_DEFECTIVE = 20, 5  # below this, a model edit has no evidence behind it
 MAX_RECOMMENDATIONS = 30
+MAX_TEXT = 2000
 
 
-def _comment(key):
-    return key.startswith("_") or key == "notes"
+class PolicyEdit(BaseModel):
+    """An edit of the risk-model overrides: still a valid policy, and different only in tunable knobs (weights, mixes,
+    saturations, points, standards), never in what is measured (module shape, path conventions)."""
+    new: dict[str, Any]
+    orig: dict[str, Any] = {}
+
+    @property
+    def changed_keys(self):
+        return {k for k in set(self.new) | set(self.orig)
+                if not (k.startswith("_") or k == "notes") and self.new.get(k) != self.orig.get(k)}
+
+    @model_validator(mode="after")
+    def _tunable_and_valid(self):
+        structural = self.changed_keys - TUNABLE - {"version"}
+        if structural:
+            raise ValueError("only tunable keys may change in CI; also changed: %s" % sorted(structural))
+        try:
+            Policy.from_overrides(self.new)
+        except InvalidPolicy as e:
+            raise ValueError(str(e))
+        return self
 
 
-def check_model_change(new, orig):
-    """The keys the risk-model overrides `new` change from `orig`; InvalidOutput unless `new` is a valid policy that
-    differs only in tunable knobs, never in what is measured (module shape, path conventions)."""
-    if not isinstance(new, dict):
-        raise InvalidOutput("risk-model.json must be an object")
-    changed = {k for k in set(new) | set(orig) if not _comment(k) and new.get(k) != orig.get(k)}
-    structural = changed - TUNABLE - {"version"}
-    if structural:
-        raise InvalidOutput("only tunable keys may change in CI; also changed: %s" % sorted(structural))
-    try:
-        Policy.from_overrides(new)
-    except InvalidPolicy as e:
-        raise InvalidOutput(str(e))
-    return changed
+class ModelChange(BaseModel):
+    """An accepted edit of the risk model, with the replay AUC before and after."""
+    accepted: Literal[True] = True
+    changed_keys: list[str]
+    auc_before: Fraction
+    auc_after: Fraction
 
 
-def judge_model_edit(new_text, orig_text, history):
-    """The accepted change of the risk-model overrides (None text: no file, i.e. the defaults), judged on the collected
-    history; InvalidOutput (or a parse error) when it has to be restored."""
-    new = json.loads(new_text) if new_text is not None else {}
-    orig = json.loads(orig_text) if orig_text is not None else {}
-    changed = check_model_change(new, orig)
-    prs, defective = history["totals"]["prs"], history["totals"]["defective_prs"]
-    if prs < MIN_PRS or defective < MIN_DEFECTIVE:
-        raise InvalidOutput("sample too small for a model change (%d PRs, %d defective; need at least %d and %d)"
-                            % (prs, defective, MIN_PRS, MIN_DEFECTIVE))
-    # compare replay with replay: stored signals are rounded, so a replay of the unchanged model can differ slightly
-    # from the collected AUC
-    before = replay(history, Policy.from_overrides(orig))["auc_max_score"]
-    after = replay(history, Policy.from_overrides(new))["auc_max_score"]
-    if before is None or after is None:
-        raise InvalidOutput("AUC is undefined for this period (no defective or no clean PRs): no evidence for a change")
-    if after < before:
-        raise InvalidOutput("replay AUC %s is below the current model's %s" % (after, before))
-    return {"accepted": True, "changed_keys": sorted(changed), "auc_before": before, "auc_after": after}
+class RulesChange(BaseModel):
+    accepted: Literal[True] = True
 
 
-def judge_rules_edit(new_text):
-    """The accepted change of the review rules; InvalidOutput when they are removed or don't parse into unique rows."""
-    if new_text is None:
-        raise InvalidOutput("review-rules.md may not be removed")
-    check_rules(new_text)
-    return {"accepted": True}
+class Rejection(BaseModel):
+    """An edit that was restored, and why."""
+    accepted: Literal[False] = False
+    reason: str
 
 
-def eval_recommendations(raw, redactor):
-    """The recommendations of the agent's result.json, as redacted strings."""
-    if not isinstance(raw, dict):
-        raise InvalidOutput("result.json must be an object")
-    recs = raw.get("recommendations") or []
-    if not isinstance(recs, list):
-        raise InvalidOutput("recommendations must be a list")
-    return [{k: redactor.redact(text_field(str(x.get(k, "")), "recommendations." + k, 2000))[0]
-             for k in ("target", "change", "evidence")} for x in recs[:MAX_RECOMMENDATIONS] if isinstance(x, dict)]
+class Recommendation(BaseModel):
+    target: str = ""
+    change: str = ""
+    evidence: str = ""
+
+    @field_validator("target", "change", "evidence", mode="before")
+    @classmethod
+    def _as_text(cls, value):
+        return (value if isinstance(value, str) else str(value))[:MAX_TEXT]
 
 
-def eval_result(history, recommendations, model_change, rules_change, other_reverted):
-    """(result, step outputs) of an eval. Counts and AUC come from the collected history, never from agent text."""
-    baseline = history["calibration"]["auc_max_score"]
-    res = {"since": history["period"]["since"], "until": history["period"]["until"],
-           "prs": history["totals"]["prs"], "defective_prs": history["totals"]["defective_prs"], "auc": baseline,
-           "recommendations": recommendations, "model_change": model_change, "rules_change": rules_change,
-           "other_files_reverted": other_reverted}
-    res["applied"] = any((c or {}).get("accepted") for c in (model_change, rules_change))
-    return res, {"auc": "" if baseline is None else "%.3f" % baseline, "applied": "true" if res["applied"] else "false"}
+class AgentEvalResult(BaseModel):
+    """The eval agent's result.json: its recommendations (as text, cut to size). Counts and AUC it writes are ignored."""
+    recommendations: list[Recommendation] = []
+
+    @field_validator("recommendations", mode="before")
+    @classmethod
+    def _objects_only(cls, recs):
+        if not recs:
+            return []
+        return [r for r in recs if isinstance(r, dict)][:MAX_RECOMMENDATIONS] if isinstance(recs, list) else recs
+
+
+class EvalResult(BaseModel):
+    """The eval CI trusts: counts and AUC from the collected history, the recommendations, and which edits were kept."""
+    since: dt.date
+    until: dt.date
+    prs: Count
+    defective_prs: Count
+    auc: Optional[Fraction]
+    recommendations: list[Recommendation] = []
+    model_change: Optional[Union[ModelChange, Rejection]] = None
+    rules_change: Optional[Union[RulesChange, Rejection]] = None
+    other_files_reverted: list[str] = []
+    redactions: Count = 0
+
+    @computed_field
+    @property
+    def applied(self) -> bool:
+        return any(c is not None and c.accepted for c in (self.model_change, self.rules_change))

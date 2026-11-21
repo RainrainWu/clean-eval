@@ -10,8 +10,8 @@ them ("escaped defects"), and checks whether the risk score and review rules wou
 Output is **advice with evidence**; nothing changes without approval (interactive) or `apply=true` (CI).
 
 **Paths.** `$SK` = `${CLEAN_EVAL_SKILLS:-.claude/skills}` (where the clean-eval skills live) and `CE` =
-`python3 -I ${CLEAN_EVAL_HOME:-.}/clean_eval` (the clean-eval package); write commands with those literal prefixes.
-- Collector: `CE history` (Python 3 stdlib; rates each PR's base from git objects)
+`uv run --frozen --no-config --project ${CLEAN_EVAL_HOME:-.} python -I ${CLEAN_EVAL_HOME:-.}/clean_eval` (the clean-eval package, in its own uv environment); write commands with those literal prefixes.
+- Collector: `CE history` (rates each PR's base from git objects)
 - Tuning targets — always the repo-specific files:
   - `.clean-eval/risk-model.json` — overrides of the heat map's policy (`clean_eval/domain/policy.py`; contract in the
     risk-heat-map skill's `references/rate.md`, "Policy overrides"). Absent means the defaults; add only the keys you change.
@@ -24,7 +24,7 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
 
 2. **Collect.** Use `--with-gh` when `gh` is authenticated (adds review comments and rule citations):
    ```bash
-   python3 -I ${CLEAN_EVAL_HOME:-.}/clean_eval history --since <YYYY-MM-DD> --until <YYYY-MM-DD> \
+   uv run --frozen --no-config --project ${CLEAN_EVAL_HOME:-.} python -I ${CLEAN_EVAL_HOME:-.}/clean_eval history --since <YYYY-MM-DD> --until <YYYY-MM-DD> \
      [--with-gh] --out <tmp or output dir>/eval-history.json
    ```
    Read `totals`, `calibration`, `modules`, `rules` first; dip into `prs` for detail. Under ~20 PRs or ~5

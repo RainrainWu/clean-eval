@@ -12,11 +12,13 @@ from unittest import mock
 from helpers import ROOT, FakeBin, Repo, write_json
 
 from clean_eval.adaptor.gateways.github_cli import GitHubCli, loads_multi
-from clean_eval.domain import calibration, history
+from clean_eval.domain.change import ModuleRecord
 from clean_eval.domain.errors import HeatmapError, InvalidRequest
+from clean_eval.domain.history import FetchFailure, MergedPR, ReviewSignal
 from clean_eval.domain.policy import BAND_NAMES, Policy
 from clean_eval.external import wiring
 from clean_eval.use_cases.collect_history import review_of
+from clean_eval.use_cases.rules import calibration, history
 
 D = lambda s: dt.datetime.fromisoformat(s + "T12:00:00+00:00")  # noqa: E731
 CE = os.path.join(ROOT, "clean_eval")
@@ -31,7 +33,7 @@ def collect(repo, policy, since, until, with_gh=False):
 
 
 class HistoryCommandTest(unittest.TestCase):
-    """The eval skill runs `python3 -I <checkout>/clean_eval history ...` from the repository it evaluates."""
+    """The eval skill runs `uv run ... python -I <checkout>/clean_eval history ...` from the repository it evaluates."""
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -68,7 +70,7 @@ class HistoryCommandTest(unittest.TestCase):
 
     def test_period_bounds(self):
         p = wiring.period("2026-01-01", "2026-01-31", 10)
-        self.assertEqual((p.lookahead_until, p.window_days), ("2026-02-10", 10))
+        self.assertEqual((p.lookahead_until, p.window_days), (dt.date(2026, 2, 10), 10))
         self.assertEqual(p.until_ts, dt.datetime(2026, 1, 31, 23, 59, 59, tzinfo=dt.timezone.utc).timestamp())
         with self.assertRaises(InvalidRequest):
             wiring.period("2026-01-01", "soon")
@@ -105,7 +107,8 @@ class CollectTest(unittest.TestCase):
         cls.users = r.commit("feat: users export (#4)", {"src/users/u.py": "v\n" * 22}, when=D("2026-02-03"))
         r.commit("fix: billing rounding (#3)", {"src/billing/a.py": "c\n" * 25}, when=D("2026-02-05"))
         r.commit('Revert "feat: users export (#4)" (#5)', {"src/users/u.py": "u\n" * 20}, when=D("2026-02-06"))
-        cls.hist = collect(r.path, model(), "2026-01-15", "2026-02-28")
+        cls.history = collect(r.path, model(), "2026-01-15", "2026-02-28")
+        cls.hist = cls.history.model_dump(mode="json")  # eval-history.json, as the eval agent reads it
         cls.prs = {u["pr"]: u for u in cls.hist["prs"]}
 
     @classmethod
@@ -143,21 +146,22 @@ class CollectTest(unittest.TestCase):
         self.assertEqual(billing["facts"]["name"], "src")
 
     def test_replay_reproduces_and_sensitivity_varies_the_policy(self):
-        same = calibration.replay(self.hist, model())
-        self.assertEqual(set(same), {"auc_max_score", "by_band", "band_mix"})
-        self.assertEqual(same["by_band"], self.hist["calibration"]["by_band"])  # facts are stored exactly
-        rows = calibration.sensitivity(self.hist, model())
-        self.assertEqual(rows[0]["change"], "baseline")
-        changes = [r["change"] for r in rows]
+        same = calibration.replay(self.history, model())
+        self.assertEqual(set(same.model_dump()), {"auc_max_score", "by_band", "band_mix"})
+        self.assertEqual(same.by_band, self.history.calibration.by_band)  # facts are stored exactly
+        rows = calibration.sensitivity(self.history, model())
+        self.assertEqual(rows[0].change, "baseline")
+        changes = [r.change for r in rows]
         self.assertEqual(len(changes), len(set(changes)))
         self.assertTrue(any(c.startswith("business_weights.dependents") for c in changes))
         self.assertTrue(any(c.startswith("overall_peak_share") for c in changes))
         self.assertTrue(any(c.startswith("unverified_mix.links") for c in changes))
 
     def test_rescore_unrated_modules_take_the_policy_band(self):
-        prs = calibration.rescore([{"modules": [{"module": "infra", "rated": False, "scores": {}, "score": None, "band": "Moderate"}],
-                                "defects": []}], model(unrated_band="High"))
-        self.assertEqual((prs[0]["max_tier"], prs[0]["max_score"]), ("High", 50))
+        unit = MergedPR(sha="a" * 40, base="b" * 40, author="a", ts=1, subject="s",
+                        modules=[ModuleRecord(module="infra", band="Moderate", rated=False)])
+        prs = calibration.rescore([unit], model(unrated_band="High"))
+        self.assertEqual((prs[0].max_tier, prs[0].max_score), ("High", 50))
 
 
 class GhReviewDataTest(unittest.TestCase):
@@ -180,18 +184,19 @@ class GhReviewDataTest(unittest.TestCase):
             "inline_comments": {"out": '[{"user":{"login":"clean-eval[bot]"},"body":"[NEW][major] y"}]'
                                        '[{"user":{"login":"clean-eval[bot]"},"body":"[R-03][blocker] z"}]'}})
         d = review_of(GitHubCli(), 7)
-        self.assertEqual(d["rules_cited"], ["CA-01", "R-03"])  # human's [Q-02] ignored; 2nd page parsed
-        self.assertEqual(d["new_findings"], 1)
-        self.assertEqual(d["clean_eval_marker"], {"tier": "High"})  # the human's forged marker didn't count
-        self.assertEqual(d["untrusted_markers_ignored"], 1)
+        self.assertIsInstance(d, ReviewSignal)
+        self.assertEqual(d.rules_cited, ["CA-01", "R-03"])  # human's [Q-02] ignored; 2nd page parsed
+        self.assertEqual(d.new_findings, 1)
+        self.assertEqual(d.clean_eval_marker, {"tier": "High"})  # the human's forged marker didn't count
+        self.assertEqual(d.untrusted_markers_ignored, 1)
         pinned = review_of(GitHubCli(), 7, reviewer_logins=["human"])
-        self.assertEqual(pinned["clean_eval_marker"], {"tier": "Low"})
+        self.assertEqual(pinned.clean_eval_marker, {"tier": "Low"})
 
     def test_errors_are_classified(self):
         self.bin.gh({"pr_view_8": {"exit": 1, "err": "GraphQL: Could not resolve to a PullRequest with the number of 8."},
                      "pr_view": {"exit": 1, "err": "HTTP 502: Bad Gateway"}})
-        self.assertEqual(review_of(GitHubCli(), 8)["error"], "not_found")
-        self.assertEqual(review_of(GitHubCli(), 9)["error"], "error")
+        self.assertEqual(review_of(GitHubCli(), 8), FetchFailure(error="not_found", message=review_of(GitHubCli(), 8).message))
+        self.assertEqual(review_of(GitHubCli(), 9).error, "error")
 
     def test_collect_with_gh_flags_unreliable_rules(self):
         r = Repo()
@@ -201,10 +206,10 @@ class GhReviewDataTest(unittest.TestCase):
             r.commit("feat: b (#2)", {"src/a/x.py": "3\n"}, when=D("2026-02-02"))
             self.bin.gh({"auth": {"exit": 0}, "pr_view": {"exit": 1, "err": "HTTP 403: rate limit exceeded"}})
             h = collect(r.path, model(), "2026-01-15", "2026-02-28", with_gh=True)
-            self.assertEqual(sorted(h["rules"]["prs_fetch_failed"]), [1, 2])
-            self.assertFalse(h["rules"]["reliable"])
-            self.assertEqual(h["rules"]["prs_reviewed"], 0)
-            self.assertEqual(history.rules_warning(h["rules"]),
+            self.assertEqual(sorted(h.rules.prs_fetch_failed), [1, 2])
+            self.assertFalse(h.rules.reliable)
+            self.assertEqual(h.rules.prs_reviewed, 0)
+            self.assertEqual(history.rules_warning(h.rules),
                              "gh review fetch failed for 2/2 PRs (100%) - rule metrics unreliable")
         finally:
             r.cleanup()

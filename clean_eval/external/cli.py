@@ -1,6 +1,6 @@
 """The command line: parse arguments, wire adaptors into a use case, run it and print the outcome.
 
-    python3 -I <clean-eval checkout>/clean_eval <command> ...
+    uv run python -I <clean-eval checkout>/clean_eval <command> ...
 
   rate      rate every module of the working tree (or --rev) on the four aspects -> <out>/data.json
   readme    put the heat map into the repository's README section and its diagram file (no-op when unchanged)
@@ -12,19 +12,22 @@
 The GitHub Action also runs prepare, finalize, post, redact and guard around its agent (see ci.py).
 """
 import argparse
-import dataclasses
 import json
 import os
 import sys
+
+from pydantic import ValidationError
+from pydantic_core import to_jsonable_python
 
 from ..adaptor.gateways.files import FileReadmeStore, Workspace, load_policy, read_json, write_text
 from ..adaptor.gateways.git_cli import Git
 from ..adaptor.presenters.diagram import SvgDiagramPresenter
 from ..adaptor.presenters.markdown_report import MarkdownReportPresenter
 from ..adaptor.presenters.style import DIAGRAM_PATH
-from ..domain.calibration import replay, sensitivity
 from ..domain.errors import HeatmapError, InvalidRequest
-from ..domain.history import rules_warning
+from ..domain.history import EvalHistory
+from ..use_cases.rules.calibration import replay, sensitivity
+from ..use_cases.rules.history import rules_warning
 from ..use_cases.summarize_heatmap import SummarizeHeatmap
 from ..use_cases.update_readme import UpdateReadme
 from . import ci, wiring
@@ -54,10 +57,10 @@ def rate(args):
     Workspace().save_heatmap(heatmap, os.path.join(args.out, "data.json"))
     print("%s @ %s (%s): %d modules, %d source lines -> %s"
           % (heatmap.repo, heatmap.ref, heatmap.sha, len(heatmap.modules), heatmap.loc_total, os.path.join(args.out, "data.json")))
-    for m in sorted(heatmap.modules, key=lambda m: -m.scores["overall"])[:10]:
+    for m in sorted(heatmap.modules, key=lambda m: -m.scores.overall)[:10]:
         s = m.scores
         print("%-45s loc %-7d overall %-3d biz %-3d effects %-3d entropy %-3d unverified %-3s"
-              % (m.name, m.loc, s["overall"], s["biz"], s["effects"], s["entropy"], "N/A" if s["unverified"] is None else s["unverified"]))
+              % (m.name, m.loc, s.overall, s.biz, s.effects, s.entropy, "N/A" if s.unverified is None else s.unverified))
     for note in heatmap.notes:
         print("note:", note)
 
@@ -91,7 +94,7 @@ def report(args):
 def assess(args):
     policy, source = _policy(args)
     heatmap, risk = wiring.assess_change(args.repo, args.base, args.head, policy)
-    out = dataclasses.asdict(risk)
+    out = risk.model_dump(mode="json")
     out.update(base=args.base, head=args.head, model_source=source, model_version=policy.version, notes=heatmap.notes)
     text = json.dumps(out, indent=1)
     if args.out:
@@ -108,24 +111,26 @@ def history(args):
     if args.replay or args.sensitivity:
         if not args.from_history:
             raise InvalidRequest("--replay/--sensitivity need --from-history")
-        collected = read_json(args.from_history)
+        try:
+            collected = EvalHistory.model_validate(read_json(args.from_history))
+        except ValidationError as e:
+            raise HeatmapError.from_validation(e, "%s is not a collected history" % args.from_history)
         out = replay(collected, load_policy(root, args.replay)[0]) if args.replay else sensitivity(collected, policy)
     else:
         if not args.since:
             raise InvalidRequest("--since is required (or --from-history with --replay/--sensitivity)")
         out = wiring.collect_history(root, args.with_gh).execute(
             policy, wiring.period(args.since, args.until, args.defect_window_days), args.branch, source, args.reviewer_login)
-        warning = rules_warning(out["rules"]) if out["rules"] else None
+        warning = rules_warning(out.rules) if out.rules else None
         if warning:
             print("warning: " + warning, file=sys.stderr)
-    text = json.dumps(out, indent=2, default=str)
+    text = json.dumps(to_jsonable_python(out), indent=2)
     if not args.out:
         print(text)
         return
     write_text(args.out, text)
-    if isinstance(out, dict) and "totals" in out:
-        print("wrote %s: %d PRs, %d with escaped defects" % (args.out, out["totals"]["prs"], out["totals"]["defective_prs"]),
-              file=sys.stderr)
+    if isinstance(out, EvalHistory):
+        print("wrote %s: %d PRs, %d with escaped defects" % (args.out, out.totals.prs, out.totals.defective_prs), file=sys.stderr)
 
 
 def parser():

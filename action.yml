@@ -110,11 +110,26 @@ outputs:
 runs:
   using: composite
   steps:
+    # clean-eval's own environment, from its lockfile (hash-checked), outside every checkout. uv runs in the action's
+    # folder with --no-config, so nothing in the repository under review can change what is installed.
+    - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      with:
+        version: "0.13.7"
+        enable-cache: false
+    - id: env
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/clean-eval-venv
+      run: |
+        uv sync --frozen --no-config --no-dev
+        echo "python=$UV_PROJECT_ENVIRONMENT/bin/python" >> "$GITHUB_OUTPUT"
     - id: run
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
         CE_ACTION_DIR: ${{ github.action_path }}
+        CE_PYTHON: ${{ steps.env.outputs.python }}
         CE_SKILL: ${{ inputs.skill }}
         CE_WORKSPACE: ${{ inputs.working-directory }}
         CE_OUTPUT_DIR: ${{ runner.temp }}/clean-eval

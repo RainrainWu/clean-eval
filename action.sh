@@ -3,6 +3,8 @@
 #
 # Env (set by action.yml from its inputs):
 #   CE_ACTION_DIR      path of the clean-eval checkout (github.action_path)
+#   CE_PYTHON          the interpreter of clean-eval's environment (action.yml syncs it with uv); unset: the checkout's
+#                      own uv environment (`uv run` in CE_ACTION_DIR)
 #   CE_SKILL           risk-heat-map | pr-review | eval
 #   CE_WORKSPACE       repo to operate on (default: $GITHUB_WORKSPACE or .)
 #   CE_OUTPUT_DIR      where report.md / result.json / claude.log go (default: $RUNNER_TEMP/clean-eval)
@@ -25,7 +27,7 @@
 #   * `clean_eval finalize` validates what the agent proposed, derives verdict/blockers/tier itself, redacts
 #     secrets, and `clean_eval post` is the only thing that posts to GitHub.
 # The checkout is untrusted too: every Python here runs isolated (-I), so a module in the checkout (a PR's json.py)
-# can't shadow the standard library, and npm runs outside it.
+# can't shadow the standard library or pydantic, and uv and npm run outside it.
 set -euo pipefail
 
 ACTION_DIR="$(cd "${CE_ACTION_DIR:?CE_ACTION_DIR required}" && pwd -P)"
@@ -55,9 +57,15 @@ if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
 fi
 
 CE="$ACTION_DIR/clean_eval"   # the clean-eval package
-ce() { python3 -I "$CE" "$@"; }
+PY="${CE_PYTHON:-}"
+if [ -z "$PY" ]; then
+  PY="$(cd "$ACTION_DIR" && uv run --frozen --no-config python -I -c 'import sys; print(sys.executable)')" \
+    || die "no Python environment for clean-eval: install uv, or set CE_PYTHON"
+fi
+"$PY" -I -c 'import pydantic' 2>/dev/null || die "$PY can't import pydantic: run 'uv sync' in $ACTION_DIR, or set CE_PYTHON"
+ce() { "$PY" -I "$CE" "$@"; }
 json_field() {  # $1 = JSON file, $2 = top-level key; booleans print as true/false
-  python3 -I -c 'import json, sys; v = json.load(open(sys.argv[1]))[sys.argv[2]]; print(json.dumps(v) if isinstance(v, bool) else v)' \
+  "$PY" -I -c 'import json, sys; v = json.load(open(sys.argv[1]))[sys.argv[2]]; print(json.dumps(v) if isinstance(v, bool) else v)' \
     "$1" "$2"
 }
 cp -R "$ACTION_DIR/.claude/skills" "$CTX/skills"   # the agent reads SKILL.md from here
@@ -86,9 +94,9 @@ run_claude() {  # $1 = prompt; $2.. = extra writable dirs. Transcript → $OUT/c
   local read_roots="$WS:$CTX" write_roots="$AGENT" edit_rules=("Edit(/$AGENT/**)") extra_note="" d
   for d in "$@"; do write_roots="$write_roots:$d"; edit_rules+=("Edit(/$d/**)"); extra_note="$extra_note and $d"; done
   # The guard hook denies on any failure: exit 2 is a denial, and so is every other status (`|| exit 2`).
-  python3 -I - "$CTX/claude-settings.json" "$CE" <<'PY'
+  "$PY" -I - "$CTX/claude-settings.json" "$CE" "$PY" <<'PY'
 import json, shlex, sys
-hook = {"type": "command", "command": "python3 -I %s guard || exit 2" % shlex.quote(sys.argv[2])}
+hook = {"type": "command", "command": "%s -I %s guard || exit 2" % (shlex.quote(sys.argv[3]), shlex.quote(sys.argv[2]))}
 with open(sys.argv[1], "w") as f:
     json.dump({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}}, f)
 PY
@@ -136,7 +144,7 @@ $CTX/heatmap/data.json; the repository is checked out in the current directory. 
       if [ -f "$AGENT/judgement.json" ]; then
         ce redact "$AGENT/judgement.json"
         # levels are validated entry by entry when applied; the file as a whole must at least be a JSON object
-        if python3 -I -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' \
+        if "$PY" -I -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' \
              "$AGENT/judgement.json" 2>/dev/null; then
           judged=(--judgement "$AGENT/judgement.json")
         else
@@ -194,7 +202,7 @@ ${CE_EXTRA_PROMPT:-}"
     ;;
 
   eval)
-    SINCE="${CE_SINCE:-$(python3 -I -c 'import datetime as d; print((d.date.today() - d.timedelta(days=90)).isoformat())')}"
+    SINCE="${CE_SINCE:-$("$PY" -I -c 'import datetime as d; print((d.date.today() - d.timedelta(days=90)).isoformat())')}"
     UNTIL="${CE_UNTIL:-$(date -u +%F)}"
     [[ "$SINCE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ && "$UNTIL" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "since/until must be YYYY-MM-DD"
     APPLY="${CE_APPLY:-false}"

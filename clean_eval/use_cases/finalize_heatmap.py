@@ -1,5 +1,6 @@
-"""Use case: turn a rated heatmap into the one that is shown: apply the reviewer's levels, then recompute the overall scores."""
-from ..domain.judgement import apply_levels, refresh_overall
+"""Use case: turn a rated heatmap into the one that is shown: apply the reviewer's levels (a Judgement, or None), then
+recompute the overall scores."""
+from .rules.judgement import apply_levels, refresh_overall
 
 
 def finalize_heatmap(heatmap, judgement, policy):

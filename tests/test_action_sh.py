@@ -29,7 +29,7 @@ class ActionShTest(unittest.TestCase):
     def run_sh(self, ws, **ce):
         env = {k: v for k, v in os.environ.items() if not k.startswith(("CE_", "GITHUB_", "CLAUDE"))}
         env.update(self.bin.env())
-        env.update({"CE_ACTION_DIR": ROOT, "CE_WORKSPACE": ws, "CE_OUTPUT_DIR": self.out,
+        env.update({"CE_ACTION_DIR": ROOT, "CE_PYTHON": sys.executable, "CE_WORKSPACE": ws, "CE_OUTPUT_DIR": self.out,
                     "GITHUB_OUTPUT": self.gh_out, "GITHUB_STEP_SUMMARY": self.summary,
                     "ANTHROPIC_API_KEY": FAKE_KEY, "GH_TOKEN": GH_TOKEN, "SOME_RUNNER_TOKEN": "x" * 20})
         env.update({f"CE_{k.upper()}": v for k, v in ce.items()})
@@ -56,6 +56,32 @@ class ActionShTest(unittest.TestCase):
             res = self.run_sh(shallow, skill="risk-heat-map")
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("shallow clone", res.stderr)
+        finally:
+            r.cleanup()
+
+    # ---------------------------------------------------------------- the interpreter
+
+    def test_without_an_interpreter_it_uses_the_checkouts_uv_environment(self):
+        if not shutil.which("uv"):
+            self.skipTest("uv is not installed")
+        r = Repo()
+        try:
+            r.commit("init", {"src/a/x.py": "def f():\n    return 1\n"})
+            res = self.run_sh(r.path, skill="risk-heat-map", python="")
+            self.assertEqual(res.returncode, 0, res.stderr)
+        finally:
+            r.cleanup()
+
+    def test_an_interpreter_without_pydantic_is_refused(self):
+        r = Repo()
+        try:
+            r.commit("init", {"src/a/x.py": "x = 1\n"})
+            bare = os.path.join(self.tmp, "python-without-pydantic")
+            write(bare, "#!/bin/sh\nexit 1\n")
+            os.chmod(bare, 0o755)
+            res = self.run_sh(r.path, skill="risk-heat-map", python=bare)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("can't import pydantic", res.stderr)
         finally:
             r.cleanup()
 
@@ -267,7 +293,7 @@ class ActionShTest(unittest.TestCase):
         r = Repo()
         marker = os.path.join(self.tmp, "planted-module-ran")
         planted = {name + ".py": "open(%r, 'a').write(%r)\n" % (marker, name + "\n")
-                   for name in ("json", "sys", "datetime", "shlex", "argparse", "os", "re")}
+                   for name in ("json", "sys", "datetime", "shlex", "argparse", "os", "re", "pydantic", "typing_extensions")}
         try:
             base = r.commit("init", {"src/billing/a.py": "a\n" * 10}, when=days_ago(5))
             r.git("checkout", "-q", "-b", "feature")

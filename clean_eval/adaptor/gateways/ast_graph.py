@@ -174,4 +174,4 @@ class BuiltinGraph:
                         tested["%s::%s" % (tgt, qual)].add(t.path)
         links = {k: v for k, v in links.items() if v}
         stats = {"source": "built-in ast", "nodes": len(nodes), "edges": sum(len(v) for v in links.values()), "flows": 0}
-        return Graph(nodes, links, dict(tested), [], stats, has_flows=False)
+        return Graph(nodes=nodes, links=links, tested=dict(tested), flows=[], stats=stats, has_flows=False)

@@ -1,13 +1,16 @@
 """The files of one run: the policy overrides, the rated heatmap, the reviewer's judgement, the README with its diagram,
 and the folders of a CI run (precomputed context, the agent's output, the final output) with its step outputs."""
-import dataclasses
 import json
 import os
 from pathlib import Path
 
-from ...domain.entities import Heatmap, ModuleRating
+from pydantic import ValidationError
+from pydantic_core import to_jsonable_python
+
 from ...domain.errors import HeatmapError
-from ...domain.policy import REPO_POLICY, Policy, policy_from_text
+from ...domain.judgement import Judgement
+from ...domain.policy import REPO_POLICY, Policy
+from ...domain.rating import Heatmap
 
 
 def read_text(path):
@@ -34,26 +37,26 @@ def write_text(path, text):
 def load_policy(repo_root=None, path=None):
     """(Policy, source): `path`, else <repo>/.clean-eval/risk-model.json when present, else the defaults."""
     if path:
-        return policy_from_text(read_text(path), path), path
+        return Policy.from_text(read_text(path), path), path
     local = os.path.join(repo_root or ".", REPO_POLICY)
     if os.path.isfile(local) and not os.path.islink(local):
-        return policy_from_text(read_text(local), REPO_POLICY), REPO_POLICY
+        return Policy.from_text(read_text(local), REPO_POLICY), REPO_POLICY
     return Policy(), "clean-eval default"
 
 
 class Workspace:
     def save_heatmap(self, heatmap, path):
-        write_text(path, json.dumps(dataclasses.asdict(heatmap), indent=1))
+        write_text(path, heatmap.model_dump_json(indent=1))
 
     def load_heatmap(self, path):
-        d = read_json(path)
         try:
-            return Heatmap(**{**d, "modules": [ModuleRating(**m) for m in d["modules"]]})
-        except (TypeError, KeyError) as e:
-            raise HeatmapError("%s is not a heatmap: %s" % (path, e))
+            return Heatmap.model_validate_json(read_text(path))
+        except ValidationError as e:
+            raise HeatmapError.from_validation(e, "%s is not a heat map" % path)
 
     def load_judgement(self, path):
-        return read_json(path)
+        """The levels in a judgement file; entries that don't validate are dropped (see Judgement)."""
+        return Judgement.model_validate(read_json(path))
 
 
 class FileReadmeStore:
@@ -101,16 +104,11 @@ class Folder:
         write_text(self.path(name), text)
 
     def write_json(self, name, obj):
-        self.write_text(name, json.dumps(obj, indent=2, default=str))
+        """Write models (or plain data holding them) as JSON."""
+        self.write_text(name, json.dumps(to_jsonable_python(obj), indent=2))
 
 
 def append_step_outputs(path, outputs):
-    """Append `name=value` lines to a GitHub Actions step-outputs file. The values are enums and numbers clean-eval built;
-    one with a line break, which could start another output, is refused."""
-    lines = []
-    for name, value in outputs.items():
-        if "\n" in str(value) or "\r" in str(value):
-            raise HeatmapError("step output %s has a line break" % name)
-        lines.append("%s=%s\n" % (name, value))
+    """Append the StepOutputs (validated: one line each) as `name=value` lines to a GitHub Actions step-outputs file."""
     with open(path, "a") as f:
-        f.writelines(lines)
+        f.writelines("%s=%s\n" % kv for kv in outputs.root.items())
