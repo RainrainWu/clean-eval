@@ -1,0 +1,42 @@
+# Monthly calibration of the risk model and review rules over the last 90 days.
+# With apply: "true", the agent may edit .clean-eval/*; the action keeps an edit only if it is well-formed, touches
+# only tunable keys, and doesn't lower AUC on replay — and the result is still proposed as a PR for humans to approve.
+name: clean-eval eval
+on:
+  schedule:
+    - cron: "0 6 1 * *"
+  workflow_dispatch:
+    inputs:
+      since: { description: "YYYY-MM-DD (default: 90 days ago)", required: false }
+      until: { description: "YYYY-MM-DD (default: today)", required: false }
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false  # create-pull-request authenticates with its own token
+      - id: eval
+        uses: RainrainWu/clean-eval@v1
+        with:
+          skill: eval
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          since: ${{ inputs.since }}
+          until: ${{ inputs.until }}
+          apply: "true"
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: clean-eval/eval
+          title: "chore: clean-eval calibration (AUC ${{ steps.eval.outputs.auc }})"
+          commit-message: "chore: apply clean-eval eval recommendations"
+          add-paths: |
+            .clean-eval/risk-model.json
+            .clean-eval/review-rules.md
+          body-path: ${{ steps.eval.outputs.output-dir }}/report.md

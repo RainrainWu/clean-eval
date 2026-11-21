@@ -1,0 +1,31 @@
+# Refresh the README "Risk Heat Map" weekly and open a PR when it changes. No API key needed.
+name: clean-eval risk heat map
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  heat-map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false  # create-pull-request authenticates with its own token
+      - id: heatmap
+        uses: RainrainWu/clean-eval@v1
+        with:
+          skill: risk-heat-map
+      - if: steps.heatmap.outputs.readme-changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: clean-eval/risk-heat-map
+          title: "chore: refresh risk heat map"
+          commit-message: "chore: refresh risk heat map"
+          add-paths: README.md
+          body: Automated refresh by clean-eval `risk-heat-map`.

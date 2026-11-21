@@ -1,0 +1,132 @@
+name: clean-eval
+description: Risk heat map, risk-scaled PR review, and review-rule/risk-model evaluation for clean-architecture codebases.
+author: RainrainWu
+branding:
+  icon: shield
+  color: orange
+
+inputs:
+  skill:
+    description: "Which skill to run: risk-heat-map | pr-review | eval"
+    required: true
+
+  # --- Claude credentials (not needed for risk-heat-map unless use-claude: true).
+  # For Bedrock/Vertex, leave both empty and set CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX
+  # (plus cloud credentials) in the step's env.
+  anthropic-api-key:
+    description: Anthropic API key
+    required: false
+  claude-code-oauth-token:
+    description: Claude Code OAuth token (alternative to anthropic-api-key)
+    required: false
+  github-token:
+    description: Token for gh (read PRs, post reviews). Needs pull-requests:write to post.
+    required: false
+    default: ${{ github.token }}
+
+  # --- pr-review
+  pr:
+    description: PR number to review (defaults to the triggering pull_request)
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  post:
+    description: "pr-review: post the review on the PR (true|false). The action posts one review from the validated result; the agent never gets write access."
+    required: false
+    default: "true"
+  fail-on:
+    description: "pr-review: fail the step on never | request_changes | blocker"
+    required: false
+    default: never
+
+  # --- eval
+  since:
+    description: "eval: period start YYYY-MM-DD (default: 90 days ago)"
+    required: false
+  until:
+    description: "eval: period end YYYY-MM-DD (default: today)"
+    required: false
+  apply:
+    description: "eval: let the agent edit .clean-eval/risk-model.json and .clean-eval/review-rules.md (true|false). An edit is kept only if it is well-formed, changes only tunable keys and doesn't lower AUC on replay. The action never commits; follow with a create-PR step."
+    required: false
+    default: "false"
+
+  # --- risk-heat-map
+  readme:
+    description: "risk-heat-map: README path, relative to the repo root"
+    required: false
+    default: README.md
+  use-claude:
+    description: "risk-heat-map: add a Claude-written narrative to the report (true) or script only, no API key (false)"
+    required: false
+    default: "false"
+
+  # --- common
+  working-directory:
+    description: Repository root to operate on (must be a full-history checkout)
+    required: false
+    default: ${{ github.workspace }}
+  model:
+    description: Claude model override (e.g. claude-opus-5-5)
+    required: false
+  max-turns:
+    description: Max agent turns
+    required: false
+    default: "60"
+  claude-code-version:
+    description: "@anthropic-ai/claude-code npm version to install if claude is not on PATH (pinned; bump deliberately)"
+    required: false
+    default: "2.1.328"
+  extra-prompt:
+    description: Extra instructions appended to the skill prompt
+    required: false
+
+outputs:
+  output-dir:
+    description: Directory containing report.md, result.json, claude.log, and the agent's context/ and agent/ folders
+    value: ${{ steps.run.outputs.output-dir }}
+  result:
+    description: Path to result.json
+    value: ${{ steps.run.outputs.result }}
+  readme-changed:
+    description: "risk-heat-map: whether the README section changed (true|false)"
+    value: ${{ steps.run.outputs.readme-changed }}
+  verdict:
+    description: "pr-review: approve | comment | request_changes — derived from validated findings (any blocker → request_changes)"
+    value: ${{ steps.run.outputs.verdict }}
+  max-tier:
+    description: "pr-review: highest risk tier touched (Low | Medium | High | Critical)"
+    value: ${{ steps.run.outputs.max-tier }}
+  blockers:
+    description: "pr-review: number of blocker findings"
+    value: ${{ steps.run.outputs.blockers }}
+  auc:
+    description: "eval: AUC of risk score vs escaped defects"
+    value: ${{ steps.run.outputs.auc }}
+
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        CE_ACTION_DIR: ${{ github.action_path }}
+        CE_SKILL: ${{ inputs.skill }}
+        CE_WORKSPACE: ${{ inputs.working-directory }}
+        CE_OUTPUT_DIR: ${{ runner.temp }}/clean-eval
+        CE_PR: ${{ inputs.pr }}
+        CE_POST: ${{ inputs.post }}
+        CE_FAIL_ON: ${{ inputs.fail-on }}
+        CE_SINCE: ${{ inputs.since }}
+        CE_UNTIL: ${{ inputs.until }}
+        CE_APPLY: ${{ inputs.apply }}
+        CE_README: ${{ inputs.readme }}
+        CE_USE_CLAUDE: ${{ inputs.use-claude }}
+        CE_MODEL: ${{ inputs.model }}
+        CE_MAX_TURNS: ${{ inputs.max-turns }}
+        CE_CLAUDE_VERSION: ${{ inputs.claude-code-version }}
+        CE_EXTRA_PROMPT: ${{ inputs.extra-prompt }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key || env.ANTHROPIC_API_KEY }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token || env.CLAUDE_CODE_OAUTH_TOKEN }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: bash "$GITHUB_ACTION_PATH/ci/run.sh"
