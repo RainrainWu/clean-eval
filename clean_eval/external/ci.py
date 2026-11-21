@@ -6,7 +6,6 @@
   redact FILE              scrub secrets from a file in place (e.g. the agent transcript)
   guard                    the agent's PreToolUse hook: allow or deny one tool call
 """
-import json
 import os
 import sys
 
@@ -26,7 +25,7 @@ def prepare(args):
         policy, source = load_policy(repo)
         context = wiring.prepare_eval(repo, args.ctx, args.with_gh).execute(
             policy, source, wiring.period(args.since, args.until), args.branch)
-    print(json.dumps(context))
+    print(context.model_dump_json())
 
 
 def finalize(args):
@@ -35,11 +34,11 @@ def finalize(args):
     except InvalidOutput as e:
         print("::error::clean-eval: invalid agent output: %s" % e, file=sys.stderr)
         return 2
-    if result is not None and result.get("redactions"):
-        print("::warning::clean-eval redacted %d secret-looking value(s) from agent output" % result["redactions"],
+    if result is not None and result.redactions:
+        print("::warning::clean-eval redacted %d secret-looking value(s) from agent output" % result.redactions,
               file=sys.stderr)
     append_step_outputs(args.gh_output, outputs)
-    print(json.dumps(outputs))
+    print(outputs.model_dump_json())
 
 
 def post(args):

@@ -7,10 +7,11 @@ from helpers import Repo, days_ago, read
 
 from clean_eval.adaptor.gateways.files import Folder
 from clean_eval.adaptor.gateways.git_cli import Git
-from clean_eval.domain.diff import split_patch
 from clean_eval.domain.errors import HeatmapError
 from clean_eval.domain.policy import Policy
+from clean_eval.domain.review import DiffIndex
 from clean_eval.use_cases.prepare_review import policy_at, write_split_diff
+from clean_eval.use_cases.rules.diff import split_patch
 
 
 class SplitDiffTest(unittest.TestCase):
@@ -33,13 +34,13 @@ class SplitDiffTest(unittest.TestCase):
             index = write_split_diff(git, Folder(out), base, head, files, {f: "src/a" for f in files})
             self.assertEqual(len(index), len(files))
             for e in index:
-                patch = read(os.path.join(out, e["patch"]))
+                patch = read(os.path.join(out, e.patch))
                 self.assertTrue(patch.startswith("diff --git "), e)
-                self.assertEqual(e["module"], "src/a")
-                self.assertFalse(e["truncated"])
-            by_file = {e["file"]: e for e in index}
-            self.assertEqual(by_file["src/a/keep.py"]["added"], 1)
-            self.assertEqual(by_file["src/a/keep.py"]["removed"], 1)
+                self.assertEqual(e.module, "src/a")
+                self.assertFalse(e.truncated)
+            by_file = {e.file: e for e in index}
+            self.assertEqual((by_file["src/a/keep.py"].added, by_file["src/a/keep.py"].removed), (1, 1))
+            self.assertEqual(DiffIndex.model_validate_json(read(os.path.join(out, "diff", "index.json"))).root, index)
             self.assertIn('src/a/we"ird name.py', by_file)
         finally:
             r.cleanup()

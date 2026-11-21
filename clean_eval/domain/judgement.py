@@ -1,29 +1,45 @@
-"""Apply a reviewer's levels to a rated heatmap: the level fixes each aspect's band, the static score places it inside."""
-from .policy import ASPECTS
-from .scoring import overall, place_in_level
+"""A reviewer's judgement of a heat map: one level (0 most severe ... 3 least) per module and aspect, with a reason."""
+from typing import Literal
+
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
+
+from .values import Level
+
+AspectName = Literal["business", "effects", "entropy", "unverified"]
+MAX_REASON = 240
 
 
-def apply_levels(heatmap, judgement):
-    """`judgement` is {"modules": {name: {aspect: {"level": 0-3, "reason": str}}}}. Invalid entries and N/A aspects are ignored."""
-    judged = 0
-    modules = judgement.get("modules") if isinstance(judgement, dict) else None
-    for m in heatmap.modules:
-        j = modules.get(m.name) if isinstance(modules, dict) else None
-        hit = False
-        for name, key, _, _, levels in ASPECTS:
-            entry = j.get(name) if isinstance(j, dict) else None
-            level = entry.get("level") if isinstance(entry, dict) else None
-            if m.scores.get(key) is None or isinstance(level, bool) or not isinstance(level, (int, float)) or level not in levels:
+class AspectLevel(BaseModel):
+    level: Level
+    reason: str = ""
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _short_text(cls, reason):
+        return ("" if reason is None else str(reason))[:MAX_REASON]
+
+
+class Judgement(BaseModel):
+    """{"modules": {name: {aspect: {"level": 0-3, "reason": ...}}}}. The levelling agent's output is untrusted: an entry
+    that doesn't validate is dropped rather than failing the whole judgement, as the skill documents."""
+    modules: dict[str, dict[AspectName, AspectLevel]] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _keep_valid_entries(cls, data):
+        modules = data.get("modules") if isinstance(data, dict) else None
+        kept = {}
+        for name, aspects in modules.items() if isinstance(modules, dict) else ():
+            if not isinstance(name, str) or not isinstance(aspects, dict):
                 continue
-            m.scores[key] = place_in_level(int(level), m.baseline[key])
-            m.evidence[key].insert(0, "Level %d, %s: %s" % (level, levels[level], str(entry.get("reason", ""))[:240]))
-            hit = True
-        judged += hit
-    heatmap.judged_modules = judged
-    return heatmap
-
-
-def refresh_overall(heatmap, peak_share=0.5):
-    for m in heatmap.modules:
-        m.scores["overall"] = overall(m.scores, peak_share)
-    return heatmap
+            levels = {}
+            for aspect, entry in aspects.items():
+                if aspect not in AspectName.__args__:
+                    continue
+                try:
+                    levels[aspect] = AspectLevel.model_validate(entry)
+                except ValidationError:
+                    continue
+            if levels:
+                kept[name] = levels
+        return {"modules": kept}

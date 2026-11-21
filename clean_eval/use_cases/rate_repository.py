@@ -2,15 +2,16 @@
 from collections import Counter
 from dataclasses import dataclass
 
-from ..domain import classify
-from ..domain.entities import Facts, Heatmap
 from ..domain.errors import NoPythonSource
-from ..domain.modules import split_modules
-from ..domain.rating import rate_module
+from ..domain.rating import Facts, Heatmap, TopFile
+from .rules import classify
+from .rules.graph import dependents, functions_by_module, test_files_to_modules
+from .rules.modules import split_modules
+from .rules.rating import rate_module
 
 
 @dataclass
-class _Context:
+class _Context:  # what rating every module of one snapshot shares (working state, not a domain model)
     graph: object
     file_mod: dict
     deps: tuple
@@ -39,8 +40,8 @@ class RateRepository:
                      % (g.stats.get("source", "graph"), g.stats.get("nodes", 0), g.stats.get("edges", 0), g.stats.get("flows", 0)))
         file_mod = {f.path: m for m, fl in mods.items() for f in fl}
         ctx = _Context(
-            graph=g, file_mod=file_mod, deps=g.dependents(file_mod), funcs_of=g.functions_by_module(file_mod),
-            test_mods=g.test_files_to_modules(file_mod), test_loc={f.path: f.loc for f in files if f.is_test},
+            graph=g, file_mod=file_mod, deps=dependents(g, file_mod), funcs_of=functions_by_module(g, file_mod),
+            test_mods=test_files_to_modules(g, file_mod), test_loc={f.path: f.loc for f in files if f.is_test},
             total_crit=sum(c for c, _, _ in g.flows) or 1, total_loc=sum(f.loc for f in src) or 1,
             signals={f.path: self.signals.file_signals(f) for fl in mods.values() for f in fl},
             coverage=self.coverage.line_rates(snap))
@@ -91,5 +92,5 @@ class RateRepository:
         out = []
         for f in top:
             stats = c.signals[f.path].stats
-            out.append({"path": f.path, "loc": f.loc, "max_fn": max((x[0] for x in stats.funcs), default=0) if stats else None})
+            out.append(TopFile(path=f.path, loc=f.loc, max_fn=max((x[0] for x in stats.funcs), default=0) if stats else None))
         return out

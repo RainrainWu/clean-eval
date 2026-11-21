@@ -1,7 +1,7 @@
 """Use case: the risk a change carries, from the heat map of its base. The PR review scales its depth by this."""
-from ..domain.change import assess_change
-from ..domain.entities import Heatmap
 from ..domain.errors import NoPythonSource
+from ..domain.rating import Heatmap
+from .rules.change import assess_change
 
 
 class AssessChange:

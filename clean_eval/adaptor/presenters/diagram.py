@@ -2,8 +2,8 @@
 from xml.sax.saxutils import escape
 
 from ...domain.policy import ASPECTS, BANDS
-from ...domain.readme import MARKERS
-from ...domain.scoring import band
+from ...use_cases.rules.readme import MARKERS
+from ...use_cases.rules.scoring import band
 from . import style
 from .treemap import squarify
 
@@ -39,10 +39,11 @@ class SvgDiagramPresenter:
                "<style>.t{fill:%s}</style>" % style.DIAGRAM_TEXT,
                '<rect width="%d" height="%d" rx="6" fill="%s"/>' % (WIDTH, HEIGHT, style.DIAGRAM_BACKING)]
         for m, x, y, w, h in rects:
-            name = _band(m.scores["overall"])
+            name = _band(m.scores.overall)
             colour, _, glyph = style.BAND_STYLE[name]
-            detail = " · ".join("%s %s" % (label, "N/A" if m.scores[k] is None else m.scores[k]) for k, label in COLUMNS)
-            out.append("<g><title>%s: overall %s (%s), %s lines. %s</title>" % (escape(m.name), m.scores["overall"], name, m.loc, escape(detail)))
+            detail = " · ".join("%s %s" % (label, "N/A" if getattr(m.scores, k) is None else getattr(m.scores, k))
+                                for k, label in COLUMNS)
+            out.append("<g><title>%s: overall %s (%s), %s lines. %s</title>" % (escape(m.name), m.scores.overall, name, m.loc, escape(detail)))
             out.append('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" rx="4" fill="%s" fill-opacity="%s" stroke="%s" stroke-width="2"/>'
                        % (x + 2, y + 2, max(w - 4, 1), max(h - 4, 1), colour, style.TILE_OPACITY, colour))
             if w >= TEXT_MIN_W and h >= TEXT_MIN_H:
@@ -50,7 +51,7 @@ class SvgDiagramPresenter:
                 room = max(int((w - 16) / 7), 4)
                 short = short if len(short) <= room else short[: room - 1] + "…"
                 out.append('<text class="t" x="%.1f" y="%.1f" font-size="13" font-weight="600">%s</text>' % (x + 10, y + 22, escape(short)))
-                out.append('<text class="t" x="%.1f" y="%.1f" font-size="12">%s %s · %s</text>' % (x + 10, y + 39, glyph, m.scores["overall"], _fmt(m.loc)))
+                out.append('<text class="t" x="%.1f" y="%.1f" font-size="12">%s %s · %s</text>' % (x + 10, y + 39, glyph, m.scores.overall, _fmt(m.loc)))
             out.append("</g>")
         out.append("</svg>")
         return "\n".join(out) + "\n"

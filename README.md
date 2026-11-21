@@ -11,25 +11,29 @@ Claude Code skills in `.claude/skills/` form a feedback loop:
 | `/pr-review [PR#\|branch]` | Reviews a change against `pr-review/review-rules.md`, with depth scaled by the most severe band it touches in the heat map of its base. Every finding cites a rule ID. | heat map + rules → review |
 | `/eval [period]` | Replays merged PRs in a period, links later fixes/reverts to the PRs that caused them, measures how well risk scores and rules predicted them, and recommends changes to weights, thresholds and rules. | history → advice for model + rules |
 
-Requires Python 3 and git; `gh` (authenticated) for PR-number reviews, posting, and rule metrics in `/eval`.
+Requires [uv](https://docs.astral.sh/uv/) (it provides Python 3.15 and the locked dependencies, pydantic among them) and
+git; `gh` (authenticated) for PR-number reviews, posting, and rule metrics in `/eval`.
 Optional: the `code-review-graph` CLI, for call and execution-flow data in the heat map (`--graph code-review-graph`).
 
 ### Code layout
 
-The skills hold only instructions; the logic is the `clean_eval/` package (Python 3 stdlib only), in Clean
-Architecture layers whose dependencies point inward (enforced by `tests/test_architecture.py`). The GitHub Action is
-the same package behind one entry script, `action.sh`:
+The skills hold only instructions; the logic is the `clean_eval/` package, in Clean Architecture layers whose
+dependencies point inward. The GitHub Action is the same package behind one entry script, `action.sh`:
 
 | Layer | Holds | May import |
 |---|---|---|
-| `clean_eval/domain/` | entities, the risk policy, the four aspect rules, scoring, judgement, change assessment, README convention; for CI: review validation, redaction, diffs, merged-PR history, calibration and the tuning gates | nothing outside the stdlib's pure modules |
-| `clean_eval/use_cases/` | rate a repository, assess a change, refresh the README section, summarize, collect history; for CI: prepare the agent's context, finalize its output, post the review; and the ports they need | `domain` |
+| `clean_eval/domain/` | data models only: pydantic models of the policy, the source read, the ratings and heat map, a change's risk, reviews, merged-PR history and an eval's outcome. Every invariant is a validator: score ranges, the policy's knobs, an agent finding's rule, severity and line, commit ids, step outputs | pure stdlib modules and pydantic |
+| `clean_eval/use_cases/` | the use cases (rate a repository, assess a change, refresh the README section, collect history; for CI: prepare the agent's context, finalize its output, post the review), their ports, and `rules/`: the business rules as pure functions over the models (the four aspects, scoring, judgement, review, redaction, calibration, tuning) | `domain`, the same |
 | `clean_eval/adaptor/` | gateways (git, `gh`, `ast` graph, code-review-graph, files, the `.clean-eval/` snapshot) and presenters (SVG, Markdown) | `domain`, `use_cases` |
 | `clean_eval/external/` | the command line (with the CI commands and the agent's guard hook) and the composition root | everything |
 
-Run it as `python3 -I clean_eval <rate|readme|report|assess|history> ...` (`-I` keeps the rated repository off
-`sys.path`, so none of its code can be imported). `action.sh` also runs `prepare`, `finalize`, `post`, `redact` and
-`guard`.
+`tests/test_architecture.py` enforces the layering, the purity of the two inner layers (no I/O, no clock), and that the
+domain holds only data models (no functions; model methods are validators, computed fields, properties or constructors).
+
+Run it as `uv run python -I clean_eval <rate|readme|report|assess|history> ...` from this checkout; from another
+repository, `uv run --frozen --no-config --project <clean-eval> python -I <clean-eval>/clean_eval ...`. `-I` keeps the
+rated repository off `sys.path`, so none of its code can be imported, and `--no-config` keeps its uv settings out.
+`action.sh` also runs `prepare`, `finalize`, `post`, `redact` and `guard`.
 
 ### Per-repo configuration
 
@@ -85,8 +89,9 @@ The agent reads untrusted text (PR diffs and descriptions, commit messages, comm
    (read) and the agent's output folder (write; plus `.clean-eval/` for `eval` with `apply: true`), enforced
    both by Claude Code and independently by a PreToolUse hook (`clean_eval guard`) that resolves real paths, so
    symlinks and `.git/` are off-limits; a hook that fails for any reason denies. The checkout is untrusted too:
-   every Python call runs isolated (`python3 -I`), so a module a PR adds (say a `json.py`) can't shadow the
-   standard library.
+   clean-eval's environment is installed from its own `uv.lock` (hash-checked, `--no-config`, outside every checkout),
+   and every Python call runs isolated (`python -I`), so a module a PR adds (say a `json.py` or `pydantic.py`) can't
+   shadow the standard library or a dependency.
 3. **Finalize** (`clean_eval finalize`): validates the agent's output, turns unknown rule IDs into `NEW`, raises each
    finding to at least its rule's severity, and derives the verdict, blocker count and tier itself. Secrets
    (values of secret-looking env vars and known token formats) are redacted from everything that leaves the
@@ -98,7 +103,8 @@ The agent reads untrusted text (PR diffs and descriptions, commit messages, comm
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests      # stdlib only; fake gh/claude, no network
+uv sync                                                # Python 3.15 and the locked dependencies, in .venv
+uv run python -m unittest discover -s tests            # fake gh/claude, no network
 ```
 
 The `tests` workflow runs the same suite on every push to a pull request and to `master`.

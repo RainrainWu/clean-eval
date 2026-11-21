@@ -3,11 +3,12 @@ import unittest
 
 from helpers import heatmap, rating, sf
 
-from clean_eval.domain.entities import FileSignals, PyStats, Snapshot
 from clean_eval.domain.errors import NoPythonSource
 from clean_eval.domain.graph import Graph
+from clean_eval.domain.judgement import Judgement
 from clean_eval.domain.policy import Policy
-from clean_eval.domain.readme import MARKERS, fingerprint
+from clean_eval.domain.source import FileSignals, PyStats, Snapshot
+from clean_eval.use_cases.rules.readme import MARKERS, fingerprint
 from clean_eval.use_cases.assess_change import AssessChange
 from clean_eval.use_cases.finalize_heatmap import finalize_heatmap
 from clean_eval.use_cases.summarize_heatmap import SummarizeHeatmap
@@ -50,9 +51,9 @@ class FakeCoverage:
 
 def graph(has_flows=True):
     nodes = {"src/api/a.py::f": ("Function", "src/api/a.py", False), "src/core/c.py::g": ("Function", "src/core/c.py", False)}
-    return Graph(nodes, {"src/api/a.py": {"src/core/c.py"}}, {"src/api/a.py::f": {"tests/unit/test_a.py"}},
-                 [(0.9, "src/api/a.py", {"src/api/a.py", "src/core/c.py"})] if has_flows else [],
-                 {"source": "fake", "nodes": 2, "edges": 1, "flows": 1 if has_flows else 0}, has_flows=has_flows)
+    return Graph(nodes=nodes, links={"src/api/a.py": {"src/core/c.py"}}, tested={"src/api/a.py::f": {"tests/unit/test_a.py"}},
+                 flows=[(0.9, "src/api/a.py", {"src/api/a.py", "src/core/c.py"})] if has_flows else [],
+                 stats={"source": "fake", "nodes": 2, "edges": 1, "flows": 1 if has_flows else 0}, has_flows=has_flows)
 
 
 def files():
@@ -70,17 +71,17 @@ class RateRepositoryTest(unittest.TestCase):
         self.assertEqual((h.repo, h.ref, h.sha, h.generated_at, h.policy_version), ("demo", "main", "abc1234", "2026-11-16", 2))
         self.assertEqual([m.name for m in h.modules], ["src/api", "src/core"])  # largest first; tests are not modules
         api, core = h.modules
-        self.assertEqual((api.loc, api.tests["functions"], api.tests["tested"], api.tests["scales"]), (600, 1, 1, {"unit": 1}))
-        self.assertEqual(api.baseline, {k: api.scores[k] for k in ("biz", "effects", "entropy", "unverified")})
-        self.assertEqual(core.facts["effect_counts"], {"db_write": 2})
-        self.assertEqual(core.facts["effect_examples"], {"db_write": "src/core/c.py:7"})
-        self.assertEqual(core.facts["fan_in"], 1)
+        self.assertEqual((api.loc, api.tests.functions, api.tests.tested, api.tests.scales), (600, 1, 1, {"unit": 1}))
+        self.assertEqual(api.baseline.model_dump(), api.scores.model_dump(exclude={"overall"}))
+        self.assertEqual(core.facts.effect_counts, {"db_write": 2})
+        self.assertEqual(core.facts.effect_examples, {"db_write": "src/core/c.py:7"})
+        self.assertEqual(core.facts.fan_in, 1)
         self.assertTrue(h.notes[0].startswith("Knowledge graph (fake): 2 nodes"))
         self.assertEqual(h.loc_total, 700)
 
     def test_without_flows_the_facts_say_so(self):
         h = rater(has_flows=False).execute(P, "2026-11-16", depth=2)
-        self.assertFalse(h.modules[0].facts["flows_available"])
+        self.assertFalse(h.modules[0].facts.flows_available)
 
     def test_excluded_and_missing_source(self):
         p = Policy.from_overrides({"exclude": ["src/core/*"]})
@@ -103,12 +104,12 @@ class PresentationUseCases(unittest.TestCase):
             return "report"
 
     def judged(self):
-        return {"modules": {"m": {"business": {"level": 0, "reason": "r"}}}}
+        return Judgement.model_validate({"modules": {"m": {"business": {"level": 0, "reason": "r"}}}})
 
     def test_levels_are_applied_before_summarizing(self):
         final, text = SummarizeHeatmap(self.Recorder()).execute(heatmap(rating()), self.judged(), P)
         self.assertEqual((text, final.judged_modules), ("report", 1))
-        self.assertGreaterEqual(final.modules[0].scores["biz"], 75)
+        self.assertGreaterEqual(final.modules[0].scores.biz, 75)
         self.assertEqual(finalize_heatmap(heatmap(rating()), None, P).judged_modules, 0)
 
 

@@ -3,7 +3,7 @@ Results are cached per file content, so rating many revisions of one repository 
 import ast
 import re
 
-from ...domain.entities import FileSignals, PyStats
+from ...domain.source import FileSignals, PyStats
 
 TODO = re.compile(r"\b(TODO|FIXME|HACK|XXX)\b")
 # kind -> (call pattern, pattern the file must also match). The points per kind are business policy (Policy.effect_points).

@@ -8,8 +8,8 @@ description: Rate how risky each sub-module of this repository is to change on f
 Rate every sub-module of **this** repository and refresh the README's heat map: tile **area** is module size, tile
 **colour** is severity. Aspects, levels and weights: [rate.md](references/rate.md). The README section:
 [publish.md](references/publish.md).
-`CE` below is `python3 -I ${CLEAN_EVAL_HOME:-.}/clean_eval`: the clean-eval package (Python 3 stdlib only, outside this
-skill folder), where `CLEAN_EVAL_HOME` is the clean-eval checkout (this repository by default).
+`CE` below is `uv run --frozen --no-config --project ${CLEAN_EVAL_HOME:-.} python -I ${CLEAN_EVAL_HOME:-.}/clean_eval`: the clean-eval package (outside this skill folder, run in its own uv environment), where
+`CLEAN_EVAL_HOME` is the clean-eval checkout (this repository by default).
 
 ## Critical rules
 

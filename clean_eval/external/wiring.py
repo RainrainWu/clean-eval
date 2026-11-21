@@ -3,6 +3,8 @@ import datetime as dt
 import os
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from ..adaptor.gateways.ast_graph import BuiltinGraph
 from ..adaptor.gateways.code_review_graph import CodeReviewGraph
 from ..adaptor.gateways.coverage_xml import CoverageXmlReader, NoCoverage
@@ -14,7 +16,6 @@ from ..adaptor.gateways.python_signals import PythonSignals
 from ..adaptor.gateways.tuning_files import TuningFiles
 from ..domain.errors import InvalidRequest
 from ..domain.history import Period
-from ..domain.redaction import Redactor, secret_values
 from ..use_cases.assess_change import AssessChange
 from ..use_cases.collect_history import CollectHistory
 from ..use_cases.finalize_run import FinalizeRun
@@ -22,6 +23,7 @@ from ..use_cases.post_review import PostReview
 from ..use_cases.prepare_eval import PrepareEval
 from ..use_cases.prepare_review import PrepareReview
 from ..use_cases.rate_repository import RateRepository
+from ..use_cases.rules.redaction import Redactor, secret_values
 
 GRAPHS = ("builtin", "code-review-graph")
 CHECKOUT = Path(__file__).resolve().parents[2]  # the clean-eval checkout that holds this package and the skills
@@ -36,13 +38,9 @@ def today():
 def period(since, until, window_days=30):
     """The Period of PRs merged from `since` to `until` (YYYY-MM-DD, inclusive), with `window_days` of look-ahead."""
     try:
-        end = dt.date.fromisoformat(until)
-        dt.date.fromisoformat(since)
-    except (TypeError, ValueError):
-        raise InvalidRequest("since/until must be dates as YYYY-MM-DD (got %r, %r)" % (since, until))
-    end_ts = dt.datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=dt.timezone.utc).timestamp()
-    return Period(since=since, until=until, until_ts=end_ts,
-                  lookahead_until=(end + dt.timedelta(days=window_days)).isoformat(), window_days=window_days)
+        return Period(since=since, until=until, window_days=window_days)
+    except ValidationError as e:
+        raise InvalidRequest.from_validation(e, "since/until must be dates as YYYY-MM-DD")
 
 
 def redactor(environ=None):

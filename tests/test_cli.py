@@ -1,4 +1,4 @@
-"""The external layer end to end: `python3 -I clean_eval <command>` on a throwaway repository."""
+"""The external layer end to end: `python -I clean_eval <command>` (the environment uv.lock pins) on a throwaway repository."""
 import json
 import os
 import shutil
