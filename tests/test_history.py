@@ -6,13 +6,41 @@ from unittest import mock
 
 from helpers import FakeBin, Repo
 import history
-import risk
+
+from clean_eval.domain.policy import BAND_NAMES, Policy
 
 D = lambda s: dt.datetime.fromisoformat(s + "T12:00:00+00:00")  # noqa: E731
 
 
-def model():
-    return risk.load_model(risk.DEFAULT_MODEL)
+def model(**overrides):
+    return Policy.from_overrides(overrides)
+
+
+class CleanEvalHomeTest(unittest.TestCase):
+    """history.py finds the clean_eval package even when the skill is installed outside the checkout."""
+
+    def run_copy(self, env):
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+        from helpers import ROOT
+        d = tempfile.mkdtemp()
+        try:
+            shutil.copy(os.path.join(ROOT, ".claude", "skills", "eval", "scripts", "history.py"), d)
+            clean = {k: v for k, v in os.environ.items() if k != "CLEAN_EVAL_HOME"}
+            return subprocess.run([sys.executable, os.path.join(d, "history.py"), "--help"], cwd=d,
+                                  capture_output=True, text=True, env={**clean, **env})
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_installed_copy_needs_clean_eval_home(self):
+        from helpers import ROOT
+        self.assertEqual(self.run_copy({"CLEAN_EVAL_HOME": ROOT}).returncode, 0)
+        missing = self.run_copy({})
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("set CLEAN_EVAL_HOME", missing.stderr)
+        self.assertNotIn("Traceback", missing.stderr)
 
 
 class ParsingTest(unittest.TestCase):
@@ -74,21 +102,31 @@ class CollectTest(unittest.TestCase):
     def test_totals(self):
         self.assertEqual(self.hist["totals"], {"prs": 5, "defective_prs": 2, "escape_rate": 0.4})
 
-    def test_replay_and_sensitivity(self):
+    def test_prs_carry_the_base_heat_map(self):
+        u = self.prs[1]
+        self.assertIn(u["max_tier"], BAND_NAMES)
+        billing = [m for m in u["modules"] if m["module"] == "src"][0]
+        self.assertTrue(billing["rated"])
+        self.assertEqual(set(billing["scores"]), {"biz", "effects", "entropy", "unverified", "overall"})
+        self.assertEqual(billing["score"], billing["scores"]["overall"])
+        self.assertEqual(billing["facts"]["name"], "src")
+
+    def test_replay_reproduces_and_sensitivity_varies_the_policy(self):
         same = history.replay(self.hist, model())
-        self.assertEqual(set(same), {"auc_max_score", "by_tier", "tier_mix"})
+        self.assertEqual(set(same), {"auc_max_score", "by_band", "band_mix"})
+        self.assertEqual(same["by_band"], self.hist["calibration"]["by_band"])  # facts are stored exactly
         rows = history.sensitivity(self.hist, model())
         self.assertEqual(rows[0]["change"], "baseline")
         changes = [r["change"] for r in rows]
         self.assertEqual(len(changes), len(set(changes)))
-        self.assertTrue(any(c.startswith("likelihood_weights.churn") for c in changes))
-        self.assertTrue(any(c.startswith("level_thresholds.medium") for c in changes))
+        self.assertTrue(any(c.startswith("business_weights.dependents") for c in changes))
+        self.assertTrue(any(c.startswith("overall_peak_share") for c in changes))
+        self.assertTrue(any(c.startswith("unverified_mix.links") for c in changes))
 
-    def test_rescore_new_modules_use_model_tier(self):
-        m = model()
-        m["new_module_tier"] = "High"
-        prs = history.rescore([{"modules": [{"module": "x", "new_module": True, "signals": {}}], "defects": []}], m)
-        self.assertEqual(prs[0]["max_tier"], "High")
+    def test_rescore_unrated_modules_take_the_policy_band(self):
+        prs = history.rescore([{"modules": [{"module": "infra", "rated": False, "scores": {}, "score": None, "band": "Moderate"}],
+                                "defects": []}], model(unrated_band="High"))
+        self.assertEqual((prs[0]["max_tier"], prs[0]["max_score"]), ("High", 50))
 
 
 class GhReviewDataTest(unittest.TestCase):

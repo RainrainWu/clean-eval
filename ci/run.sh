@@ -12,7 +12,8 @@
 #   CE_SINCE/CE_UNTIL  eval: YYYY-MM-DD (since default: 90 days ago)
 #   CE_APPLY           eval: true|false — let the agent edit .clean-eval/ (accepted only if validated)
 #   CE_README          risk-heat-map: README path relative to workspace
-#   CE_USE_CLAUDE      risk-heat-map: true → add a Claude-written narrative
+#   CE_DIAGRAM         risk-heat-map: SVG diagram path relative to workspace (default docs/risk-heatmap.svg)
+#   CE_USE_CLAUDE      risk-heat-map: true → the agent levels the four aspects of every module (judgement.json)
 #   CE_MODEL, CE_MAX_TURNS, CE_CLAUDE_VERSION, CE_EXTRA_PROMPT
 #
 # Trust model — the agent reads untrusted text (PR diffs and bodies, commit messages, comments), so:
@@ -43,7 +44,7 @@ mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd -P)"
 CTX="$OUT/context"      # precomputed inputs — read-only for the agent
 AGENT="$OUT/agent"      # the only place the agent may write
-rm -rf "$CTX" "$AGENT" "$OUT/result.json" "$OUT/report.md" "$OUT/claude.log" "$OUT/heatmap.md"
+rm -rf "$CTX" "$AGENT" "$OUT/result.json" "$OUT/report.md" "$OUT/claude.log" "$OUT/heatmap.md" "$OUT/heatmap.html"
 mkdir -p "$CTX" "$AGENT"
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$WS is not a git repository"
@@ -51,7 +52,7 @@ if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
   die "shallow clone — risk scoring needs history. Use actions/checkout with 'fetch-depth: 0'."
 fi
 
-RISK="$ACTION_DIR/.claude/skills/risk-heat-map/scripts/risk.py"
+CE="$ACTION_DIR/clean_eval"  # the clean-eval package: python3 -I "$CE" <command>
 PREPARE="$ACTION_DIR/ci/prepare.py"
 RESULT="$ACTION_DIR/ci/result.py"
 cp -R "$ACTION_DIR/.claude/skills" "$CTX/skills"   # the agent reads SKILL.md from here
@@ -115,23 +116,42 @@ case "${CE_FAIL_ON:-never}" in never|request_changes|blocker) ;; *) die "unknown
 case "$SKILL" in
   risk-heat-map)
     README="${CE_README:-README.md}"
-    log "Compute risk heat map"
-    python3 "$RISK" --repo "$WS" heatmap --write-readme --readme "$README" --status-json "$CTX/heatmap-status.json" > "$OUT/heatmap.md"
-    python3 "$RISK" --repo "$WS" heatmap --json > "$OUT/result.json"
+    SVG="${CE_DIAGRAM:-docs/risk-heatmap.svg}"
+    log "Rate every module"
+    python3 -I "$CE" rate --repo "$WS" --out "$CTX/heatmap"
+    endlog
+    judged=()
+    if [ "${CE_USE_CLAUDE:-false}" = "true" ]; then
+      install_claude
+      run_claude "Level the four risk aspects of every module in the heat map. Read $CTX/skills/risk-heat-map/SKILL.md \
+and follow its 'CI mode' section; the level standards are in $CTX/skills/risk-heat-map/references/rate.md. Input: \
+$CTX/heatmap/data.json; the repository is checked out in the current directory. Write $AGENT/judgement.json. ${CE_EXTRA_PROMPT:-}"
+      if [ -f "$AGENT/judgement.json" ]; then
+        python3 "$RESULT" redact-file "$AGENT/judgement.json"
+        # levels are validated entry by entry when applied; the file as a whole must at least be a JSON object
+        if python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' \
+             "$AGENT/judgement.json" 2>/dev/null; then
+          judged=(--judgement "$AGENT/judgement.json")
+        else
+          echo "::warning::the agent's judgement.json is not a JSON object; publishing the static levels" >&2
+        fi
+      else
+        echo "::warning::the agent wrote no judgement.json; publishing the static levels" >&2
+      fi
+    fi
+    log "Publish the heat map"
+    python3 -I "$CE" readme "$CTX/heatmap/data.json" ${judged[@]+"${judged[@]}"} --repo "$WS" --readme "$README" --svg "$SVG" \
+      --status-json "$CTX/heatmap-status.json"
+    python3 -I "$CE" render "$CTX/heatmap/data.json" ${judged[@]+"${judged[@]}"} --repo "$WS" --out "$OUT/heatmap.html"
+    python3 -I "$CE" report "$CTX/heatmap/data.json" ${judged[@]+"${judged[@]}"} --repo "$WS" --out "$OUT/heatmap.md" \
+      --json-out "$OUT/result.json"
     endlog
     changed="$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["readme_changed"]).lower())' "$CTX/heatmap-status.json")"
-    if [ "${CE_USE_CLAUDE:-false}" = "true" ]; then
-      cp "$OUT/result.json" "$CTX/heatmap.json"
-      git diff --no-color -- "$README" > "$CTX/readme.diff" || true
-      install_claude
-      run_claude "Write a short narrative for the refreshed risk heat map. Read $CTX/skills/risk-heat-map/SKILL.md \
-and follow its 'CI mode' section. Inputs: $CTX/heatmap.json (per-module signals) and $CTX/readme.diff (what changed). \
-Write $AGENT/report.md. ${CE_EXTRA_PROMPT:-}"
-    fi
     python3 "$RESULT" finalize --skill risk-heat-map --ctx "$CTX" --agent "$AGENT" --out "$OUT" --gh-output "$GH_OUT" \
       || die "could not finalize the report"
-    { echo "## clean-eval · Risk Heat Map"; echo; sed '/<!-- risk-heat-map/d' "$OUT/report.md"; } >> "$SUMMARY"
+    { echo "## clean-eval · Risk Heat Map"; echo; cat "$OUT/report.md"; } >> "$SUMMARY"
     echo "readme-changed=$changed" >> "$GH_OUT"
+    echo "page=$OUT/heatmap.html" >> "$GH_OUT"
     ;;
 
   pr-review)

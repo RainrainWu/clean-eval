@@ -10,10 +10,11 @@ them ("escaped defects"), and checks whether the risk score and review rules wou
 Output is **advice with evidence**; nothing changes without approval (interactive) or `apply=true` (CI).
 
 **Paths.** `$SK` = `${CLEAN_EVAL_SKILLS:-.claude/skills}` (write commands with that literal prefix).
-- Collector: `$SK/eval/scripts/history.py` (Python 3 stdlib; imports `$SK/risk-heat-map/scripts/risk.py`)
-- Tuning targets — always the repo-specific copies; create them from the defaults if missing:
-  - `.clean-eval/risk-model.json` ← `$SK/risk-heat-map/risk-model.json`
-  - `.clean-eval/review-rules.md` ← `$SK/pr-review/review-rules.md`
+- Collector: `$SK/eval/scripts/history.py` (Python 3 stdlib; rates each PR's base with the `clean_eval` package)
+- Tuning targets — always the repo-specific files:
+  - `.clean-eval/risk-model.json` — overrides of the heat map's policy (`clean_eval/domain/policy.py`; contract in the
+    risk-heat-map skill's `references/rate.md`, "Policy overrides"). Absent means the defaults; add only the keys you change.
+  - `.clean-eval/review-rules.md` ← copy `$SK/pr-review/review-rules.md` first if missing.
 
 ## Steps
 
@@ -31,22 +32,27 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
    conclusions and report the failure count under Caveats.
 
 3. **Verify defects.** Fix→PR links are heuristic (shared files + fix/revert wording). For defective PRs with
-   `confidence: heuristic` (sample up to ~15, prioritising High/Critical and Low-tier misses), read both diffs
+   `confidence: heuristic` (sample up to ~15, prioritising High/Critical and Low-band misses), read both diffs
    (`git show <sha>`) and decide if the fix really repaired that PR's change. Drop false links, recompute the
    affected numbers, and report how many were dropped.
 
 4. **Analyse the risk model.**
-   - `auc_max_score`: ≥0.7 good, 0.6–0.7 fair, <0.6 weak. `by_tier.escape_rate` should rise Low → Critical;
+   - `auc_max_score` (the overall score vs escaped defects): ≥0.7 good, 0.6–0.7 fair, <0.6 weak. `by_band.escape_rate`
+     should rise Low → Moderate → High → Critical;
      flag any inversion.
-   - `signal_auc`: signals near/below 0.5 aren't predictive → lower their weight; strongest → raise. Keep changes
-     ≤ ±0.15 per weight per eval to avoid overfitting.
-   - Tier mix: if >60% of PRs land in one tier, propose moving `level_thresholds`.
-   - Modules with high `escape_rate` but low `mean_score` → propose `criticality` values or a finer `modules`
-     mapping (coarse modules hide hotspots); the reverse → over-flagged.
-   - **Replay** proposed weight/threshold/criticality changes on the collected history (milliseconds, no git):
-     `history.py --from-history <history.json> --replay <candidate-model.json>`, or `--sensitivity` for every
-     one-knob change at once. Compare AUC / tier escape rates before vs after; only recommend changes that don't
-     make AUC worse. Structural changes (`modules`, `window_days`, `exclude`) need a full re-collect with `--model`.
+   - `aspect_auc` (Business Impact `biz`, `effects`, `entropy`, `unverified`): an aspect near/below 0.5 isn't
+     predictive here → lower the weights inside it, or its share of `overall` via `overall_peak_share`; the strongest →
+     raise. Keep changes ≤ ±0.15 per weight per eval to avoid overfitting.
+   - `band_mix`: if >60% of PRs land in one band, the saturations (`business_saturation`, `entropy_saturation`, ...)
+     or standards (`long_func_lines`, ...) are too loose or too tight — propose moving them.
+   - Modules with high `escape_rate` but low `mean_score` → which aspect under-rates them (read their facts in `prs`)?
+     A missing write pattern, test links the graph can't see, a too-coarse module (`depth`); the reverse → over-flagged.
+   - PRs whose only touched modules are unrated (non-Python, new) take `unrated_band`; check their escape rate.
+   - **Replay** proposed changes to tunable knobs on the collected history (milliseconds, no git): write the candidate
+     overrides to a file, then `history.py --from-history <history.json> --replay <candidate-overrides.json>`, or
+     `--sensitivity` for every one-knob change at once. Compare AUC / band escape rates before vs after; only
+     recommend changes that don't make AUC worse. Structural changes (`depth`, `exclude`, path patterns) change what
+     is measured and need a full re-collect with `--model`.
 
 5. **Analyse review rules** (needs `--with-gh`; otherwise read review comments for a sample via `gh`, or skip and say so).
    - Rules cited often on PRs that stayed clean and never blocked anything → downgrade severity, raise min tier, or retire.
@@ -63,17 +69,17 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
    ```
    ## Eval <since> → <until>  (N PRs, D with escaped defects, rate X%)
    ### Risk model — AUC 0.55 (weak)
-   | Tier | PRs | Defective | Escape rate |
+   | Band | PRs | Defective | Escape rate |
    Findings … (with PR/commit evidence)
    ### Review rules
    Findings …
    ### Recommended changes
-   1. risk-model.json: likelihood_weights.churn 0.35 → 0.45 — signal AUC 0.62 (best); replay AUC 0.55 → 0.60
-   2. review-rules.md: add Q-05 "…" (major, Medium) — would have caught #478 → #502, #511 → #530
+   1. risk-model.json: business_weights.dependents 0.30 → 0.40 — biz AUC 0.67 (best); replay AUC 0.64 → 0.66
+   2. review-rules.md: add Q-05 "…" (major, Moderate) — would have caught #478 → #502, #511 → #530
    ### Caveats (sample size, heuristic links, incomplete look-ahead)
    ```
    Every recommendation cites its evidence. Interactive: ask which to apply. When applying: edit the
-   `.clean-eval/` copies, bump `version` in risk-model.json if the model changed, and offer `/risk-heat-map`.
+   `.clean-eval/` files, and offer `/risk-heat-map` to refresh the README with the new policy.
 
 ## CI mode
 
@@ -85,17 +91,19 @@ named in the prompt:
 |---|---|
 | `context.json` | period, PR and defect counts, baseline AUC, whether rule metrics are reliable |
 | `eval-history.json` | the step-2 output |
-| `sensitivity.json` | replays of every one-knob change (each weight ±0.1 and → 0, each threshold ±0.05): AUC, tier escape rates and tier mix — use these instead of running replays |
+| `sensitivity.json` | replays of every one-knob change (`overall_peak_share` ±0.1; every weight in `business_weights`, `effects_mix`, `entropy_weights`, `unverified_mix` ±0.1 and → 0): AUC, band escape rates and band mix — use these instead of running replays |
 | `defects/index.json` + `defects/NN-prX-{pr,fix}.patch` | the PR and fix diffs (overlapping files) for up to 30 defect links, highest-risk first — use these for step 3 |
-| `risk-model.orig.json`, `review-rules.orig.md` | the current model and rules |
+| `risk-model.orig.json`, `review-rules.orig.md` | the repository's current overrides (`{}` when none) and rules |
+| `risk-model.defaults.json` | every policy field with its default, for reference |
 
 **Coverage:** do step 3 from the patches — read the PR and fix patch for at least the first 10 links in
 `defects/index.json` (all of them if fewer), say how many you read and how many links you dropped as false, and
 base AUC/escape-rate conclusions on the verified set. Don't ask anything. With `apply=false`, write nothing outside
 the agent directory. With `apply=true` you may
-edit `.clean-eval/risk-model.json` and `.clean-eval/review-rules.md` (create them from the `.orig` copies). The
-action then accepts a model edit only if it changes nothing but `likelihood_weights`, `impact_weights`,
-`level_thresholds`, `criticality`, `criticality_default`, `new_module_tier` or `version`, and only if its replay AUC
+edit `.clean-eval/risk-model.json` (overrides: start from `risk-model.orig.json`, add only what you change) and
+`.clean-eval/review-rules.md` (from the `.orig` copy). The action then accepts a model edit only if it is a valid policy
+that changes nothing but tunable knobs (weights, mixes, saturations, points, standards, `overall_peak_share`,
+`unrated_band`; never `depth`, `exclude` or the path patterns), and only if its replay AUC
 is not below the baseline — otherwise it restores the file. A rules edit must still parse into unique rule rows.
 Any other file you create or change under `.clean-eval/` is restored to its previous state.
 The action also refuses model edits when the sample is under 20 PRs or 5 defective PRs, or AUC is undefined.

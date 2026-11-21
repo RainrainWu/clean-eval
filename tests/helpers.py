@@ -10,9 +10,7 @@ import tempfile
 import textwrap
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for p in (os.path.join(ROOT, ".claude", "skills", "risk-heat-map", "scripts"),
-          os.path.join(ROOT, ".claude", "skills", "eval", "scripts"),
-          os.path.join(ROOT, "ci")):
+for p in (ROOT, os.path.join(ROOT, ".claude", "skills", "eval", "scripts"), os.path.join(ROOT, "ci")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
@@ -21,7 +19,10 @@ _GITCONFIG = os.path.join(_GITCONFIG_DIR, "gitconfig")
 with open(_GITCONFIG, "w") as f:
     f.write("[user]\n\tname = Test\n\temail = test@example.com\n[commit]\n\tgpgsign = false\n"
             "[tag]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n")
-import risk  # noqa: E402  (path set up above)
+from collections import Counter  # noqa: E402
+
+from clean_eval.domain.entities import Facts, Heatmap, ModuleRating, SourceFile, facts_to_dict  # noqa: E402
+from clean_eval.domain.scoring import overall  # noqa: E402
 
 # Every git call in the tests (and in the code under test) ignores the developer's git config.
 os.environ["GIT_CONFIG_GLOBAL"] = _GITCONFIG
@@ -147,10 +148,10 @@ class FakeBin:
         self.claude({})
 
     def gh(self, cfg):
-        risk.write_json(os.path.join(self.dir, "gh.json"), cfg)
+        _dump(os.path.join(self.dir, "gh.json"), cfg)
 
     def claude(self, plan):
-        risk.write_json(os.path.join(self.dir, "claude.json"), plan)
+        _dump(os.path.join(self.dir, "claude.json"), plan)
 
     def gh_calls(self):
         p = os.path.join(self.dir, "gh-calls.jsonl")
@@ -161,10 +162,67 @@ class FakeBin:
 
     def claude_invocation(self):
         p = os.path.join(self.dir, "claude-invocation.json")
-        return risk.read_json(p) if os.path.exists(p) else None
+        return _load(p) if os.path.exists(p) else None
 
     def env(self):
         return {"PATH": self.dir + os.pathsep + os.environ["PATH"], "FAKE_GH_DIR": self.dir}
 
     def cleanup(self):
         shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def _dump(path, obj):
+    with open(path, "w") as f:
+        json.dump(obj, f)
+
+
+def _load(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def read(path):
+    with open(path) as f:
+        return f.read()
+
+
+def read_json(path):
+    return json.loads(read(path))
+
+
+def write_json(path, obj, **kw):
+    write(path, json.dumps(obj, **kw))
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+# ---------------------------------------------------------------- builders of domain entities
+
+def facts(**kw):
+    base = dict(name="src/x", loc=1000, files=5, share=0.1, funcs=[(10, 2)] * 20, typed_share=1.0, broad=0, swallow=0, todo=0,
+                big_files=0, fan_in=0, fan_out=0, effect_counts=Counter(), effect_examples={}, migrations=0, entry_flows=[],
+                flow_touch=0.0, keyword=False, tooling=False, graph_functions=20, linked_functions=20, linked_test_files=3,
+                linked_test_loc=1000.0, test_scales=Counter(unit=2, integration=1), line_rate=None)
+    base.update(kw)
+    return Facts(**base)
+
+
+def sf(path, loc, text="", test=False, blob=""):
+    return SourceFile(path, text, loc, test, blob)
+
+
+def rating(name="m", loc=100, biz=40, effects=10, entropy=20, unverified=30, fact=None):
+    scores = {"biz": biz, "effects": effects, "entropy": entropy, "unverified": unverified}
+    return ModuleRating(name=name, loc=loc, files=1, scores=dict(scores, overall=overall(scores)), baseline=dict(scores),
+                        tests={"functions": 0, "tested": 0, "coverage": None, "files": 0, "loc": 0, "ratio": 0, "scales": {}},
+                        evidence={k: ["e"] for k in scores}, top_files=[], facts=facts_to_dict(fact) if fact else None)
+
+
+def heatmap(*modules):
+    mods = list(modules) or [rating()]
+    return Heatmap(repo="demo", ref="main", sha="abc1234", generated_at="2026-11-16", loc_total=sum(m.loc for m in mods),
+                   modules=mods, notes=[])

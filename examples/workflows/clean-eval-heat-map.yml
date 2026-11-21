@@ -21,11 +21,17 @@ jobs:
         uses: RainrainWu/clean-eval@v1
         with:
           skill: risk-heat-map
+      - uses: actions/upload-artifact@v4
+        with:
+          name: risk-heat-map
+          path: ${{ steps.heatmap.outputs.page }}
       - if: steps.heatmap.outputs.readme-changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           branch: clean-eval/risk-heat-map
           title: "chore: refresh risk heat map"
           commit-message: "chore: refresh risk heat map"
-          add-paths: README.md
+          add-paths: |
+            README.md
+            docs/risk-heatmap.svg
           body: Automated refresh by clean-eval `risk-heat-map`.
