@@ -6,8 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
-from helpers import ROOT, FakeBin, Repo, days_ago
-import risk  # noqa: E402
+from helpers import FakeBin, ROOT, Repo, days_ago, read, read_json, write
 
 RUN_SH = os.path.join(ROOT, "ci", "run.sh")
 FAKE_KEY = "sk-ant-api03-" + "k" * 40
@@ -33,11 +32,11 @@ class RunShTest(unittest.TestCase):
                     "GITHUB_OUTPUT": self.gh_out, "GITHUB_STEP_SUMMARY": self.summary,
                     "ANTHROPIC_API_KEY": FAKE_KEY, "GH_TOKEN": GH_TOKEN, "SOME_RUNNER_TOKEN": "x" * 20})
         env.update({f"CE_{k.upper()}": v for k, v in ce.items()})
-        risk.write_text(self.gh_out, '')
+        write(self.gh_out, '')
         return subprocess.run(["bash", RUN_SH], capture_output=True, text=True, env=env, cwd=ws)
 
     def outputs(self):
-        return dict(l.split("=", 1) for l in risk.read_text(self.gh_out).splitlines() if "=" in l)
+        return dict(l.split("=", 1) for l in read(self.gh_out).splitlines() if "=" in l)
 
     # ---------------------------------------------------------------- argument and checkout errors
 
@@ -67,9 +66,14 @@ class RunShTest(unittest.TestCase):
             r.commit("init", {"src/billing/a.py": "1\n" * 10, "src/users/u.py": "2\n" * 10})
             res = self.run_sh(r.path, skill="risk-heat-map")
             self.assertEqual(res.returncode, 0, res.stderr)
-            self.assertEqual(self.outputs()["readme-changed"], "true")  # README created (untracked)
-            self.assertIn("## Risk Heat Map", risk.read_text(os.path.join(r.path, "README.md")))
-            self.assertIn("src/billing", risk.read_text(self.summary))
+            self.assertEqual(self.outputs()["readme-changed"], "true")  # README and diagram created
+            readme = read(os.path.join(r.path, "README.md"))
+            self.assertIn("## Risk Heat Map", readme)
+            self.assertIn("](docs/risk-heatmap.svg)", readme)
+            self.assertTrue(os.path.exists(os.path.join(r.path, "docs", "risk-heatmap.svg")))
+            self.assertIn("`src", read(self.summary))
+            self.assertIn("Risk Heat Map", read(self.outputs()["page"]))
+            self.assertEqual(read_json(self.outputs()["result"])["repo"], os.path.basename(r.path))
             r.commit("docs: heat map")
             self.run_sh(r.path, skill="risk-heat-map")
             self.assertEqual(self.outputs()["readme-changed"], "false")
@@ -104,7 +108,11 @@ class RunShTest(unittest.TestCase):
             self.assertEqual(res.returncode, 1)  # CA-01 floored to blocker → fail-on=blocker
             self.assertIn("1 blocker finding", res.stderr)
             o = self.outputs()
-            self.assertEqual((o["verdict"], o["blockers"], o["max-tier"]), ("request_changes", "1", "Medium"))
+            ctx_risk = read_json(os.path.join(self.out, "context", "risk.json"))
+            self.assertEqual((o["verdict"], o["blockers"], o["max-tier"]), ("request_changes", "1", ctx_risk["max_tier"]))
+            self.assertIn(ctx_risk["max_tier"], ("Low", "Moderate", "High", "Critical"))
+            self.assertEqual(ctx_risk["files"]["src/new/n.py"], "src")  # a new file inside a rated module takes its band
+            self.assertIn("evidence", ctx_risk["modules"][0])
 
             # the agent ran sandboxed: restricted mode, our settings, no GitHub token, no stdin
             inv = self.bin.claude_invocation()
@@ -117,16 +125,16 @@ class RunShTest(unittest.TestCase):
             self.assertIn("CE_GUARD_WRITE_ROOTS", inv["env"])
             self.assertEqual(inv["stdin"], "")
             self.assertEqual(os.path.realpath(inv["cwd"]), os.path.realpath(r.path))
-            settings = risk.read_json(os.path.join(self.out, "context", "claude-settings.json"))
+            settings = read_json(os.path.join(self.out, "context", "claude-settings.json"))
             self.assertIn("guard.py", settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"])
 
             # precomputed context: risk at base, diff, rules from base
-            ctx = risk.read_json(os.path.join(self.out, "context", "context.json"))
+            ctx = read_json(os.path.join(self.out, "context", "context.json"))
             self.assertEqual((ctx["base"], ctx["head"]), (base, head))
-            index = risk.read_json(os.path.join(self.out, "context", "diff", "index.json"))
+            index = read_json(os.path.join(self.out, "context", "diff", "index.json"))
             self.assertEqual([e["file"] for e in index], ["src/billing/a.py", "src/new/n.py"])
             self.assertEqual(ctx["diff_patches"], 2)
-            self.assertIn("+n", risk.read_text(os.path.join(self.out, "context", index[1]["patch"])))
+            self.assertIn("+n", read(os.path.join(self.out, "context", index[1]["patch"])))
 
             # what was posted: one review, derived verdict, our marker only, secret redacted
             post = [json.loads(c["stdin"]) for c in self.bin.gh_calls() if "POST" in c["args"]][0]
@@ -134,9 +142,9 @@ class RunShTest(unittest.TestCase):
             self.assertEqual(post["commit_id"], head)
             self.assertNotIn(GH_TOKEN, post["body"])
             self.assertEqual(post["body"].count("clean-eval:pr-review"), 1)
-            self.assertIn("tier=Medium", post["body"])
+            self.assertIn("tier=%s" % ctx_risk["max_tier"], post["body"])
             self.assertEqual(len(post["comments"]), 1)
-            final = risk.read_json(os.path.join(self.out, "result.json"))
+            final = read_json(os.path.join(self.out, "result.json"))
             self.assertEqual([f["rule"] for f in final["findings"]], ["CA-01", "NEW"])
         finally:
             r.cleanup()
@@ -168,7 +176,7 @@ class RunShTest(unittest.TestCase):
                          "post_review": {"out": {"id": 1, "user": {"login": "bot"}}}, "list_reviews": {"out": []}})
             self.bin.claude({"agent_files": {"report.md": "r", "result.json": {"findings": []}}})
             self.assertEqual(self.run_sh(r.path, skill="pr-review", pr="3", post="false").returncode, 0)
-            rules = risk.read_text(os.path.join(self.out, "context", "review-rules.md"))
+            rules = read(os.path.join(self.out, "context", "review-rules.md"))
             self.assertIn("base rule", rules)
             self.assertNotIn("nothing to see", rules)
             self.assertFalse(any("POST" in c["args"] for c in self.bin.gh_calls()))  # post=false
@@ -188,14 +196,13 @@ class RunShTest(unittest.TestCase):
     def test_eval_reverts_disallowed_edit(self):
         r = self.eval_repo()
         try:
-            model = risk.read_json(os.path.join(ROOT, ".claude", "skills", "risk-heat-map", "risk-model.json"))
-            model["window_days"] = 7  # structural: not allowed in CI
+            model = {"depth": 1}  # structural: changes what is measured, not allowed in CI
             self.bin.claude({"agent_files": {"report.md": "## Eval", "result.json": {"recommendations": []}},
                              "workspace_files": {".clean-eval/risk-model.json": model}})
             since = days_ago(90).date().isoformat()
             res = self.run_sh(r.path, skill="eval", since=since, apply="true")
             self.assertEqual(res.returncode, 0, res.stderr)
-            final = risk.read_json(os.path.join(self.out, "result.json"))
+            final = read_json(os.path.join(self.out, "result.json"))
             self.assertFalse(final["model_change"]["accepted"])
             self.assertFalse(os.path.exists(os.path.join(r.path, ".clean-eval", "risk-model.json")))
             self.assertEqual(self.outputs()["applied"], "false")

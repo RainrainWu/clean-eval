@@ -29,23 +29,25 @@ import shutil
 import subprocess
 import sys
 
+from pathlib import Path
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKILLS = os.path.join(os.path.dirname(HERE), ".claude", "skills")
-sys.path.insert(0, os.path.join(SKILLS, "risk-heat-map", "scripts"))
-sys.path.insert(0, os.path.join(SKILLS, "eval", "scripts"))
-import risk  # noqa: E402
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, ".claude", "skills", "eval", "scripts"))
+from clean_eval.adaptor.gateways.files import REPO_POLICY  # noqa: E402
+from clean_eval.domain.errors import InvalidPolicy  # noqa: E402
+from clean_eval.domain.policy import BAND_NAMES, TUNABLE, Policy  # noqa: E402
 import history  # noqa: E402
 
 RULE_RE = re.compile(r"^([A-Z]{1,4}-\d{2,3}|NEW)$")
-RULE_ROW = re.compile(r"^\|\s*([A-Z]{1,4}-\d{2,3})\s*\|\s*(blocker|major|minor)\s*\|\s*(Low|Medium|High|Critical)\s*\|",
+RULE_ROW = re.compile(r"^\|\s*([A-Z]{1,4}-\d{2,3})\s*\|\s*(blocker|major|minor)\s*\|\s*(Low|Moderate|High|Critical)\s*\|",
                       re.M)
 SEVERITIES = ("minor", "major", "blocker")  # ascending
-TIERS = tuple(risk.TIER_ORDER)
+TIERS = BAND_NAMES
 MARKER_RE = re.compile(r"<!--\s*clean-eval:[^>]*-->")
 MAX_REPORT_CHARS = 60_000  # GitHub caps review bodies at 65,536
 MAX_FINDINGS = 50
-TUNABLE_KEYS = {"likelihood_weights", "impact_weights", "level_thresholds", "criticality",
-                "criticality_default", "new_module_tier", "version"}
 
 SECRET_NAME = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|CREDENTIAL", re.I)
 TOKEN_PATTERNS = [re.compile(p) for p in (
@@ -60,6 +62,22 @@ HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 class Invalid(Exception):
     pass
+
+
+def _read(path, **kw):
+    return Path(path).read_text(**kw)
+
+
+def _read_json(path):
+    return json.loads(Path(path).read_text())
+
+
+def _write(path, text):
+    Path(path).write_text(text)
+
+
+def _write_json(path, obj, **kw):
+    Path(path).write_text(json.dumps(obj, **kw))
 
 
 # ---------------------------------------------------------------- redaction
@@ -175,32 +193,23 @@ def _num(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _comment(key):
+    return key.startswith("_") or key == "notes"
+
+
 def validate_model_change(new, orig):
-    """Raise Invalid unless `new` is a well-formed model differing from `orig` only in tunable keys."""
+    """Raise Invalid unless `new` (risk-model overrides) is a valid policy that differs from `orig` only in tunable
+    knobs - weights, mixes, saturations, points, standards - never in what is measured (module shape, path conventions)."""
     if not isinstance(new, dict):
         raise Invalid("risk-model.json must be an object")
-    changed = {k for k in set(new) | set(orig) if new.get(k) != orig.get(k)}
-    if changed - TUNABLE_KEYS:
-        raise Invalid(f"only tunable keys may change in CI ({sorted(TUNABLE_KEYS)}); also changed: {sorted(changed - TUNABLE_KEYS)}")
-    for axis in ("likelihood_weights", "impact_weights"):
-        w = new.get(axis)
-        if not isinstance(w, dict) or set(w) != set(orig[axis]):
-            raise Invalid(f"{axis} must keep the signals {sorted(orig[axis])}")
-        if any(not _num(v) or v < 0 for v in w.values()) or sum(w.values()) <= 0:
-            raise Invalid(f"{axis} must be non-negative numbers with a positive sum")
-    th = new.get("level_thresholds") or {}
-    if not all(_num(th.get(k)) for k in ("medium", "high")) or not 0 < th["medium"] < th["high"] < 1:
-        raise Invalid("level_thresholds must satisfy 0 < medium < high < 1")
-    crit = new.get("criticality", {})
-    if not isinstance(crit, dict) or any(not _num(v) or not 0 <= v <= 1 for v in crit.values()):
-        raise Invalid("criticality values must be numbers in [0, 1]")
-    cd = new.get("criticality_default", 0.5)
-    if not _num(cd) or not 0 <= cd <= 1:
-        raise Invalid("criticality_default must be a number in [0, 1]")
-    if new.get("new_module_tier", "Medium") not in TIERS:
-        raise Invalid("new_module_tier must be a tier")
-    if "version" in new and (not isinstance(new["version"], int) or isinstance(new["version"], bool)):
-        raise Invalid("version must be an integer")
+    changed = {k for k in set(new) | set(orig) if not _comment(k) and new.get(k) != orig.get(k)}
+    structural = changed - TUNABLE - {"version"}
+    if structural:
+        raise Invalid("only tunable keys may change in CI; also changed: %s" % sorted(structural))
+    try:
+        Policy.from_overrides(new)
+    except InvalidPolicy as e:
+        raise Invalid(str(e))
     return changed
 
 
@@ -257,19 +266,19 @@ def _check_clean_eval_edits(a, hist, context):
 
     Returns (model_change, rules_change, other_files_reverted, revert_all)."""
     ws, ctx = a.workspace, a.ctx
-    model_path = os.path.join(ws, risk.REPO_MODEL)
-    orig_model_text = risk.read_text(os.path.join(ctx, "risk-model.orig.json"))
+    model_path = os.path.join(ws, REPO_POLICY)
+    orig_model_text = _read(os.path.join(ctx, "risk-model.orig.json"))
     rules_path = os.path.join(ws, ".clean-eval", "review-rules.md")
-    orig_rules = risk.read_text(os.path.join(ctx, "review-rules.orig.md"))
+    orig_rules = _read(os.path.join(ctx, "review-rules.orig.md"))
     revert_model = lambda: _restore(model_path, orig_model_text, context.get("model_existed"))  # noqa: E731
     revert_rules = lambda: _restore(rules_path, orig_rules, context.get("rules_existed"))  # noqa: E731
 
     model_change = rules_change = None
-    if os.path.exists(model_path) and risk.read_text(model_path) != orig_model_text:
+    if os.path.exists(model_path) and _read(model_path) != orig_model_text:
         try:
             if not a.apply:
                 raise Invalid("apply=false")
-            new = risk.read_json(model_path)
+            new = _read_json(model_path)
             orig = json.loads(orig_model_text)
             changed = validate_model_change(new, orig)
             prs, defective = hist["totals"]["prs"], hist["totals"]["defective_prs"]
@@ -278,21 +287,21 @@ def _check_clean_eval_edits(a, hist, context):
                               f"need at least {MIN_PRS} and {MIN_DEFECTIVE})")
             # compare replay with replay: stored signals are rounded, so a replay of the unchanged
             # model can differ slightly from the collected AUC
-            before = history.replay(hist, orig)["auc_max_score"]
-            after = history.replay(hist, new)["auc_max_score"]
+            before = history.replay(hist, Policy.from_overrides(orig))["auc_max_score"]
+            after = history.replay(hist, Policy.from_overrides(new))["auc_max_score"]
             if before is None or after is None:
                 raise Invalid("AUC is undefined for this period (no defective or no clean PRs): no evidence for a change")
             if after < before:
                 raise Invalid(f"replay AUC {after} is below the current model's {before}")
             model_change = {"accepted": True, "changed_keys": sorted(changed), "auc_before": before, "auc_after": after}
-        except (Invalid, ValueError, KeyError, TypeError, AttributeError) as e:
+        except (Invalid, InvalidPolicy, ValueError, KeyError, TypeError, AttributeError) as e:
             revert_model()
             model_change = {"accepted": False, "reason": str(e)}
-    if os.path.exists(rules_path) and risk.read_text(rules_path) != orig_rules:
+    if os.path.exists(rules_path) and _read(rules_path) != orig_rules:
         try:
             if not a.apply:
                 raise Invalid("apply=false")
-            validate_rules_change(risk.read_text(rules_path))
+            validate_rules_change(_read(rules_path))
             rules_change = {"accepted": True}
         except Invalid as e:
             revert_rules()
@@ -307,12 +316,12 @@ def _check_clean_eval_edits(a, hist, context):
 
 
 def finalize_eval(a):
-    hist = risk.read_json(os.path.join(a.ctx, "eval-history.json"))
-    context = risk.read_json(os.path.join(a.ctx, "context.json"))
+    hist = _read_json(os.path.join(a.ctx, "eval-history.json"))
+    context = _read_json(os.path.join(a.ctx, "context.json"))
     # Check edits before reading the agent's output: an invalid result must not leave unchecked edits behind.
     model_change, rules_change, other_reverted, revert_all = _check_clean_eval_edits(a, hist, context)
     try:
-        raw = risk.read_json(os.path.join(a.agent, "result.json"))
+        raw = _read_json(os.path.join(a.agent, "result.json"))
         if not isinstance(raw, dict):
             raise Invalid("result.json must be an object")
         recs = raw.get("recommendations") or []
@@ -337,9 +346,9 @@ def finalize(a):
     report_src = os.path.join(a.agent, "report.md")
     try:
         if a.skill == "pr-review":
-            raw = risk.read_json(os.path.join(a.agent, "result.json"))
-            risk_ctx = risk.read_json(os.path.join(a.ctx, "risk.json"))
-            rules = parse_rules(risk.read_text(os.path.join(a.ctx, "review-rules.md")))
+            raw = _read_json(os.path.join(a.agent, "result.json"))
+            risk_ctx = _read_json(os.path.join(a.ctx, "risk.json"))
+            rules = parse_rules(_read(os.path.join(a.ctx, "review-rules.md")))
             res = validate_pr_review(raw, risk_ctx, rules)
             outputs = {"verdict": res["verdict"], "max-tier": res["max_tier"],
                        "max-score": f"{res['max_score']:.3f}", "blockers": str(res["blockers"])}
@@ -347,17 +356,16 @@ def finalize(a):
             res, outputs = finalize_eval(a)
         else:
             res, outputs = None, {}
-            if not os.path.exists(report_src):
-                report_src = os.path.join(a.out, "heatmap.md")
+            report_src = os.path.join(a.out, "heatmap.md")  # the deterministic summary; the agent only levels
     except (Invalid, OSError, ValueError, KeyError, TypeError) as e:
         print(f"::error::clean-eval: invalid agent output: {e}", file=sys.stderr)
         return 2
 
-    report, n = sanitize_report(risk.read_text(report_src) if os.path.exists(report_src) else "_no report written_")
-    risk.write_text(os.path.join(a.out, "report.md"), report)
+    report, n = sanitize_report(_read(report_src) if os.path.exists(report_src) else "_no report written_")
+    _write(os.path.join(a.out, "report.md"), report)
     if res is not None:
         res["redactions"] = res.get("redactions", 0) + n
-        risk.write_json(os.path.join(a.out, "result.json"), res, indent=2)
+        _write_json(os.path.join(a.out, "result.json"), res, indent=2)
         if res["redactions"]:
             print(f"::warning::clean-eval redacted {res['redactions']} secret-looking value(s) from agent output",
                   file=sys.stderr)
@@ -379,9 +387,9 @@ def commentable_lines(ctx):
     if not os.path.exists(index_path):
         return None
     out = {}
-    for e in risk.read_json(index_path):
+    for e in _read_json(index_path):
         lines, new = set(), None
-        for line in risk.read_text(os.path.join(ctx, e["patch"])).splitlines():
+        for line in _read(os.path.join(ctx, e["patch"])).splitlines():
             m = HUNK.match(line)
             if m:
                 new = int(m.group(1))
@@ -395,8 +403,8 @@ def commentable_lines(ctx):
 
 
 def post(a):
-    res = risk.read_json(os.path.join(a.out, "result.json"))
-    report = risk.read_text(os.path.join(a.out, "report.md"))
+    res = _read_json(os.path.join(a.out, "result.json"))
+    report = _read(os.path.join(a.out, "report.md"))
     rules = sorted({f["rule"] for f in res["findings"] if f["rule"] != "NEW"})
     marker = (f"<!-- clean-eval:pr-review tier={res['max_tier']} score={res['max_score']:.3f} "
               f"rules={','.join(rules)} rules_version={res.get('rules_version') or ''} -->")
@@ -449,9 +457,9 @@ def post(a):
 
 def redact_file(a):
     if os.path.exists(a.path):
-        text, n = redact(risk.read_text(a.path, errors="replace"))
+        text, n = redact(_read(a.path, errors="replace"))
         if n:
-            risk.write_text(a.path, text)
+            _write(a.path, text)
             print(f"::warning::clean-eval redacted {n} secret-looking value(s) from {os.path.basename(a.path)}",
                   file=sys.stderr)
     return 0

@@ -7,8 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from helpers import ROOT
-import risk  # noqa: E402
+from helpers import ROOT, write
 import guard
 
 GUARD = os.path.join(ROOT, "ci", "guard.py")
@@ -20,7 +19,7 @@ class GuardTest(unittest.TestCase):
         self.ws, self.ctx, self.agent = (os.path.join(self.base, d) for d in ("ws", "ctx", "agent"))
         for d in (self.ws, self.ctx, self.agent, os.path.join(self.ws, ".git")):
             os.makedirs(d)
-        risk.write_text(os.path.join(self.base, "secret.txt"), '')
+        write(os.path.join(self.base, "secret.txt"), '')
         os.symlink(os.path.join(self.base, "secret.txt"), os.path.join(self.ws, "link.txt"))
         self.read, self.write = [self.ws, self.ctx], [self.agent]
 

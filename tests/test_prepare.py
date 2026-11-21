@@ -3,9 +3,10 @@ import shutil
 import tempfile
 import unittest
 
-from helpers import Repo, days_ago
+from helpers import Repo, days_ago, read, write
 import prepare
-import risk
+
+from clean_eval.adaptor.gateways.git_cli import Git
 
 
 class SplitDiffTest(unittest.TestCase):
@@ -23,11 +24,12 @@ class SplitDiffTest(unittest.TestCase):
             r.write('src/a/we"ird name.py', "w\n")
             r.write("src/a/keep.py", "k2\n")
             head = r.commit("change", when=days_ago(2))
-            files = risk.diff_files(r.path, base, head)
-            index = prepare.write_split_diff(r.path, base, head, files, {f: "src/a" for f in files}, out)
+            git = Git(r.path)
+            files = git.diff_files(base, head)
+            index = prepare.write_split_diff(git, base, head, files, {f: "src/a" for f in files}, out)
             self.assertEqual(len(index), len(files))
             for e in index:
-                patch = risk.read_text(os.path.join(out, os.path.basename(e["patch"])))
+                patch = read(os.path.join(out, os.path.basename(e["patch"])))
                 self.assertTrue(patch.startswith("diff --git "), e)
                 self.assertEqual(e["module"], "src/a")
                 self.assertFalse(e["truncated"])
