@@ -1,5 +1,5 @@
-# The unit, architecture and end-to-end tests (fake gh/claude, no network, no secrets) and ruff's lint and format checks,
-# on every push to a pull request and to master, in the environment uv.lock pins.
+# The unit, architecture and end-to-end tests (fake gh/claude, no network, no secrets), ruff's lint and format checks and
+# ty's type check, on every push to a pull request and to master, in the environment uv.lock pins.
 name: tests
 on:
   pull_request:
@@ -44,3 +44,4 @@ jobs:
       - run: uv sync --locked
       - run: uv run --frozen ruff check --output-format github .
       - run: uv run --frozen ruff format --check --diff .
+      - run: uv run --frozen ty check --output-format github

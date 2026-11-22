@@ -22,10 +22,12 @@ unexpected denies; action.sh also turns any other exit status of the hook comman
 """
 
 import sys
+from typing import Any, Optional, TextIO
 
 from clean_eval.domain.review import ToolCall
 from clean_eval.external.environment import EnvironmentGateway
 from clean_eval.external.filesystem import FileSystemGateway
+from clean_eval.use_cases.interfaces import Environment, FileSystem
 
 READ_TOOLS = {"Read": "file_path", "Grep": "path", "Glob": "path", "LS": "path"}
 WRITE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path"}
@@ -34,17 +36,19 @@ ALLOW, DENY = 0, 2
 FS, ENV = FileSystemGateway(), EnvironmentGateway()
 
 
-def roots(paths, fs=FS):
+def roots(paths: list[str], fs: FileSystem = FS) -> list[str]:
     """The real paths of the given roots. A symlinked root would make its target reachable, so it is dropped (fail
     closed)."""
     return [fs.real_path(p) for p in paths if not fs.is_link(p.rstrip(fs.sep))]
 
 
-def _within(path, allowed, sep):
+def _within(path: str, allowed: list[str], sep: str) -> bool:
     return any(path == r or path.startswith(r.rstrip(sep) + sep) for r in allowed)
 
 
-def decide(tool, tool_input, cwd, read_roots, write_roots, fs=FS):
+def decide(
+    tool: str, tool_input: dict[str, Any], cwd: str, read_roots: list[str], write_roots: list[str], fs: FileSystem = FS
+) -> Optional[str]:
     """Return None to allow, or a reason string to deny."""
     if tool in SAFE_TOOLS:
         return None
@@ -74,7 +78,9 @@ def decide(tool, tool_input, cwd, read_roots, write_roots, fs=FS):
     return "%s is not available to the clean-eval CI agent" % tool
 
 
-def hook(stdin=None, stderr=None, env=ENV, fs=FS):
+def hook(
+    stdin: Optional[TextIO] = None, stderr: Optional[TextIO] = None, env: Environment = ENV, fs: FileSystem = FS
+) -> int:
     """Decide one tool call (default: the hook protocol on this process's stdin and stderr); the exit status."""
     stdin, stderr = stdin or sys.stdin, stderr or sys.stderr
     try:

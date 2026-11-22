@@ -19,6 +19,7 @@ uv run pytest -m "not e2e"                               # without the subproces
 uv run pytest tests/use_cases/test_heatmap.py            # one module (::test_helpers for one test, -k to filter)
 uv run ruff check --fix .                                # lint: pycodestyle, pyflakes, isort's import order
 uv run ruff format .                                     # format: Black's style, 120 columns
+uv run ty check                                          # type check: the package, the tests and .github/scripts
 uv run python -I clean_eval rate --out <dir>             # rate this repository -> <dir>/data.json
 uv run python -I clean_eval report <dir>/data.json       # the summary table
 uv run python -I clean_eval assess --base master --head HEAD   # the risk a change carries
@@ -27,8 +28,8 @@ uv run python -I clean_eval history --since 2026-01-01 --until 2026-02-01   # me
 
 - **Other commands:** the action also runs `prepare`, `finalize`, `post`, `redact` and `guard`; see `clean_eval --help`.
 - **From another repository:** `uv run --frozen --no-config --project <checkout> python -I <checkout>/clean_eval ...`.
-- **Lint and format with ruff** before committing; CI fails on either check. Its settings are in `pyproject.toml`.
-  `tests/test_architecture.py` enforces structure and imports.
+- **Lint, format and type-check** before committing: ruff, then ty. CI fails on any of the three, and their settings
+  are in `pyproject.toml`. `tests/test_architecture.py` enforces structure and imports.
 
 ## Architecture
 
@@ -71,6 +72,9 @@ The action (`action.sh`) runs four steps. The agent only proposes; deterministic
 - **Every Python call runs isolated, with `python -I`.** This applies in `action.sh`, the skills and the docs, so a module
   planted in a checkout (a `json.py`, a `pydantic.py`) can't shadow the standard library or a dependency.
 - **Imports are absolute** (`from clean_eval.domain.policy import Policy`), never relative.
+- **Every function in `clean_eval/` is annotated** (ruff's `ANN`), and ty checks each call against the annotations.
+  - Write `Optional[...]` and `Union[...]` from `typing`, as the domain models do.
+  - Input that is validated before use (parsed JSON, a `mode="before"` validator's value) is `object`, not `Any`.
 - **Logic goes into `clean_eval`; the skills hold only instructions.** They invoke the package as
   `uv run --frozen --no-config --project ${CLEAN_EVAL_HOME:-.} python -I ${CLEAN_EVAL_HOME:-.}/clean_eval`.
 - **A repository's own tuning in `.clean-eval/` overrides the bundled defaults.**

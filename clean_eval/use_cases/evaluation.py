@@ -1,6 +1,9 @@
 """Use cases of the eval: keep or restore the tuning files the CI agent edits, collect the merged-PR history of a
 period, and prepare the agent's context."""
 
+from collections.abc import Callable, Collection
+from typing import Optional, Union
+
 from pydantic import ValidationError
 
 from clean_eval.domain.errors import InvalidOutput, NoPythonSource, RemoteError
@@ -8,15 +11,20 @@ from clean_eval.domain.evaluation import (
     DefectPatch,
     EvalContext,
     EvalHistory,
+    EvalResult,
     FetchFailure,
     HistoryPeriod,
     MergedPR,
+    Period,
     Rejection,
+    ReviewSignal,
     Totals,
 )
 from clean_eval.domain.policy import REPO_DIR, Policy
 from clean_eval.domain.rating import Heatmap, ModuleRecord, RatingCache
+from clean_eval.domain.review import StepOutputs
 from clean_eval.use_cases.heatmap import rate_revision
+from clean_eval.use_cases.interfaces import Clock, CodeHost, Environment, FileSystem, Git
 from clean_eval.use_cases.rules.evaluation import (
     MODEL_FILE,
     RULES_FILE,
@@ -43,35 +51,35 @@ from clean_eval.use_cases.store import JUDGING_ERRORS, invalid, read_json, valid
 SNAPSHOT = "clean-eval.orig"  # in the context folder: .clean-eval/ as it was before the agent ran
 
 
-def _text(fs, path):
+def _text(fs: FileSystem, path: str) -> Optional[str]:
     return fs.read_text(path) if fs.is_file(path) else None
 
 
-def _clear(fs, path):
+def _clear(fs: FileSystem, path: str) -> None:
     if fs.is_dir(path) and not fs.is_link(path):
         fs.remove_tree(path)
     elif fs.lexists(path):
         fs.remove(path)
 
 
-def snapshot_tuning(fs, workspace, snapshot_dir):
+def snapshot_tuning(fs: FileSystem, workspace: str, snapshot_dir: str) -> None:
     """Copy .clean-eval/ aside, as it is now."""
     live = fs.join(workspace, REPO_DIR)
     if fs.is_dir(live):
         fs.copy_tree(live, snapshot_dir)
 
 
-def current_tuning(fs, workspace, name):
+def current_tuning(fs: FileSystem, workspace: str, name: str) -> Optional[str]:
     """The text of .clean-eval/<name> now, or None when there is no such file."""
     return _text(fs, fs.join(workspace, REPO_DIR, name))
 
 
-def original_tuning(fs, snapshot_dir, name):
+def original_tuning(fs: FileSystem, snapshot_dir: str, name: str) -> Optional[str]:
     """The text of .clean-eval/<name> in the snapshot, or None when there was no such file."""
     return _text(fs, fs.join(snapshot_dir, name))
 
 
-def restore_tuning(fs, workspace, snapshot_dir, name):
+def restore_tuning(fs: FileSystem, workspace: str, snapshot_dir: str, name: str) -> None:
     """Put .clean-eval/<name> back as it was in the snapshot (removed when it wasn't there)."""
     live, orig = fs.join(workspace, REPO_DIR, name), fs.join(snapshot_dir, name)
     if fs.is_file(orig):
@@ -83,7 +91,7 @@ def restore_tuning(fs, workspace, snapshot_dir, name):
         _clear(fs, live)
 
 
-def restore_other_tuning(fs, workspace, snapshot_dir, keep):
+def restore_other_tuning(fs: FileSystem, workspace: str, snapshot_dir: str, keep: Collection[str]) -> list[str]:
     """Put every file under .clean-eval/ except `keep` back as it was; the paths that needed it, sorted."""
     live_dir, restored = fs.join(workspace, REPO_DIR), set()
     for top, in_snapshot in ((live_dir, False), (snapshot_dir, True)):
@@ -110,7 +118,9 @@ def restore_other_tuning(fs, workspace, snapshot_dir, keep):
 # review threads give the rules its review cited and the clean-eval marker; fetch failures are recorded per PR.
 
 
-def review_of(host, pr, reviewer_logins=None):
+def review_of(
+    host: CodeHost, pr: int, reviewer_logins: Optional[list[str]] = None
+) -> Union[ReviewSignal, FetchFailure]:
     """The ReviewSignal of one PR, or a FetchFailure when its reviews couldn't be fetched."""
     try:
         view, inline = host.review_threads(pr)
@@ -119,7 +129,7 @@ def review_of(host, pr, reviewer_logins=None):
     return review_signal(view, inline, reviewer_logins)
 
 
-def _heatmap_at(git, clock, rev, policy, cache):
+def _heatmap_at(git: Git, clock: Clock, rev: str, policy: Policy, cache: RatingCache) -> Heatmap:
     try:
         return rate_revision(git, clock, rev, policy, cache)
     except NoPythonSource:  # nothing to rate: every path a PR on this base touched is unrated
@@ -127,8 +137,16 @@ def _heatmap_at(git, clock, rev, policy, cache):
 
 
 def collect_history(
-    git, clock, policy, period, host=None, branch=None, model_source=None, reviewer_logins=None, cache=None
-):
+    git: Git,
+    clock: Clock,
+    policy: Policy,
+    period: Period,
+    host: Optional[CodeHost] = None,
+    branch: Optional[str] = None,
+    model_source: Optional[str] = None,
+    reviewer_logins: Optional[list[str]] = None,
+    cache: Optional[RatingCache] = None,
+) -> EvalHistory:
     """The EvalHistory of the PRs merged in `period` (a Period) on `branch` (default: the repository's default branch).
     With a CodeHost, each PR's review signal too. `cache` (a RatingCache) shares the ratings' work across bases."""
     if host:
@@ -201,7 +219,19 @@ MAX_PATCH_CHARS = 200_000
 DEFECT_ORDER = {"Critical": 0, "High": 1, "Low": 2, "Moderate": 3}
 
 
-def prepare_eval(git, fs, clock, ctx, workspace, policy, model_source, period, default_rules, host=None, branch=None):
+def prepare_eval(
+    git: Git,
+    fs: FileSystem,
+    clock: Clock,
+    ctx: str,
+    workspace: str,
+    policy: Policy,
+    model_source: str,
+    period: Period,
+    default_rules: str,
+    host: Optional[CodeHost] = None,
+    branch: Optional[str] = None,
+) -> EvalContext:
     """Write the eval context of `period` into `ctx`; its EvalContext."""
     model, rules = current_tuning(fs, workspace, MODEL_FILE), current_tuning(fs, workspace, RULES_FILE)
     fs.write_text(fs.join(ctx, "risk-model.orig.json"), model if model is not None else "{}")
@@ -254,7 +284,9 @@ def prepare_eval(git, fs, clock, ctx, workspace, policy, model_source, period, d
     return context
 
 
-def finalize_eval(fs, env, ctx, agent, out, apply=False, workspace="."):
+def finalize_eval(
+    fs: FileSystem, env: Environment, ctx: str, agent: str, out: str, apply: bool = False, workspace: str = "."
+) -> tuple[EvalResult, StepOutputs]:
     """(the EvalResult CI trusts, its StepOutputs) from what the CI agent proposed in `agent`. An edit of the tuning
     files is kept only with `apply` on, and only if it passes the checks of the domain and the eval's rules; everything
     else is restored. The edits are judged before the agent's output, so an invalid output never leaves an unchecked
@@ -280,7 +312,14 @@ def finalize_eval(fs, env, ctx, agent, out, apply=False, workspace="."):
     return result, outputs
 
 
-def _judge(fs, workspace, snapshot_dir, name, apply, judge):
+def _judge[T](
+    fs: FileSystem,
+    workspace: str,
+    snapshot_dir: str,
+    name: str,
+    apply: bool,
+    judge: Callable[[Optional[str], Optional[str]], T],
+) -> Optional[Union[T, Rejection]]:
     """The agent's change of one tuning file: kept when `judge` accepts it, else restored (a Rejection says why). None
     when the file is unchanged."""
     new, orig = current_tuning(fs, workspace, name), original_tuning(fs, snapshot_dir, name)

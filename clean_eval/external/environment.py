@@ -3,6 +3,7 @@ today's date (ClockGateway)."""
 
 import datetime as dt
 import os
+from typing import Optional
 
 from clean_eval.use_cases.interfaces import Clock, Environment
 
@@ -10,18 +11,18 @@ from clean_eval.use_cases.interfaces import Clock, Environment
 
 
 class EnvironmentGateway(Environment):
-    def variables(self):
+    def variables(self) -> dict[str, str]:
         """A copy of every variable, as {name: value}."""
         return dict(os.environ)
 
-    def get(self, name, default=None):
+    def get(self, name: str, default: Optional[str] = None) -> Optional[str]:
         return os.environ.get(name, default)
 
-    def paths(self, name):
+    def paths(self, name: str) -> list[str]:
         """The paths an os.pathsep-separated variable lists (empty entries left out)."""
         return [p for p in os.environ.get(name, "").split(os.pathsep) if p.strip()]
 
-    def home(self):
+    def home(self) -> str:
         return os.path.expanduser("~")
 
 
@@ -29,6 +30,6 @@ class EnvironmentGateway(Environment):
 
 
 class ClockGateway(Clock):
-    def today(self):
+    def today(self) -> str:
         """Today, as YYYY-MM-DD."""
         return dt.date.today().isoformat()

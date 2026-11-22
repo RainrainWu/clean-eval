@@ -43,7 +43,7 @@ def facts(**kw):
         line_rate=None,
     )
     base.update(kw)
-    return Facts(**base)
+    return Facts.model_validate(base)
 
 
 def sf(path, loc, text="", test=False, blob=""):

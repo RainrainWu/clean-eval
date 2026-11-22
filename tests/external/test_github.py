@@ -33,6 +33,13 @@ def test_review_threads_read_every_page(fake_bin):
     assert (view["url"], [c["body"] for c in inline]) == ("u", ["x", "y"])
 
 
+def test_review_threads_need_a_pull_request_object(fake_bin):
+    fake_bin.gh({"pr_view": {"out": []}})
+    with pytest.raises(RemoteError) as raised:  # a fetch failure of this PR, not a crash of the whole eval
+        GitHubGateway().review_threads(7)
+    assert raised.value.kind == "error"
+
+
 @pytest.mark.parametrize(("number", "kind"), [(8, "not_found"), (9, "error")], ids=["no such PR", "anything else"])
 def test_review_thread_failures_are_classified(fake_bin, number, kind):
     fake_bin.gh(

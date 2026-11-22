@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from clean_eval.domain.policy import Policy
-from clean_eval.domain.review import AgentReview, RiskReport
+from clean_eval.domain.review import AgentReview, InlineComment, RiskReport
 from clean_eval.use_cases.rules.heatmap import band
 from clean_eval.use_cases.rules.review import (
     MARKER_RE,
@@ -94,6 +94,7 @@ def test_paths_take_their_module_band_and_unknown_paths_the_unrated_band():
     assert mods["src/util"].band == "Low"
     assert not mods["terraform"].rated
     assert (mods["terraform"].band, mods["src/new"].band) == ("Moderate", "Moderate")
+    assert mods["src/api"].score is not None
     assert risk.max_band == band(mods["src/api"].score)
     assert risk.modules[0].module == "src/api"  # most severe first
 
@@ -240,10 +241,11 @@ def test_a_malformed_result_or_risk_report_is_refused():
 
 
 def test_post_attempts_fall_back_without_repeating():
-    assert post_attempts("REQUEST_CHANGES", ["c"]) == [
-        ("REQUEST_CHANGES", ["c"]),
+    c = InlineComment(path="a.py", line=1, side="RIGHT", body="b")
+    assert post_attempts("REQUEST_CHANGES", [c]) == [
+        ("REQUEST_CHANGES", [c]),
         ("REQUEST_CHANGES", []),
-        ("COMMENT", ["c"]),
+        ("COMMENT", [c]),
         ("COMMENT", []),
     ]
     assert post_attempts("COMMENT", []) == [("COMMENT", [])]

@@ -22,6 +22,7 @@ The GitHub Action (action.sh) runs these around its agent, which only *proposes*
 import argparse
 import json
 import sys
+from typing import Optional
 
 from pydantic import ValidationError
 from pydantic_core import to_jsonable_python
@@ -29,7 +30,8 @@ from pydantic_core import to_jsonable_python
 from clean_eval.adaptor.presenters import DIAGRAM_PATH, MarkdownReportPresenter, SvgDiagramPresenter
 from clean_eval.domain.errors import HeatmapError, InvalidOutput, InvalidRequest
 from clean_eval.domain.evaluation import EvalHistory, Period
-from clean_eval.domain.rating import RatingCache
+from clean_eval.domain.policy import Policy
+from clean_eval.domain.rating import Heatmap, Judgement, RatingCache
 from clean_eval.external import agent_guard
 from clean_eval.external.code_review_graph import CodeReviewGraphGateway
 from clean_eval.external.environment import ClockGateway, EnvironmentGateway
@@ -44,6 +46,7 @@ from clean_eval.use_cases.heatmap import (
     summarize_heatmap,
     update_readme,
 )
+from clean_eval.use_cases.interfaces import CodeHost, DiagramPresenter, Git, KnowledgeGraph, ReportPresenter
 from clean_eval.use_cases.review import assess_change, finalize_pr_review, post_review, prepare_review
 from clean_eval.use_cases.rules.evaluation import replay, rules_warning, sensitivity
 from clean_eval.use_cases.rules.review import redact as redact_text
@@ -65,15 +68,15 @@ CHECKOUT = FS.parent(FS.parent(FS.parent(FS.real_path(__file__))))  # the clean-
 DEFAULT_RULES = FS.join(CHECKOUT, ".claude", "skills", "pr-review", "review-rules.md")
 
 
-def git(repo):
+def git(repo: str) -> Git:
     return GitGateway(repo)
 
 
-def github():
+def github() -> CodeHost:
     return GitHubGateway()
 
 
-def knowledge_graph():
+def knowledge_graph() -> KnowledgeGraph:
     """The code-review-graph CLI: on PATH, else where its installer puts it."""
     return CodeReviewGraphGateway(
         FS.find_executable("code-review-graph", ENV.get("PATH"))
@@ -81,32 +84,32 @@ def knowledge_graph():
     )
 
 
-def diagram_presenter():
+def diagram_presenter() -> DiagramPresenter:
     return SvgDiagramPresenter()
 
 
-def report_presenter():
+def report_presenter() -> ReportPresenter:
     return MarkdownReportPresenter()
 
 
-def today():
+def today() -> str:
     return CLOCK.today()
 
 
-def secrets():
+def secrets() -> tuple[str, ...]:
     """The values to redact: the secret-looking variables of this process's environment."""
     return secret_values(ENV.variables())
 
 
-def default_rules():
+def default_rules() -> str:
     return FS.read_text(DEFAULT_RULES)
 
 
-def repository_root(path):
+def repository_root(path: str) -> str:
     return GitGateway(path).toplevel()
 
 
-def period(since, until, window_days=30):
+def period(since: str, until: str, window_days: int = 30) -> Period:
     """The Period of PRs merged from `since` to `until` (YYYY-MM-DD, inclusive), with `window_days` of look-ahead."""
     try:
         return Period(since=since, until=until, window_days=window_days)
@@ -114,7 +117,7 @@ def period(since, until, window_days=30):
         raise InvalidRequest.from_validation(e, "since/until must be dates as YYYY-MM-DD")
 
 
-def prepare(args):
+def prepare(args: argparse.Namespace) -> None:
     repo = repository_root(args.repo)
     FS.make_dirs(args.ctx)
     if args.skill == "pr-review":
@@ -137,7 +140,7 @@ def prepare(args):
     print(context.model_dump_json())
 
 
-def finalize(args):
+def finalize(args: argparse.Namespace) -> Optional[int]:
     try:
         if args.skill == "pr-review":
             result, outputs = finalize_pr_review(FS, ENV, args.ctx, args.agent, args.out)
@@ -157,7 +160,7 @@ def finalize(args):
     print(outputs.model_dump_json())
 
 
-def post(args):
+def post(args: argparse.Namespace) -> int:
     outcome = post_review(github(), FS, ENV, args.out, args.pr, args.head, args.ctx)
     for level, message in outcome.log:
         if level == "warning":
@@ -167,7 +170,7 @@ def post(args):
     return 0 if outcome.posted else 1
 
 
-def redact(args):
+def redact(args: argparse.Namespace) -> None:
     if FS.exists(args.path):
         text, n = redact_text(FS.read_text(args.path), secrets())
         if n:
@@ -178,11 +181,11 @@ def redact(args):
             )
 
 
-def guard(args):
+def guard(args: argparse.Namespace) -> int:
     return agent_guard.hook()
 
 
-def register(sub):
+def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p = sub.add_parser("prepare", help="CI: precompute the agent's context")
     kinds = p.add_subparsers(dest="skill", required=True)
     for skill in ("pr-review", "eval"):
@@ -209,7 +212,7 @@ def register(sub):
     p.set_defaults(run=finalize)
 
     p = sub.add_parser("post", help="CI: post the validated review on the PR")
-    p.add_argument("--pr", required=True)
+    p.add_argument("--pr", type=int, required=True)
     p.add_argument("--ctx", help="context folder with diff/index.json, to attach only comments on diff lines")
     p.add_argument("--out", required=True)
     p.add_argument("--head", required=True)
@@ -223,16 +226,16 @@ def register(sub):
     p.set_defaults(run=guard)
 
 
-def _policy(args):
+def _policy(args: argparse.Namespace) -> tuple[Policy, str]:
     return load_policy(FS, args.repo, args.model)
 
 
-def _loaded(args):
+def _loaded(args: argparse.Namespace) -> tuple[Heatmap, Optional[Judgement]]:
     judgement = load_judgement(FS, args.judgement) if getattr(args, "judgement", None) else None
     return load_heatmap(FS, args.data), judgement
 
 
-def rate(args):
+def rate(args: argparse.Namespace) -> None:
     policy, source = _policy(args)
     if args.rev:
         if args.graph != "builtin":
@@ -274,7 +277,7 @@ def rate(args):
         print("note:", note)
 
 
-def readme(args):
+def readme(args: argparse.Namespace) -> None:
     heatmap, judgement = _loaded(args)
     root = FS.absolute(args.repo)
     result = update_readme(
@@ -299,13 +302,13 @@ def readme(args):
             ),
         )
     if result.changed:
-        verb = {"ADD": "added", "UPDATE": "updated"}[result.action]
+        verb = "added" if result.action == "ADD" else "updated"
         print("%s the heat map in %s and %s (%d modules)" % (verb, args.readme, args.svg, len(result.heatmap.modules)))
     else:
         print("unchanged: %s already shows these ratings (fingerprint %s)" % (args.readme, result.fingerprint))
 
 
-def report(args):
+def report(args: argparse.Namespace) -> None:
     heatmap, judgement = _loaded(args)
     final, text = summarize_heatmap(report_presenter(), heatmap, judgement, _policy(args)[0])
     if args.json_out:
@@ -316,7 +319,7 @@ def report(args):
         sys.stdout.write(text)
 
 
-def assess(args):
+def assess(args: argparse.Namespace) -> None:
     policy, source = _policy(args)
     heatmap, risk = assess_change(git(args.repo), CLOCK, args.base, args.head, policy)
     out = risk.model_dump(mode="json")
@@ -332,7 +335,7 @@ def assess(args):
         print(text)
 
 
-def history(args):
+def history(args: argparse.Namespace) -> None:
     root = repository_root(args.repo)
     policy, source = load_policy(FS, root, args.model)
     if args.replay or args.sensitivity:
@@ -373,19 +376,19 @@ def history(args):
         )
 
 
-def parser():
+def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="clean_eval", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     sub = ap.add_subparsers(dest="command", required=True)
 
-    def common(p):
+    def common(p: argparse.ArgumentParser) -> None:
         p.add_argument("--repo", default=".", help="repository root (default: current folder)")
         p.add_argument(
             "--model", help="risk-model overrides (default: <repo>/.clean-eval/risk-model.json when present)"
         )
 
-    def data(p):
+    def data(p: argparse.ArgumentParser) -> None:
         p.add_argument("data", help="data.json from rate")
         p.add_argument("--judgement", help="optional judgement.json with the aspect levels")
 
@@ -453,7 +456,7 @@ def parser():
     return ap
 
 
-def main(argv=None):
+def main(argv: Optional[list[str]] = None) -> None:
     args = parser().parse_args(argv)
     try:
         status = args.run(args)

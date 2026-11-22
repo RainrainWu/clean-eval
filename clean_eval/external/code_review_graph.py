@@ -19,7 +19,7 @@ FLOWS = "select f.id, f.criticality, n.qualified_name from flows f join nodes n 
 FLOW_FILES = "select n.file_path from flow_memberships m join nodes n on n.id = m.node_id where m.flow_id = ?"
 
 
-def read_graph(con, root):
+def read_graph(con: sqlite3.Connection, root: str) -> Graph:
     """The graph in an open code-review-graph database, Python only, with paths relative to `root`."""
     prefix = root.rstrip("/") + "/"
     rel = lambda p: p[len(prefix) :] if p.startswith(prefix) else p  # noqa: E731
@@ -49,10 +49,10 @@ def read_graph(con, root):
 
 
 class CodeReviewGraphGateway(KnowledgeGraph):
-    def __init__(self, executable):
+    def __init__(self, executable: str) -> None:
         self.executable = executable  # resolved by the composition root (PATH, else ~/.local/bin)
 
-    def graph_of(self, repo_root, data_dir):
+    def graph_of(self, repo_root: str, data_dir: str) -> Graph:
         try:
             subprocess.run(
                 [self.executable, "build", "--repo", repo_root, "--data-dir", data_dir, "-q"],

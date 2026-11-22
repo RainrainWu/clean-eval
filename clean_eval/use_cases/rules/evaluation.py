@@ -3,7 +3,9 @@ calibrating the risk model against it, and judging the tuning the agent proposes
 
 import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
+from collections.abc import Collection, Sequence
+from typing import Any, Optional, Union
 
 from pydantic import ValidationError
 
@@ -14,11 +16,16 @@ from clean_eval.domain.evaluation import (
     BandStats,
     Calibration,
     DefectLink,
+    EvalHistory,
     EvalResult,
     FetchFailure,
+    MergedPR,
     ModelChange,
     ModuleStats,
+    Period,
     PolicyEdit,
+    Recommendation,
+    Rejection,
     Replay,
     ReviewSignal,
     RulesChange,
@@ -27,6 +34,7 @@ from clean_eval.domain.evaluation import (
     SensitivityRow,
 )
 from clean_eval.domain.policy import BAND_NAMES, SCORE_KEYS, WEIGHT_GROUPS, Policy
+from clean_eval.domain.rating import ModuleRecord
 from clean_eval.domain.review import StepOutputs
 from clean_eval.use_cases.rules.analysis import ignored
 from clean_eval.use_cases.rules.heatmap import band, band_floor, severity
@@ -46,7 +54,7 @@ GH_ERROR_RATE_LIMIT = 0.2  # above this share of failed fetches, rule metrics ar
 DAY = 86400
 
 
-def pr_number(subject):
+def pr_number(subject: str) -> Optional[int]:
     """The PR a first-parent commit merged, from its subject; None for a direct push."""
     m = MERGE_PR.search(subject)
     if m:
@@ -55,11 +63,11 @@ def pr_number(subject):
     return int(found[-1]) if found else None
 
 
-def in_period(units, period):
+def in_period(units: list[MergedPR], period: Period) -> list[MergedPR]:
     return [u for u in units if u.ts <= period.until_ts]
 
 
-def attribute_defects(units, prs, period, policy):
+def attribute_defects(units: list[MergedPR], prs: list[MergedPR], period: Period, policy: Policy) -> list[MergedPR]:
     """Attach to each of `prs` the later fixes and reverts (from `units`, the period plus its look-ahead) that most likely
     repaired it: a fix or revert merged within the window that shares files with the PR. Of several such PRs one the fix
     names (its short sha, or the reverted subject) wins, else the most recent; `confidence` says which."""
@@ -90,7 +98,7 @@ def attribute_defects(units, prs, period, policy):
     return prs
 
 
-def is_reviewer(login, reviewer_logins=None):
+def is_reviewer(login: Optional[str], reviewer_logins: Optional[Collection[str]] = None) -> bool:
     """Whose clean-eval markers count: the given logins, else any GitHub App bot (`name[bot]` logins can't be registered
     by users, so a commenter can't forge one)."""
     if not login:
@@ -98,7 +106,9 @@ def is_reviewer(login, reviewer_logins=None):
     return login in reviewer_logins if reviewer_logins else login.endswith("[bot]")
 
 
-def review_signal(view, inline, reviewer_logins=None):
+def review_signal(
+    view: dict[str, Any], inline: list[dict[str, Any]], reviewer_logins: Optional[Collection[str]] = None
+) -> ReviewSignal:
     """What one PR's reviews said. `view` holds the reviews, comments, labels and size of the PR (as the code host gives
     them); `inline` its inline review comments."""
     posts = [((r.get("author") or {}).get("login"), r.get("body") or "") for r in view.get("reviews", [])]
@@ -129,16 +139,17 @@ def review_signal(view, inline, reviewer_logins=None):
     )
 
 
-def rule_stats(prs):
+def rule_stats(prs: list[MergedPR]) -> RuleStats:
     """How the review rules did on the PRs whose reviews were fetched; unreliable when too many fetches failed."""
-    fetched = [u for u in prs if isinstance(u.review, ReviewSignal)]
-    failed = [u.pr for u in prs if isinstance(u.review, FetchFailure) and u.review.error == "error"]
-    not_found = [u.pr for u in prs if isinstance(u.review, FetchFailure) and u.review.error == "not_found"]
+    fetched = [(u, u.review) for u in prs if isinstance(u.review, ReviewSignal)]
+    failures = [(u.pr, u.review.error) for u in prs if u.pr is not None and isinstance(u.review, FetchFailure)]
+    failed = [pr for pr, error in failures if error == "error"]
+    not_found = [pr for pr, error in failures if error == "not_found"]
     attempted = len(fetched) + len(failed)
     error_rate = round(len(failed) / attempted, 3) if attempted else 0.0
     per_rule = defaultdict(RuleUse)
-    for u in fetched:
-        for r in u.review.rules_cited:
+    for u, review in fetched:
+        for r in review.rules_cited:
             per_rule[r].prs_cited += 1
             per_rule[r].cited_in_defective_prs += bool(u.defects)
     return RuleStats(
@@ -148,13 +159,15 @@ def rule_stats(prs):
         prs_not_found=not_found,
         gh_error_rate=error_rate,
         reliable=error_rate <= GH_ERROR_RATE_LIMIT,
-        prs_with_clean_eval_review=sum(1 for u in fetched if u.review.clean_eval_marker),
-        new_findings=sum(u.review.new_findings for u in fetched),
-        defective_prs_with_no_rule_cited=[u.pr for u in fetched if u.defects and not u.review.rules_cited],
+        prs_with_clean_eval_review=sum(1 for _, review in fetched if review.clean_eval_marker),
+        new_findings=sum(review.new_findings for _, review in fetched),
+        defective_prs_with_no_rule_cited=[
+            u.pr for u, review in fetched if u.pr is not None and u.defects and not review.rules_cited
+        ],
     )
 
 
-def rules_warning(rules):
+def rules_warning(rules: RuleStats) -> Optional[str]:
     """A warning when some review fetches failed, or None."""
     failed = len(rules.prs_fetch_failed)
     if not failed:
@@ -167,26 +180,26 @@ def rules_warning(rules):
     )
 
 
-def module_stats(prs):
+def module_stats(prs: list[MergedPR]) -> dict[str, ModuleStats]:
     """Per module, most escaped defects first: PRs that touched it, how many had defects, mean score, bands seen."""
-    by_module = defaultdict(lambda: {"prs": 0, "defective_prs": 0, "scores": [], "bands": defaultdict(int)})
+    touched, defective = Counter(), Counter()
+    scores, bands = defaultdict(list), defaultdict(Counter)
     for u in prs:
         for m in u.modules:
-            bm = by_module[m.module]
-            bm["prs"] += 1
-            bm["defective_prs"] += bool(u.defects)
+            touched[m.module] += 1
+            defective[m.module] += bool(u.defects)
             if m.score is not None:
-                bm["scores"].append(m.score)
-            bm["bands"][m.band] += 1
+                scores[m.module].append(m.score)
+            bands[m.module][m.band] += 1
     return {
         name: ModuleStats(
-            prs=bm["prs"],
-            defective_prs=bm["defective_prs"],
-            escape_rate=round(bm["defective_prs"] / bm["prs"], 3),
-            mean_score=round(sum(bm["scores"]) / len(bm["scores"]), 1) if bm["scores"] else None,
-            bands_seen=dict(bm["bands"]),
+            prs=touched[name],
+            defective_prs=defective[name],
+            escape_rate=round(defective[name] / touched[name], 3),
+            mean_score=round(sum(scores[name]) / len(scores[name]), 1) if scores[name] else None,
+            bands_seen=dict(bands[name]),
         )
-        for name, bm in sorted(by_module.items(), key=lambda kv: -kv[1]["defective_prs"])
+        for name in sorted(touched, key=lambda name: -defective[name])
     }
 
 
@@ -195,7 +208,7 @@ def module_stats(prs):
 # mixes or thresholds is evaluated in milliseconds without touching git. Module shape (depth, paths) needs a re-collect.
 
 
-def auc(pos, neg):
+def auc(pos: Sequence[float], neg: Sequence[float]) -> Optional[float]:
     """P(score of a defective PR > score of a clean PR); ties count half. None if undefined."""
     if not pos or not neg:
         return None
@@ -203,12 +216,12 @@ def auc(pos, neg):
     return round(wins / (len(pos) * len(neg)), 3)
 
 
-def _aspect(u, key):
+def _aspect(u: MergedPR, key: str) -> int:
     """Highest score of one aspect among the rated modules a PR touched (0 when none)."""
     return max([getattr(m.scores, key) or 0 for m in u.modules if m.rated and m.scores] or [0])
 
 
-def calibration(prs):
+def calibration(prs: list[MergedPR]) -> Calibration:
     by_band = defaultdict(BandStats)
     for u in prs:
         by_band[u.max_tier].prs += 1
@@ -233,7 +246,7 @@ def calibration(prs):
     )
 
 
-def summarise(u, mods):
+def summarise(u: MergedPR, mods: list[ModuleRecord]) -> MergedPR:
     """Copy of PR `u` touching `mods`: its band is the most severe one, its score the highest (an unrated module counts
     at the floor of its band)."""
     scores = [m.score for m in mods if m.score is not None] + [band_floor(m.band) for m in mods if m.score is None]
@@ -246,7 +259,7 @@ def summarise(u, mods):
     )
 
 
-def rescore(prs, policy):
+def rescore(prs: list[MergedPR], policy: Policy) -> list[MergedPR]:
     """Copy of `prs` with every rated module re-scored from its facts under `policy`."""
     out = []
     for u in prs:
@@ -263,13 +276,13 @@ def rescore(prs, policy):
     return out
 
 
-def replay(history, policy):
+def replay(history: EvalHistory, policy: Policy) -> Replay:
     """Calibration of `policy` on an already-collected EvalHistory (weights, mixes and thresholds; not module shape)."""
     cal = calibration(rescore(history.prs, policy))
     return Replay(auc_max_score=cal.auc_max_score, by_band=cal.by_band, band_mix=cal.band_mix)
 
 
-def sensitivity(history, policy, step=0.1):
+def sensitivity(history: EvalHistory, policy: Policy, step: float = 0.1) -> list[SensitivityRow]:
     """One-knob-at-a-time replays: the overall peak share and every weight of the four aspects, each ±step and -> 0."""
     rows = [SensitivityRow(change="baseline", **replay(history, policy).model_dump())]
     for nv in (policy.overall_peak_share + step, policy.overall_peak_share - step):
@@ -309,7 +322,7 @@ TUNING_FILES = frozenset({MODEL_FILE, RULES_FILE})
 MIN_PRS, MIN_DEFECTIVE = 20, 5  # below this, a model edit has no evidence behind it
 
 
-def judge_model_edit(new_text, orig_text, history):
+def judge_model_edit(new_text: Optional[str], orig_text: Optional[str], history: EvalHistory) -> ModelChange:
     """The accepted change of the risk-model overrides (None text: no file, i.e. the defaults), judged on the collected
     EvalHistory; InvalidOutput (or a parse error) when it has to be restored."""
     try:
@@ -336,7 +349,7 @@ def judge_model_edit(new_text, orig_text, history):
     return ModelChange(changed_keys=sorted(edit.changed_keys), auc_before=before, auc_after=after)
 
 
-def judge_rules_edit(new_text):
+def judge_rules_edit(new_text: Optional[str]) -> RulesChange:
     """The accepted change of the review rules; InvalidOutput when they are removed or don't parse into unique rows."""
     if new_text is None:
         raise InvalidOutput("review-rules.md may not be removed")
@@ -347,7 +360,7 @@ def judge_rules_edit(new_text):
     return RulesChange()
 
 
-def eval_recommendations(raw, secrets=()):
+def eval_recommendations(raw: object, secrets: Sequence[str] = ()) -> list[Recommendation]:
     """The recommendations of the agent's result.json, validated and redacted of `secrets`."""
     try:
         recs = AgentEvalResult.model_validate(raw).recommendations
@@ -359,7 +372,13 @@ def eval_recommendations(raw, secrets=()):
     ]
 
 
-def eval_result(history, recommendations, model_change, rules_change, other_reverted):
+def eval_result(
+    history: EvalHistory,
+    recommendations: list[Recommendation],
+    model_change: Optional[Union[ModelChange, Rejection]],
+    rules_change: Optional[Union[RulesChange, Rejection]],
+    other_reverted: list[str],
+) -> tuple[EvalResult, StepOutputs]:
     """(EvalResult, step outputs). Counts and AUC come from the collected history, never from agent text."""
     baseline = history.calibration.auc_max_score
     res = EvalResult(

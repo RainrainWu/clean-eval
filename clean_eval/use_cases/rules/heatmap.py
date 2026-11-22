@@ -5,18 +5,29 @@ import hashlib
 import json
 import math
 import re
+from typing import Any, Literal, Optional
 
-from clean_eval.domain.policy import ASPECTS, BANDS
-from clean_eval.domain.rating import AspectScores, Evidence, ModuleRating, ModuleTests, Scores
+from clean_eval.domain.policy import ASPECTS, BAND_NAMES, BANDS, Band, Policy
+from clean_eval.domain.rating import (
+    AspectScores,
+    Evidence,
+    Facts,
+    Heatmap,
+    Judgement,
+    ModuleRating,
+    ModuleTests,
+    Scores,
+    TopFile,
+)
 
 # Combine aspect scores into the overall score, and map scores and levels to bands.
 
 
-def clamp(v, lo=0.0, hi=1.0):
+def clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, v))
 
 
-def overall(s, peak_share=0.5):
+def overall(s: AspectScores, peak_share: float = 0.5) -> int:
     """(1 - peak_share) of the geometric mean of impact and weakness, plus peak_share of the worst single aspect.
     `s` (AspectScores or Scores) holds biz, effects, entropy, unverified; an N/A aspect (None) is left out."""
     impact = max(s.biz, s.effects)
@@ -26,26 +37,26 @@ def overall(s, peak_share=0.5):
     return round((1 - peak_share) * math.sqrt(impact * weakness) + peak_share * worst)
 
 
-def level_range(level):
+def level_range(level: int) -> tuple[int, int]:
     """Score range of a level: level 0 is the top band, level 3 the bottom one."""
     idx = len(BANDS) - 1 - level
     return (BANDS[idx - 1][0] + 1 if idx else 0), BANDS[idx][0]
 
 
-def place_in_level(level, static_score):
+def place_in_level(level: int, static_score: int) -> int:
     """The level fixes the band; the static score (0-100) positions the module inside it."""
     lo, hi = level_range(level)
     return round(lo + (hi - lo) * max(0, min(100, static_score)) / 100)
 
 
-def band(score):
+def band(score: float) -> Band:
     for upper, name in BANDS:
         if score <= upper:
             return name
     return BANDS[-1][1]
 
 
-def band_floor(name):
+def band_floor(name: str) -> int:
     """Lowest score of a band."""
     for i, (_, n) in enumerate(BANDS):
         if n == name:
@@ -53,9 +64,9 @@ def band_floor(name):
     raise ValueError("unknown band %r" % name)
 
 
-def severity(name):
+def severity(name: Optional[str]) -> int:
     """Order of bands, 0 for Low; None (unknown) sorts lowest."""
-    return [n for _, n in BANDS].index(name) if name else -1
+    return BAND_NAMES.index(name) if name else -1
 
 
 # The four risk aspects. Each is a pure function of one module's Facts and the Policy, and returns
@@ -64,7 +75,7 @@ def severity(name):
 FLOW_TERMS = ("flow_weight", "entry")
 
 
-def business(f, p):
+def business(f: Facts, p: Policy) -> tuple[float, list[str]]:
     w, sat = dict(p.business_weights), p.business_saturation
     entry = max(f.entry_flows, default=0.0)
     terms = {
@@ -99,7 +110,7 @@ def business(f, p):
     return score, ev
 
 
-def effects(f, p):
+def effects(f: Facts, p: Policy) -> tuple[float, list[str]]:
     points = sum(p.effect_points.get(k, 0) * v for k, v in f.effect_counts.items()) + p.migration_points * f.migrations
     mix = p.effects_mix
     score = 100 * (
@@ -116,7 +127,7 @@ def effects(f, p):
     return score, ev
 
 
-def entropy(f, p):
+def entropy(f: Facts, p: Policy) -> tuple[float, list[str]]:
     w, sat = p.entropy_weights, p.entropy_saturation
     n = len(f.funcs)
     maxfn = max((x[0] for x in f.funcs), default=0)
@@ -156,7 +167,7 @@ def entropy(f, p):
     return score, ev
 
 
-def unverified(f, effects_score, p):
+def unverified(f: Facts, effects_score: float, p: Policy) -> tuple[Optional[float], list[str], dict[str, Any]]:
     """Returns (score or None when N/A, evidence, info); info is the per-module test summary."""
     ratio = f.linked_test_loc / max(f.loc, 1)
     coverage = f.linked_functions / f.graph_functions if f.graph_functions else None
@@ -201,12 +212,12 @@ def unverified(f, effects_score, p):
 # Rate one module: run the four aspect rules over its facts.
 
 
-def _score(value):
+def _score(value: float) -> int:
     """A rule's raw result as a score: rounded, and kept to 0-100 (weights tuned to sum past 1 could overshoot)."""
     return min(100, max(0, round(value)))
 
 
-def score_facts(f, p):
+def score_facts(f: Facts, p: Policy) -> tuple[Scores, Evidence, ModuleTests]:
     """(Scores, Evidence, ModuleTests) of one module's Facts under policy `p`."""
     biz, biz_ev = business(f, p)
     eff, eff_ev = effects(f, p)
@@ -219,7 +230,7 @@ def score_facts(f, p):
     return scores, Evidence(biz=biz_ev, effects=eff_ev, entropy=ent_ev, unverified=unv_ev), ModuleTests(**info)
 
 
-def rate_module(f, top_files, p):
+def rate_module(f: Facts, top_files: list[TopFile], p: Policy) -> ModuleRating:
     scores, evidence, tests = score_facts(f, p)
     return ModuleRating(
         name=f.name,
@@ -234,7 +245,7 @@ def rate_module(f, top_files, p):
     )
 
 
-def rescore(facts, p):
+def rescore(facts: Facts, p: Policy) -> Scores:
     """Static scores of a module from its stored Facts under another policy: the basis of calibration replays."""
     return score_facts(facts, p)[0]
 
@@ -242,7 +253,7 @@ def rescore(facts, p):
 # Apply a reviewer's levels to a rated heatmap: the level fixes each aspect's band, the static score places it inside.
 
 
-def apply_levels(heatmap, judgement):
+def apply_levels(heatmap: Heatmap, judgement: Judgement) -> Heatmap:
     """Apply a Judgement (its entries are already validated). N/A aspects are left alone."""
     judged = 0
     for m in heatmap.modules:
@@ -260,7 +271,7 @@ def apply_levels(heatmap, judgement):
     return heatmap
 
 
-def refresh_overall(heatmap, peak_share=0.5):
+def refresh_overall(heatmap: Heatmap, peak_share: float = 0.5) -> Heatmap:
     for m in heatmap.modules:
         m.scores.overall = overall(m.scores, peak_share)
     return heatmap
@@ -274,13 +285,13 @@ SECTION_HEADING = "## Risk Heat Map"
 FINGERPRINT = re.compile(r"<!-- risk-heat-map:fingerprint=([0-9a-f]{12}) -->")
 
 
-def fingerprint(heatmap):
+def fingerprint(heatmap: Heatmap) -> str:
     """Stable id of what the diagram shows (modules, sizes, scores), independent of the commit and the date."""
     shown = sorted((m.name, m.loc, sorted(m.scores.model_dump().items())) for m in heatmap.modules)
     return hashlib.sha1(json.dumps(shown).encode()).hexdigest()[:12]
 
 
-def block_fingerprint(readme_text):
+def block_fingerprint(readme_text: Optional[str]) -> Optional[str]:
     """The fingerprint inside the README's heat-map block, or None."""
     if not readme_text or MARKERS[0] not in readme_text:
         return None
@@ -289,7 +300,7 @@ def block_fingerprint(readme_text):
     return m.group(1) if m else None
 
 
-def merge_readme(existing, block):
+def merge_readme(existing: Optional[str], block: str) -> tuple[str, Literal["ADD", "UPDATE"]]:
     """Put `block` (markers included) into README text: between existing markers, else under the section heading
     (replacing that section's old body), else as a new section at the end. Returns (new text, ADD or UPDATE)."""
     start, end = MARKERS

@@ -35,7 +35,9 @@ def test_the_heatmap_round_trips_with_its_facts(fs):
 
 def test_json_with_models_inside(fs):
     write_json(fs, "/out/x.json", {"heatmap": heatmap()})
-    assert read_json(fs, "/out/x.json")["heatmap"]["repo"] == "demo"
+    data = read_json(fs, "/out/x.json")
+    assert isinstance(data, dict)
+    assert data["heatmap"]["repo"] == "demo"
     fs.write_text("/out/bad.json", "{nope")
     with pytest.raises(HeatmapError):
         read_json(fs, "/out/bad.json")

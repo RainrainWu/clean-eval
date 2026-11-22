@@ -90,10 +90,12 @@ class TestTuningModels:
         assert (first.target, first.change, len(first.evidence)) == ("1", "None", 2000)
 
     def test_applied_is_derived(self):
-        base = dict(since="2026-01-01", until="2026-02-01", prs=30, defective_prs=6, auc=0.7)
-        assert not EvalResult(**base, model_change=Rejection(reason="no")).applied
-        assert EvalResult(**base, rules_change=RulesChange()).applied
-        accepted = EvalResult(**base, model_change=ModelChange(changed_keys=["x"], auc_before=0.6, auc_after=0.7))
+        def result(**change):
+            return EvalResult(since="2026-01-01", until="2026-02-01", prs=30, defective_prs=6, auc=0.7, **change)
+
+        assert not result(model_change=Rejection(reason="no")).applied
+        assert result(rules_change=RulesChange()).applied
+        accepted = result(model_change=ModelChange(changed_keys=["x"], auc_before=0.6, auc_after=0.7))
         assert EvalResult.model_validate(accepted.model_dump()).model_change == accepted.model_change
 
 

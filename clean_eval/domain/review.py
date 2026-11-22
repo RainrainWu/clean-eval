@@ -1,7 +1,7 @@
 """The PR review in CI: the pull request, what the agent proposes, the review CI derives, posts and reports, and
 the step outputs and tool calls of a CI run."""
 
-from typing import Annotated, Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional, Self
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, computed_field, field_validator, model_validator
 
@@ -27,8 +27,9 @@ class ReviewRule(BaseModel):
 
     @field_validator("min_tier", mode="before")
     @classmethod
-    def _legacy_band(cls, tier):
-        return LEGACY_BANDS.get(tier, tier)  # rules files copied from the pre-v2 default keep working
+    def _legacy_band(cls, tier: object) -> object:
+        # rules files copied from the pre-v2 default keep working
+        return LEGACY_BANDS.get(tier, tier) if isinstance(tier, str) else tier
 
 
 class RulesTable(BaseModel):
@@ -37,7 +38,7 @@ class RulesTable(BaseModel):
     rules: list[ReviewRule] = []
 
     @property
-    def by_id(self):
+    def by_id(self) -> dict[str, ReviewRule]:
         return {r.id: r for r in self.rules}
 
 
@@ -45,7 +46,7 @@ class CheckedRules(RulesTable):
     """A rules file an unattended eval may keep: at least one rule row, and no ID twice."""
 
     @model_validator(mode="after")
-    def _usable(self):
+    def _usable(self) -> Self:
         if not self.rules:
             raise ValueError("review-rules.md has no rule rows")
         ids = [r.id for r in self.rules]
@@ -68,27 +69,27 @@ class AgentFinding(BaseModel):
 
     @field_validator("file", mode="before")
     @classmethod
-    def _no_file(cls, file):
+    def _no_file(cls, file: object) -> object:
         return file or None
 
     @field_validator("fix", mode="before")
     @classmethod
-    def _no_fix(cls, fix):
+    def _no_fix(cls, fix: object) -> object:
         return "" if fix is None else fix
 
     @field_validator("file")
     @classmethod
-    def _short_path(cls, file):
+    def _short_path(cls, file: Optional[str]) -> Optional[str]:
         return file[:500] if file else file
 
     @field_validator("summary")
     @classmethod
-    def _short_summary(cls, summary):
+    def _short_summary(cls, summary: str) -> str:
         return summary[:1500]
 
     @field_validator("fix")
     @classmethod
-    def _short_fix(cls, fix):
+    def _short_fix(cls, fix: str) -> str:
         return fix[:2500]
 
 
@@ -99,7 +100,7 @@ class AgentReview(BaseModel):
 
     @field_validator("findings", mode="before")
     @classmethod
-    def _at_most(cls, findings):
+    def _at_most(cls, findings: object) -> object:
         if not findings:
             return []
         return findings[:MAX_FINDINGS] if isinstance(findings, list) else findings
@@ -133,7 +134,7 @@ class PullRequest(BaseModel):
 
     @field_validator("author", mode="before")
     @classmethod
-    def _login(cls, author):
+    def _login(cls, author: object) -> object:
         return author.get("login") if isinstance(author, dict) else author
 
 
@@ -223,12 +224,15 @@ class InlineComment(BaseModel):
     body: str
 
 
+ReviewEvent = Literal["COMMENT", "REQUEST_CHANGES"]
+
+
 class ReviewPost(BaseModel):
     """One review as it is sent to the code host."""
 
     commit_id: Sha
     body: str
-    event: Literal["COMMENT", "REQUEST_CHANGES"]
+    event: ReviewEvent
     comments: list[InlineComment] = []
 
 
@@ -242,12 +246,12 @@ class HostReview(BaseModel):
 
     @field_validator("user", mode="before")
     @classmethod
-    def _login(cls, user):
+    def _login(cls, user: object) -> object:
         return user.get("login") if isinstance(user, dict) else user
 
     @field_validator("body", mode="before")
     @classmethod
-    def _no_body(cls, body):
+    def _no_body(cls, body: object) -> object:
         return body or ""
 
 
@@ -277,10 +281,10 @@ class ToolCall(BaseModel):
 
     @field_validator("tool_name", mode="before")
     @classmethod
-    def _no_name(cls, name):
+    def _no_name(cls, name: object) -> object:
         return "" if name is None else name
 
     @field_validator("tool_input", mode="before")
     @classmethod
-    def _no_input(cls, tool_input):
+    def _no_input(cls, tool_input: object) -> object:
         return {} if tool_input is None else tool_input

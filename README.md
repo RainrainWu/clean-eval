@@ -122,6 +122,7 @@ uv run pytest -m "not e2e"                             # skip the subprocess end
 uv run pytest tests/use_cases/test_heatmap.py          # one module (::test_helpers for one test, -k to filter)
 uv run ruff check --fix .                              # lint: pycodestyle, pyflakes, isort's import order
 uv run ruff format .                                   # format: Black's style, 120 columns
+uv run ty check                                        # type check (every function of the package is annotated)
 ```
 
 The tests are written for pytest (fixtures in `conftest.py`, parametrized tables, plain asserts) and laid out like the
@@ -129,8 +130,8 @@ package: `tests/<layer>/` holds the tests of `clean_eval/<layer>/` (`test_<modul
 the same dependency rule, so the use cases are tested against in-memory fakes of their interfaces
 (`tests/use_cases/fakes.py`) and the real dependencies only in `tests/external/`, where each fake runs through the same
 checks as the gateway it stands in for. The tests at the top of `tests/` span the layers: the architecture rules,
-`action.sh` end to end, and the release check. The `tests` workflow runs the suite and both ruff checks on every push to
-a pull request and to `master`.
+`action.sh` end to end, and the release check. The `tests` workflow runs the suite, both ruff checks and ty's type check
+on every push to a pull request and to `master`.
 
 Coding agents: `AGENTS.md` at the root and in each layer folder (and `tests/`) holds the commands and the rules that
 apply there; each folder's `CLAUDE.md` imports its `AGENTS.md` for Claude Code.

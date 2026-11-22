@@ -1,9 +1,13 @@
 """Failures the user can act on. The message is shown as it is."""
 
+from typing import Literal, Optional, Self
+
+from pydantic import ValidationError
+
 
 class HeatmapError(Exception):
     @classmethod
-    def from_validation(cls, error, subject=None):
+    def from_validation(cls, error: ValidationError, subject: Optional[str] = None) -> Self:
         """This error, telling what a pydantic ValidationError found: one `where: what` per problem."""
         problems = []
         for e in error.errors():
@@ -37,6 +41,6 @@ class InvalidOutput(HeatmapError):
 class RemoteError(HeatmapError):
     """A call to the code host failed. `kind` is "not_found" (the PR doesn't exist) or "error" (anything else)."""
 
-    def __init__(self, message, kind="error"):
+    def __init__(self, message: str, kind: Literal["not_found", "error"] = "error") -> None:
         super().__init__(message)
         self.kind = kind

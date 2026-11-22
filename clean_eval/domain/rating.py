@@ -3,7 +3,7 @@ syntax), its knowledge graph, the rated modules and heat map, a reviewer's judge
 carries."""
 
 from collections import Counter
-from typing import Annotated, Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -108,7 +108,7 @@ class Facts(BaseModel):
     flows_available: bool = True  # False when the graph has no execution flows
 
     @property
-    def kloc(self):
+    def kloc(self) -> float:
         return max(self.loc / 1000.0, 0.3)
 
 
@@ -214,7 +214,7 @@ class AspectLevel(BaseModel):
 
     @field_validator("reason", mode="before")
     @classmethod
-    def _short_text(cls, reason):
+    def _short_text(cls, reason: object) -> str:
         return ("" if reason is None else str(reason))[:MAX_REASON]
 
 
@@ -226,7 +226,7 @@ class Judgement(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _keep_valid_entries(cls, data):
+    def _keep_valid_entries(cls, data: object) -> dict[str, dict[str, dict[str, AspectLevel]]]:
         modules = data.get("modules") if isinstance(data, dict) else None
         kept = {}
         for name, aspects in modules.items() if isinstance(modules, dict) else ():
@@ -260,7 +260,7 @@ class ModuleRecord(BaseModel):
     facts: Optional[Facts] = None  # what a calibration re-scores under another policy
 
     @model_validator(mode="after")
-    def _rated_means_scored(self):
+    def _rated_means_scored(self) -> Self:
         if self.rated != (self.score is not None):
             raise ValueError("a rated module has a score and an unrated one has none")
         return self

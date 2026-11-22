@@ -151,6 +151,8 @@ def test_rates_every_module():
     assert (h.repo, h.ref, h.sha, h.generated_at, h.policy_version) == ("demo", "main", "abc1234", TODAY, 2)
     assert [m.name for m in h.modules] == ["src/api", "src/core"]  # largest first; tests are not modules
     api, core = h.modules
+    assert api.facts is not None
+    assert core.facts is not None
     assert (api.loc, api.tests.functions, api.tests.tested, api.tests.scales) == (600, 1, 1, {"unit": 1})
     assert api.baseline.model_dump() == api.scores.model_dump(exclude={"overall"})
     assert (api.facts.funcs, api.facts.typed_share) == ([(2, 1)], 1.0)  # read from the source text
@@ -162,7 +164,9 @@ def test_rates_every_module():
 
 
 def test_without_flows_the_facts_say_so():
-    assert not rate(SNAP, files(), graph(has_flows=False), P, TODAY, depth=2).modules[0].facts.flows_available
+    facts = rate(SNAP, files(), graph(has_flows=False), P, TODAY, depth=2).modules[0].facts
+    assert facts is not None
+    assert not facts.flows_available
 
 
 def test_excluded_code_is_not_rated():
@@ -204,6 +208,7 @@ class TestRateRepository:
         )
         h = rate_working_tree(git, fs, CLOCK, P)
         assert (h.generated_at, [m.name for m in h.modules]) == (TODAY, ["src"])
+        assert h.modules[0].facts is not None
         assert (h.modules[0].facts.line_rate, h.modules[0].tests.tested) == (0.5, 1)
         assert h.notes[0].startswith("Knowledge graph (built-in ast)")
 
@@ -216,6 +221,7 @@ class TestRateRepository:
         h = rate_working_tree(git, fs, CLOCK, P, knowledge_graph)
         assert built == [("/repo", "/repo/.git/clean-eval-graph", True)]  # under .git by default, made for it
         assert h.notes[0].startswith("Knowledge graph (fake)")
+        assert h.modules[0].facts is not None
         assert h.modules[0].facts.flows_available
 
     def test_revisions_share_their_work_through_the_cache(self, git):

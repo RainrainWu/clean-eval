@@ -74,9 +74,8 @@ class TestActionSh:
 
     # ---------------------------------------------------------------- the interpreter
 
+    @pytest.mark.skipif(not shutil.which("uv"), reason="uv is not installed")
     def test_without_an_interpreter_it_uses_the_checkouts_uv_environment(self):
-        if not shutil.which("uv"):
-            self.skipTest("uv is not installed")
         r = self.new_repo()
         r.commit("init", {"src/a/x.py": "def f():\n    return 1\n"})
         res = self.run_sh(r.path, skill="risk-heat-map", python="")

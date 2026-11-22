@@ -7,23 +7,26 @@ import functools
 import re
 import sys
 from collections import defaultdict
+from collections.abc import Container, Iterable
+from typing import Optional
 
-from clean_eval.domain.rating import FileSignals, FileSyntax, Graph, PyStats
+from clean_eval.domain.policy import Policy
+from clean_eval.domain.rating import FileSignals, FileSyntax, Graph, PyStats, SourceFile
 
 # Rules that classify paths and names: tests, test scales, manifests, tooling, core-flow names, ignored paths.
 
 
 @functools.lru_cache(maxsize=128)
-def _rx(pattern):
+def _rx(pattern: str) -> re.Pattern[str]:
     return re.compile(pattern)
 
 
-def is_test(path, policy):
+def is_test(path: str, policy: Policy) -> bool:
     parts = path.split("/")
     return any(x in policy.test_dirs for x in parts[:-1]) or bool(_rx(policy.test_file).match(parts[-1]))
 
 
-def classify_scale(path):
+def classify_scale(path: str) -> str:
     p = path.lower()
     if "e2e" in p or "end_to_end" in p:
         return "e2e"
@@ -34,7 +37,7 @@ def classify_scale(path):
     return "other"
 
 
-def not_applicable(module_name, policy):
+def not_applicable(module_name: str, policy: Policy) -> Optional[str]:
     """Reason a module is not rated for Unverified (manifest or test code), else None."""
     for reason, pattern in policy.not_applicable:
         if _rx(pattern).search(module_name.lower()):
@@ -42,25 +45,25 @@ def not_applicable(module_name, policy):
     return None
 
 
-def has_core_keyword(module_name, policy):
+def has_core_keyword(module_name: str, policy: Policy) -> bool:
     return bool(_rx(policy.keywords).search(module_name.lower()))
 
 
-def looks_like_tooling(module_name, first_path, policy):
+def looks_like_tooling(module_name: str, first_path: str, policy: Policy) -> bool:
     rx = _rx(policy.tooling)
     return bool(rx.search(module_name.lower()) or rx.search(first_path.lower()))
 
 
-def is_migration(path, policy):
+def is_migration(path: str, policy: Policy) -> bool:
     return bool(_rx(policy.migration_path).search(path))
 
 
-def excluded(path, policy):
+def excluded(path: str, policy: Policy) -> bool:
     """Source the policy leaves out of the ratings (vendored or generated code)."""
     return any(fnmatch.fnmatch(path, g) for g in policy.exclude)
 
 
-def ignored(path, policy):
+def ignored(path: str, policy: Policy) -> bool:
     """A changed path that carries no risk of its own (documentation, images)."""
     return any(fnmatch.fnmatch(path, g) for g in policy.ignore_paths)
 
@@ -72,7 +75,7 @@ ROOT_MODULE = "(root)"
 FILES_SUFFIX = "/(files)"
 
 
-def _descend(name, files):
+def _descend(name: str, files: list[SourceFile]) -> tuple[str, int, set[str]]:
     depth = name.count("/") + 1
     while True:
         kids = {f.path.split("/")[depth] for f in files if f.path.count("/") > depth}
@@ -84,7 +87,7 @@ def _descend(name, files):
         return name, depth, kids
 
 
-def _children(files, name, depth):
+def _children(files: list[SourceFile], name: str, depth: int) -> dict[str, list[SourceFile]]:
     out = {}
     for f in files:
         parts = f.path.split("/")
@@ -93,11 +96,13 @@ def _children(files, name, depth):
     return out
 
 
-def _loc(files):
+def _loc(files: list[SourceFile]) -> int:
     return sum(f.loc for f in files)
 
 
-def split_modules(src, policy, depth=None, max_modules=None):
+def split_modules(
+    src: list[SourceFile], policy: Policy, depth: Optional[int] = None, max_modules: Optional[int] = None
+) -> tuple[dict[str, list[SourceFile]], list[str]]:
     """Level 1 is the top-level folders. Each further level splits every module of `split_min_loc`+ lines into its
     sub-folders (a single-child chain counts as one step) or, in a flat folder of 2-`split_max_files` files, into one
     module per file. Largest modules split first, and no split may take the total past `max_modules`.
@@ -134,7 +139,7 @@ def split_modules(src, policy, depth=None, max_modules=None):
     return mods, notes
 
 
-def module_of(path, names):
+def module_of(path: str, names: Container[str]) -> Optional[str]:
     """The rated module a path belongs to, or None: the file itself when it is a module, else the deepest folder module
     that contains it (`<dir>/(files)` for files directly in a split folder), else `(root)` for a top-level file."""
     if path in names:
@@ -155,7 +160,7 @@ def module_of(path, names):
 # `file_mod` maps each source file to its module.
 
 
-def dependents(graph, file_mod):
+def dependents(graph: Graph, file_mod: dict[str, str]) -> tuple[defaultdict[str, set[str]], defaultdict[str, set[str]]]:
     """(fan_in, fan_out): for each module, the modules that depend on it and the modules it depends on."""
     fan_in, fan_out = defaultdict(set), defaultdict(set)
     for sf, targets in graph.links.items():
@@ -167,7 +172,7 @@ def dependents(graph, file_mod):
     return fan_in, fan_out
 
 
-def functions_by_module(graph, file_mod):
+def functions_by_module(graph: Graph, file_mod: dict[str, str]) -> defaultdict[str, list[str]]:
     out = defaultdict(list)
     for qn, (kind, fp, is_test) in graph.nodes.items():
         if kind == "Function" and not is_test and fp in file_mod:
@@ -175,7 +180,7 @@ def functions_by_module(graph, file_mod):
     return out
 
 
-def test_files_to_modules(graph, file_mod):
+def test_files_to_modules(graph: Graph, file_mod: dict[str, str]) -> defaultdict[str, set[str]]:
     out = defaultdict(set)
     for qn, test_files in graph.tested.items():
         kind, fp, _ = graph.nodes[qn]
@@ -222,7 +227,7 @@ WRITE_CALLS = {
 }
 
 
-def python_stats(text):
+def python_stats(text: str) -> Optional[PyStats]:
     try:
         tree = ast.parse(text)
     except SyntaxError, ValueError, RecursionError:
@@ -249,7 +254,7 @@ def python_stats(text):
     return st
 
 
-def write_calls(text):
+def write_calls(text: str) -> dict[str, tuple[int, int]]:
     """{kind: (count, first line)} of write-call patterns in one file."""
     out = {}
     for kind, (call, gate) in WRITE_CALLS.items():
@@ -261,7 +266,7 @@ def write_calls(text):
     return out
 
 
-def file_signals(f, cache=None):
+def file_signals(f: SourceFile, cache: Optional[dict[str, FileSignals]] = None) -> FileSignals:
     """The FileSignals of a SourceFile: function sizes, complexity, typing, exception handling, TODOs and write calls.
     `cache` ({content id: FileSignals}, e.g. a RatingCache's) is shared across revisions."""
     key = f.blob or f.text
@@ -283,7 +288,7 @@ def file_signals(f, cache=None):
 STDLIB = frozenset(sys.stdlib_module_names)
 
 
-def parse_syntax(text):
+def parse_syntax(text: str) -> FileSyntax:
     """The FileSyntax of a Python file (empty when it doesn't parse)."""
     try:
         tree = ast.parse(text)
@@ -291,7 +296,7 @@ def parse_syntax(text):
         return FileSyntax()
     defs, imports, refs = [], [], set()
 
-    def visit(node, prefix):
+    def visit(node: ast.AST, prefix: str) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 defs.append(prefix + child.name)
@@ -319,18 +324,22 @@ def parse_syntax(text):
     return FileSyntax(defs=tuple(defs), imports=tuple(imports), refs=frozenset(refs))
 
 
-def _dotted(path):
+# Where an import name can come from: (dotted name -> path, dotted suffix -> paths).
+type ModuleIndex = tuple[dict[str, str], dict[str, list[str]]]
+
+
+def _dotted(path: str) -> str:
     p = path[:-3]
     if p == "__init__" or p.endswith("/__init__"):
         p = p[: -len("__init__")].rstrip("/")
     return p.replace("/", ".")
 
 
-def _folder(path):
+def _folder(path: str) -> str:
     return path.rsplit("/", 1)[0] if "/" in path else ""
 
 
-def module_index(paths):
+def module_index(paths: Iterable[str]) -> ModuleIndex:
     """Where an import name can come from in this repository: (dotted name -> path, dotted suffix -> paths)."""
     full, suffix = {}, defaultdict(list)
     for path in paths:
@@ -344,7 +353,7 @@ def module_index(paths):
     return full, suffix
 
 
-def _root_ok(candidate, dotted, importer):
+def _root_ok(candidate: str, dotted: str, importer: str) -> bool:
     """A suffix match counts when its import root (the folder the dotted name hangs from) is the importer's folder or an
     ancestor of it, or a top-level source folder such as `src` (installed-package layout)."""
     segments = candidate.split("/")
@@ -354,7 +363,7 @@ def _root_ok(candidate, dotted, importer):
     return root.count("/") == 0 or folder == root or folder.startswith(root + "/")
 
 
-def lookup(index, dotted, importer):
+def lookup(index: ModuleIndex, dotted: str, importer: str) -> Optional[str]:
     full, suffix = index
     if dotted in full:
         return full[dotted]
@@ -363,7 +372,7 @@ def lookup(index, dotted, importer):
         return None
     imp = importer.split("/")
 
-    def shared(c):
+    def shared(c: str) -> int:
         n = 0
         for a, b in zip(imp, c.split("/")):
             if a != b:
@@ -374,7 +383,7 @@ def lookup(index, dotted, importer):
     return max(cands, key=lambda c: (shared(c), -len(c)))
 
 
-def resolve(index, importer, module, level, names):
+def resolve(index: ModuleIndex, importer: str, module: str, level: int, names: tuple[str, ...]) -> set[str]:
     """The repository files an import of `importer` reaches."""
     full, _ = index
     out = set()
@@ -409,12 +418,12 @@ def resolve(index, importer, module, level, names):
     return out
 
 
-def builtin_graph(files, cache=None):
+def builtin_graph(files: list[SourceFile], cache: Optional[dict[str, FileSyntax]] = None) -> Graph:
     """The Graph of the Python files: imports as links, functions as nodes, and the test files that use them.
     `cache` ({content id: FileSyntax}, e.g. a RatingCache's) is shared across revisions."""
     cache = {} if cache is None else cache
 
-    def syntax_of(f):
+    def syntax_of(f: SourceFile) -> FileSyntax:
         key = f.blob or f.text
         if key not in cache:
             cache[key] = parse_syntax(f.text)

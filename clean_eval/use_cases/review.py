@@ -1,11 +1,14 @@
 """Use cases of the PR review: the risk a change carries, the context the CI reviewer reads, and posting the review
 CI trusts."""
 
+from typing import Optional
+
 from clean_eval.domain.errors import InvalidPolicy, NoPythonSource, RemoteError
 from clean_eval.domain.policy import REPO_POLICY, REPO_RULES, Policy
-from clean_eval.domain.rating import Heatmap, RatingCache
+from clean_eval.domain.rating import ChangeRisk, Heatmap, RatingCache
 from clean_eval.domain.review import (
     AgentReview,
+    ChangeHeader,
     DiffIndex,
     PatchEntry,
     PostOutcome,
@@ -13,8 +16,10 @@ from clean_eval.domain.review import (
     ReviewContext,
     ReviewPost,
     RiskReport,
+    StepOutputs,
 )
 from clean_eval.use_cases.heatmap import rate_revision, revision_snapshot
+from clean_eval.use_cases.interfaces import Clock, CodeHost, Environment, FileSystem, Git
 from clean_eval.use_cases.rules.review import (
     change_risk,
     commentable_lines,
@@ -36,7 +41,9 @@ from clean_eval.use_cases.store import JUDGING_ERRORS, invalid, read_json, valid
 # Use case: the risk a change carries, from the heat map of its base. The PR review scales its depth by this.
 
 
-def assess_change(git, clock, base, head, policy, cache=None):
+def assess_change(
+    git: Git, clock: Clock, base: str, head: str, policy: Policy, cache: Optional[RatingCache] = None
+) -> tuple[Heatmap, ChangeRisk]:
     """(heat map at the base, ChangeRisk of base..head). A base with no Python yet has an empty heat map: every path is
     unrated."""
     try:
@@ -68,7 +75,7 @@ DEFAULT_SOURCE = "clean-eval default"
 PR_META = {"number", "title", "body", "url", "baseRefName", "headRefName", "isCrossRepository", "author"}
 
 
-def policy_at(git, base):
+def policy_at(git: Git, base: str) -> tuple[Policy, str, str, Optional[str]]:
     """(policy, source, overrides text, note) from the base commit's risk-model overrides, else the defaults. An invalid
     file at the base falls back to the defaults with a note, rather than failing every review."""
     text = git.show(base, REPO_POLICY)
@@ -80,7 +87,9 @@ def policy_at(git, base):
         return Policy(), DEFAULT_SOURCE, "{}", "ignored %s at the base: %s" % (REPO_POLICY, e)
 
 
-def write_split_diff(git, fs, ctx, base, head, files, file_modules):
+def write_split_diff(
+    git: Git, fs: FileSystem, ctx: str, base: str, head: str, files: list[str], file_modules: dict[str, Optional[str]]
+) -> list[PatchEntry]:
     """One patch per changed file plus diff/index.json in `ctx`, so a reviewer can read every hunk in full (a single
     combined diff is easily longer than one file read)."""
     chunks = split_patch(git.diff(base, head))
@@ -107,7 +116,9 @@ def write_split_diff(git, fs, ctx, base, head, files, file_modules):
     return index
 
 
-def prepare_review(host, git, fs, clock, ctx, pr, default_rules):
+def prepare_review(
+    host: CodeHost, git: Git, fs: FileSystem, clock: Clock, ctx: str, pr: int, default_rules: str
+) -> ReviewContext:
     """Write the review context of PR `pr` into `ctx`; its ReviewContext. `default_rules` is the rules text used when
     the base has no .clean-eval/review-rules.md."""
     info = host.pull_request(pr)
@@ -125,7 +136,7 @@ def prepare_review(host, git, fs, clock, ctx, pr, default_rules):
 
     heatmap, risk = assess_change(git, clock, base, head, policy)
     files = list(risk.files)
-    header = dict(
+    header = ChangeHeader(
         pr=pr,
         base=base,
         head=head,
@@ -142,12 +153,14 @@ def prepare_review(host, git, fs, clock, ctx, pr, default_rules):
     write_json(
         fs,
         fs.join(ctx, "risk.json"),
-        RiskReport(**header, modules=modules, files=risk.files, ignored=risk.ignored, notes=notes),
+        RiskReport(**header.model_dump(), modules=modules, files=risk.files, ignored=risk.ignored, notes=notes),
     )
     write_json(fs, fs.join(ctx, "pr.json"), {**info.model_dump(include=PR_META), "files": files})
 
     index = write_split_diff(git, fs, ctx, base, head, files, risk.files)
-    context = ReviewContext(**header, diff_patches=len(index), diff_truncated=any(e.truncated for e in index))
+    context = ReviewContext(
+        **header.model_dump(), diff_patches=len(index), diff_truncated=any(e.truncated for e in index)
+    )
 
     lines = []
     for f in files[:MAX_HISTORY_FILES]:
@@ -165,7 +178,7 @@ def prepare_review(host, git, fs, clock, ctx, pr, default_rules):
 # FileSystem and Environment interfaces (the environment names the secrets to redact from host errors).
 
 
-def lines_on_diff(fs, ctx):
+def lines_on_diff(fs: FileSystem, ctx: Optional[str]) -> Optional[dict[str, set[int]]]:
     """{path: new-side lines GitHub accepts inline comments on}, from the per-file patches in context folder `ctx`; None
     without them."""
     if ctx is None or not fs.exists(fs.join(ctx, "diff", "index.json")):
@@ -174,11 +187,13 @@ def lines_on_diff(fs, ctx):
     return {e.file: commentable_lines(fs.read_text(fs.join(ctx, e.patch))) for e in index}
 
 
-def post_review(host, fs, env, out, pr, head, ctx=None):
+def post_review(
+    host: CodeHost, fs: FileSystem, env: Environment, out: str, pr: int, head: str, ctx: Optional[str] = None
+) -> PostOutcome:
     """Post out/result.json and out/report.md as the review of PR `pr` at commit `head`; the PostOutcome."""
     secrets = secret_values(env.variables())
 
-    def error(e, limit):
+    def error(e: RemoteError, limit: int) -> str:
         return redact(str(e), secrets)[0][:limit]  # redact before cutting: host errors can echo request data
 
     outcome = PostOutcome()
@@ -196,7 +211,7 @@ def post_review(host, fs, env, out, pr, head, ctx=None):
         outcome.posted = True
         outcome.log.append(("info", "posted review on #%s: event=%s, inline comments=%d" % (pr, ev, len(cm))))
         break
-    if not outcome.posted:
+    if posted is None:
         return outcome
 
     try:
@@ -213,7 +228,7 @@ def post_review(host, fs, env, out, pr, head, ctx=None):
     return outcome
 
 
-def finalize_pr_review(fs, env, ctx, agent, out):
+def finalize_pr_review(fs: FileSystem, env: Environment, ctx: str, agent: str, out: str) -> tuple[Review, StepOutputs]:
     """(the Review CI trusts, its StepOutputs) from what the CI agent proposed in `agent`: the domain models check the
     findings' shape, and the review rules hold them to the rules table and derive the verdict, blocker count, band and
     score. report.md and result.json go to `out`, redacted (the environment names the secrets). InvalidOutput when the
