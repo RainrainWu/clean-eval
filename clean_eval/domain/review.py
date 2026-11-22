@@ -27,7 +27,10 @@ class ReviewRule(BaseModel):
 
     @field_validator("min_tier", mode="before")
     @classmethod
-    def _legacy_band(cls, tier: object) -> object:
+    def map_legacy_band(
+        cls,
+        tier: object,
+    ) -> object:
         # rules files copied from the pre-v2 default keep working
         return LEGACY_BANDS.get(tier, tier) if isinstance(tier, str) else tier
 
@@ -38,7 +41,9 @@ class RulesTable(BaseModel):
     rules: list[ReviewRule] = []
 
     @property
-    def by_id(self) -> dict[str, ReviewRule]:
+    def by_id(
+        self,
+    ) -> dict[str, ReviewRule]:
         return {r.id: r for r in self.rules}
 
 
@@ -46,7 +51,9 @@ class CheckedRules(RulesTable):
     """A rules file an unattended eval may keep: at least one rule row, and no ID twice."""
 
     @model_validator(mode="after")
-    def _usable(self) -> Self:
+    def check_usable(
+        self,
+    ) -> Self:
         if not self.rules:
             raise ValueError("review-rules.md has no rule rows")
         ids = [r.id for r in self.rules]
@@ -69,27 +76,42 @@ class AgentFinding(BaseModel):
 
     @field_validator("file", mode="before")
     @classmethod
-    def _no_file(cls, file: object) -> object:
+    def empty_file_is_none(
+        cls,
+        file: object,
+    ) -> object:
         return file or None
 
     @field_validator("fix", mode="before")
     @classmethod
-    def _no_fix(cls, fix: object) -> object:
+    def none_fix_is_empty(
+        cls,
+        fix: object,
+    ) -> object:
         return "" if fix is None else fix
 
     @field_validator("file")
     @classmethod
-    def _short_path(cls, file: Optional[str]) -> Optional[str]:
+    def shorten_path(
+        cls,
+        file: Optional[str],
+    ) -> Optional[str]:
         return file[:500] if file else file
 
     @field_validator("summary")
     @classmethod
-    def _short_summary(cls, summary: str) -> str:
+    def shorten_summary(
+        cls,
+        summary: str,
+    ) -> str:
         return summary[:1500]
 
     @field_validator("fix")
     @classmethod
-    def _short_fix(cls, fix: str) -> str:
+    def shorten_fix(
+        cls,
+        fix: str,
+    ) -> str:
         return fix[:2500]
 
 
@@ -100,7 +122,10 @@ class AgentReview(BaseModel):
 
     @field_validator("findings", mode="before")
     @classmethod
-    def _at_most(cls, findings: object) -> object:
+    def cap_findings(
+        cls,
+        findings: object,
+    ) -> object:
         if not findings:
             return []
         return findings[:MAX_FINDINGS] if isinstance(findings, list) else findings
@@ -134,7 +159,10 @@ class PullRequest(BaseModel):
 
     @field_validator("author", mode="before")
     @classmethod
-    def _login(cls, author: object) -> object:
+    def author_login(
+        cls,
+        author: object,
+    ) -> object:
         return author.get("login") if isinstance(author, dict) else author
 
 
@@ -203,17 +231,23 @@ class Review(BaseModel):
 
     @computed_field
     @property
-    def blockers(self) -> int:
+    def blockers(
+        self,
+    ) -> int:
         return sum(f.severity == "blocker" for f in self.findings)
 
     @computed_field
     @property
-    def majors(self) -> int:
+    def majors(
+        self,
+    ) -> int:
         return sum(f.severity == "major" for f in self.findings)
 
     @computed_field
     @property
-    def verdict(self) -> Literal["approve", "comment", "request_changes"]:
+    def verdict(
+        self,
+    ) -> Literal["approve", "comment", "request_changes"]:
         return "request_changes" if self.blockers else ("comment" if self.majors else "approve")
 
 
@@ -246,12 +280,18 @@ class HostReview(BaseModel):
 
     @field_validator("user", mode="before")
     @classmethod
-    def _login(cls, user: object) -> object:
+    def user_login(
+        cls,
+        user: object,
+    ) -> object:
         return user.get("login") if isinstance(user, dict) else user
 
     @field_validator("body", mode="before")
     @classmethod
-    def _no_body(cls, body: object) -> object:
+    def none_body_is_empty(
+        cls,
+        body: object,
+    ) -> object:
         return body or ""
 
 
@@ -281,10 +321,16 @@ class ToolCall(BaseModel):
 
     @field_validator("tool_name", mode="before")
     @classmethod
-    def _no_name(cls, name: object) -> object:
+    def none_name_is_empty(
+        cls,
+        name: object,
+    ) -> object:
         return "" if name is None else name
 
     @field_validator("tool_input", mode="before")
     @classmethod
-    def _no_input(cls, tool_input: object) -> object:
+    def none_input_is_empty(
+        cls,
+        tool_input: object,
+    ) -> object:
         return {} if tool_input is None else tool_input

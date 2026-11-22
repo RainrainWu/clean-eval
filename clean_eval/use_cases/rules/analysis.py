@@ -17,16 +17,23 @@ from clean_eval.domain.rating import FileSignals, FileSyntax, Graph, PyStats, So
 
 
 @functools.lru_cache(maxsize=128)
-def _rx(pattern: str) -> re.Pattern[str]:
+def compiled(
+    pattern: str,
+) -> re.Pattern[str]:
     return re.compile(pattern)
 
 
-def is_test(path: str, policy: Policy) -> bool:
+def is_test(
+    path: str,
+    policy: Policy,
+) -> bool:
     parts = path.split("/")
-    return any(x in policy.test_dirs for x in parts[:-1]) or bool(_rx(policy.test_file).match(parts[-1]))
+    return any(x in policy.test_dirs for x in parts[:-1]) or bool(compiled(policy.test_file).match(parts[-1]))
 
 
-def classify_scale(path: str) -> str:
+def classify_scale(
+    path: str,
+) -> str:
     p = path.lower()
     if "e2e" in p or "end_to_end" in p:
         return "e2e"
@@ -37,33 +44,52 @@ def classify_scale(path: str) -> str:
     return "other"
 
 
-def not_applicable(module_name: str, policy: Policy) -> Optional[str]:
+def not_applicable(
+    module_name: str,
+    policy: Policy,
+) -> Optional[str]:
     """Reason a module is not rated for Unverified (manifest or test code), else None."""
     for reason, pattern in policy.not_applicable:
-        if _rx(pattern).search(module_name.lower()):
+        if compiled(pattern).search(module_name.lower()):
             return reason
     return None
 
 
-def has_core_keyword(module_name: str, policy: Policy) -> bool:
-    return bool(_rx(policy.keywords).search(module_name.lower()))
+def has_core_keyword(
+    module_name: str,
+    policy: Policy,
+) -> bool:
+    return bool(compiled(policy.keywords).search(module_name.lower()))
 
 
-def looks_like_tooling(module_name: str, first_path: str, policy: Policy) -> bool:
-    rx = _rx(policy.tooling)
+def looks_like_tooling(
+    module_name: str,
+    first_path: str,
+    policy: Policy,
+) -> bool:
+    rx = compiled(policy.tooling)
     return bool(rx.search(module_name.lower()) or rx.search(first_path.lower()))
 
 
-def is_migration(path: str, policy: Policy) -> bool:
-    return bool(_rx(policy.migration_path).search(path))
+def is_migration(
+    path: str,
+    policy: Policy,
+) -> bool:
+    return bool(compiled(policy.migration_path).search(path))
 
 
-def excluded(path: str, policy: Policy) -> bool:
+def excluded(
+    path: str,
+    policy: Policy,
+) -> bool:
     """Source the policy leaves out of the ratings (vendored or generated code)."""
     return any(fnmatch.fnmatch(path, g) for g in policy.exclude)
 
 
-def ignored(path: str, policy: Policy) -> bool:
+def ignored(
+    path: str,
+    policy: Policy,
+) -> bool:
     """A changed path that carries no risk of its own (documentation, images)."""
     return any(fnmatch.fnmatch(path, g) for g in policy.ignore_paths)
 
@@ -75,7 +101,10 @@ ROOT_MODULE = "(root)"
 FILES_SUFFIX = "/(files)"
 
 
-def _descend(name: str, files: list[SourceFile]) -> tuple[str, int, set[str]]:
+def descend_single_chains(
+    name: str,
+    files: list[SourceFile],
+) -> tuple[str, int, set[str]]:
     depth = name.count("/") + 1
     while True:
         kids = {f.path.split("/")[depth] for f in files if f.path.count("/") > depth}
@@ -87,7 +116,11 @@ def _descend(name: str, files: list[SourceFile]) -> tuple[str, int, set[str]]:
         return name, depth, kids
 
 
-def _children(files: list[SourceFile], name: str, depth: int) -> dict[str, list[SourceFile]]:
+def child_modules(
+    files: list[SourceFile],
+    name: str,
+    depth: int,
+) -> dict[str, list[SourceFile]]:
     out = {}
     for f in files:
         parts = f.path.split("/")
@@ -96,12 +129,17 @@ def _children(files: list[SourceFile], name: str, depth: int) -> dict[str, list[
     return out
 
 
-def _loc(files: list[SourceFile]) -> int:
+def total_loc(
+    files: list[SourceFile],
+) -> int:
     return sum(f.loc for f in files)
 
 
 def split_modules(
-    src: list[SourceFile], policy: Policy, depth: Optional[int] = None, max_modules: Optional[int] = None
+    src: list[SourceFile],
+    policy: Policy,
+    depth: Optional[int] = None,
+    max_modules: Optional[int] = None,
 ) -> tuple[dict[str, list[SourceFile]], list[str]]:
     """Level 1 is the top-level folders. Each further level splits every module of `split_min_loc`+ lines into its
     sub-folders (a single-child chain counts as one step) or, in a flat folder of 2-`split_max_files` files, into one
@@ -116,15 +154,15 @@ def split_modules(
     notes = []
     for level in range(2, depth + 1):
         out, count = {}, len(mods)
-        for name, files in sorted(mods.items(), key=lambda kv: -_loc(kv[1])):
-            if name == ROOT_MODULE or name.endswith(FILES_SUFFIX) or _loc(files) < policy.split_min_loc:
+        for name, files in sorted(mods.items(), key=lambda name_and_files: -total_loc(name_and_files[1])):
+            if name == ROOT_MODULE or name.endswith(FILES_SUFFIX) or total_loc(files) < policy.split_min_loc:
                 out[name] = files
                 continue
-            base, d, kids = _descend(name, files)
+            base, d, kids = descend_single_chains(name, files)
             if not kids and 2 <= len(files) <= policy.split_max_files:
                 new, what = {f.path: [f] for f in files}, "one module per file, %d files" % len(files)
             elif len(kids) >= 2:
-                new = _children(files, base, d)
+                new = child_modules(files, base, d)
                 what = "%d modules" % len(new)
             else:
                 out[name] = files
@@ -139,7 +177,10 @@ def split_modules(
     return mods, notes
 
 
-def module_of(path: str, names: Container[str]) -> Optional[str]:
+def module_of(
+    path: str,
+    names: Container[str],
+) -> Optional[str]:
     """The rated module a path belongs to, or None: the file itself when it is a module, else the deepest folder module
     that contains it (`<dir>/(files)` for files directly in a split folder), else `(root)` for a top-level file."""
     if path in names:
@@ -160,7 +201,10 @@ def module_of(path: str, names: Container[str]) -> Optional[str]:
 # `file_mod` maps each source file to its module.
 
 
-def dependents(graph: Graph, file_mod: dict[str, str]) -> tuple[defaultdict[str, set[str]], defaultdict[str, set[str]]]:
+def dependents(
+    graph: Graph,
+    file_mod: dict[str, str],
+) -> tuple[defaultdict[str, set[str]], defaultdict[str, set[str]]]:
     """(fan_in, fan_out): for each module, the modules that depend on it and the modules it depends on."""
     fan_in, fan_out = defaultdict(set), defaultdict(set)
     for sf, targets in graph.links.items():
@@ -172,7 +216,10 @@ def dependents(graph: Graph, file_mod: dict[str, str]) -> tuple[defaultdict[str,
     return fan_in, fan_out
 
 
-def functions_by_module(graph: Graph, file_mod: dict[str, str]) -> defaultdict[str, list[str]]:
+def functions_by_module(
+    graph: Graph,
+    file_mod: dict[str, str],
+) -> defaultdict[str, list[str]]:
     out = defaultdict(list)
     for qn, (kind, fp, is_test) in graph.nodes.items():
         if kind == "Function" and not is_test and fp in file_mod:
@@ -180,7 +227,10 @@ def functions_by_module(graph: Graph, file_mod: dict[str, str]) -> defaultdict[s
     return out
 
 
-def test_files_to_modules(graph: Graph, file_mod: dict[str, str]) -> defaultdict[str, set[str]]:
+def test_files_to_modules(
+    graph: Graph,
+    file_mod: dict[str, str],
+) -> defaultdict[str, set[str]]:
     out = defaultdict(set)
     for qn, test_files in graph.tested.items():
         kind, fp, _ = graph.nodes[qn]
@@ -227,7 +277,9 @@ WRITE_CALLS = {
 }
 
 
-def python_stats(text: str) -> Optional[PyStats]:
+def python_stats(
+    text: str,
+) -> Optional[PyStats]:
     try:
         tree = ast.parse(text)
     except SyntaxError, ValueError, RecursionError:
@@ -254,7 +306,9 @@ def python_stats(text: str) -> Optional[PyStats]:
     return st
 
 
-def write_calls(text: str) -> dict[str, tuple[int, int]]:
+def write_calls(
+    text: str,
+) -> dict[str, tuple[int, int]]:
     """{kind: (count, first line)} of write-call patterns in one file."""
     out = {}
     for kind, (call, gate) in WRITE_CALLS.items():
@@ -266,13 +320,20 @@ def write_calls(text: str) -> dict[str, tuple[int, int]]:
     return out
 
 
-def file_signals(f: SourceFile, cache: Optional[dict[str, FileSignals]] = None) -> FileSignals:
+def file_signals(
+    source_file: SourceFile,
+    cache: Optional[dict[str, FileSignals]] = None,
+) -> FileSignals:
     """The FileSignals of a SourceFile: function sizes, complexity, typing, exception handling, TODOs and write calls.
     `cache` ({content id: FileSignals}, e.g. a RatingCache's) is shared across revisions."""
-    key = f.blob or f.text
+    key = source_file.blob or source_file.text
     if cache is not None and key in cache:
         return cache[key]
-    signals = FileSignals(stats=python_stats(f.text), todo=len(TODO.findall(f.text)), effects=write_calls(f.text))
+    signals = FileSignals(
+        stats=python_stats(source_file.text),
+        todo=len(TODO.findall(source_file.text)),
+        effects=write_calls(source_file.text),
+    )
     if cache is not None:
         cache[key] = signals
     return signals
@@ -288,7 +349,9 @@ def file_signals(f: SourceFile, cache: Optional[dict[str, FileSignals]] = None) 
 STDLIB = frozenset(sys.stdlib_module_names)
 
 
-def parse_syntax(text: str) -> FileSyntax:
+def parse_syntax(
+    text: str,
+) -> FileSyntax:
     """The FileSyntax of a Python file (empty when it doesn't parse)."""
     try:
         tree = ast.parse(text)
@@ -296,7 +359,10 @@ def parse_syntax(text: str) -> FileSyntax:
         return FileSyntax()
     defs, imports, refs = [], [], set()
 
-    def visit(node: ast.AST, prefix: str) -> None:
+    def visit(
+        node: ast.AST,
+        prefix: str,
+    ) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 defs.append(prefix + child.name)
@@ -328,22 +394,28 @@ def parse_syntax(text: str) -> FileSyntax:
 type ModuleIndex = tuple[dict[str, str], dict[str, list[str]]]
 
 
-def _dotted(path: str) -> str:
+def dotted_name(
+    path: str,
+) -> str:
     p = path[:-3]
     if p == "__init__" or p.endswith("/__init__"):
         p = p[: -len("__init__")].rstrip("/")
     return p.replace("/", ".")
 
 
-def _folder(path: str) -> str:
+def folder_of(
+    path: str,
+) -> str:
     return path.rsplit("/", 1)[0] if "/" in path else ""
 
 
-def module_index(paths: Iterable[str]) -> ModuleIndex:
+def module_index(
+    paths: Iterable[str],
+) -> ModuleIndex:
     """Where an import name can come from in this repository: (dotted name -> path, dotted suffix -> paths)."""
     full, suffix = {}, defaultdict(list)
     for path in paths:
-        dotted = _dotted(path)
+        dotted = dotted_name(path)
         if not dotted:
             continue
         full.setdefault(dotted, path)
@@ -353,42 +425,58 @@ def module_index(paths: Iterable[str]) -> ModuleIndex:
     return full, suffix
 
 
-def _root_ok(candidate: str, dotted: str, importer: str) -> bool:
+def is_import_root(
+    candidate: str,
+    dotted: str,
+    importer: str,
+) -> bool:
     """A suffix match counts when its import root (the folder the dotted name hangs from) is the importer's folder or an
     ancestor of it, or a top-level source folder such as `src` (installed-package layout)."""
     segments = candidate.split("/")
     covered = dotted.count(".") + 1 + (1 if segments[-1] == "__init__.py" else 0)  # `pkg` covers pkg/__init__.py
     root = "/".join(segments[:-covered])
-    folder = _folder(importer)
+    folder = folder_of(importer)
     return root.count("/") == 0 or folder == root or folder.startswith(root + "/")
 
 
-def lookup(index: ModuleIndex, dotted: str, importer: str) -> Optional[str]:
+def lookup(
+    index: ModuleIndex,
+    dotted: str,
+    importer: str,
+) -> Optional[str]:
     full, suffix = index
     if dotted in full:
         return full[dotted]
-    cands = [c for c in suffix.get(dotted, ()) if _root_ok(c, dotted, importer)]
+    cands = [c for c in suffix.get(dotted, ()) if is_import_root(c, dotted, importer)]
     if not cands:
         return None
     imp = importer.split("/")
 
-    def shared(c: str) -> int:
+    def shared(
+        candidate: str,
+    ) -> int:
         n = 0
-        for a, b in zip(imp, c.split("/")):
+        for a, b in zip(imp, candidate.split("/")):
             if a != b:
                 break
             n += 1
         return n
 
-    return max(cands, key=lambda c: (shared(c), -len(c)))
+    return max(cands, key=lambda candidate: (shared(candidate), -len(candidate)))
 
 
-def resolve(index: ModuleIndex, importer: str, module: str, level: int, names: tuple[str, ...]) -> set[str]:
+def resolve(
+    index: ModuleIndex,
+    importer: str,
+    module: str,
+    level: int,
+    names: tuple[str, ...],
+) -> set[str]:
     """The repository files an import of `importer` reaches."""
     full, _ = index
     out = set()
     if level:  # relative imports resolve exactly against the importer's package
-        pkg = _folder(importer).split("/") if _folder(importer) else []
+        pkg = folder_of(importer).split("/") if folder_of(importer) else []
         pkg = pkg[: max(len(pkg) - (level - 1), 0)]
         base = ".".join(pkg + (module.split(".") if module else []))
         unresolved = False
@@ -418,15 +506,20 @@ def resolve(index: ModuleIndex, importer: str, module: str, level: int, names: t
     return out
 
 
-def builtin_graph(files: list[SourceFile], cache: Optional[dict[str, FileSyntax]] = None) -> Graph:
+def builtin_graph(
+    files: list[SourceFile],
+    cache: Optional[dict[str, FileSyntax]] = None,
+) -> Graph:
     """The Graph of the Python files: imports as links, functions as nodes, and the test files that use them.
     `cache` ({content id: FileSyntax}, e.g. a RatingCache's) is shared across revisions."""
     cache = {} if cache is None else cache
 
-    def syntax_of(f: SourceFile) -> FileSyntax:
-        key = f.blob or f.text
+    def syntax_of(
+        source_file: SourceFile,
+    ) -> FileSyntax:
+        key = source_file.blob or source_file.text
         if key not in cache:
-            cache[key] = parse_syntax(f.text)
+            cache[key] = parse_syntax(source_file.text)
         return cache[key]
 
     py = [f for f in files if f.path.endswith(".py")]

@@ -12,11 +12,11 @@ A release tag is a semantic version: vMAJOR.MINOR.PATCH, or a pre-release vMAJOR
 On success it prints `version=`, `sha=`, `major=` and `prerelease=` lines (for $GITHUB_OUTPUT); otherwise an ::error::
 annotation on stderr, and it exits 1. Run it from the repository root: it reads only git and pyproject.toml."""
 
-import argparse
 import re
 import subprocess
-import sys
 import tomllib
+
+import click
 
 TAG = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|rc)\.(0|[1-9]\d*))?")  # the whole tag
 PEP440_PRE = {"alpha": "a", "beta": "b", "rc": "rc"}
@@ -26,7 +26,9 @@ class ReleaseError(Exception):
     pass
 
 
-def parse(tag):
+def parse(
+    tag,
+):
     """(major, minor, patch, pre-release kind or None, pre-release number or None) of a release tag; None otherwise."""
     m = TAG.fullmatch(tag)
     if not m:
@@ -35,27 +37,36 @@ def parse(tag):
     return int(major), int(minor), int(patch), kind, None if number is None else int(number)
 
 
-def precedence(version):
+def precedence(
+    version,
+):
     """Sort key in semver precedence: a pre-release comes before its release, and alpha < beta < rc, then by number
     (Python's version ordering agrees)."""
     major, minor, patch, kind, number = version
     return (major, minor, patch, 1, "", 0) if kind is None else (major, minor, patch, 0, kind, number)
 
 
-def python_version(version):
+def python_version(
+    version,
+):
     """The version `uv version` writes to pyproject.toml for a release tag: 1.2.0, or 1.3.0rc1 for v1.3.0-rc.1."""
     major, minor, patch, kind, number = version
     return "%d.%d.%d" % (major, minor, patch) + ("" if kind is None else "%s%d" % (PEP440_PRE[kind], number))
 
 
-def git(*args):
+def git(
+    *args,
+):
     r = subprocess.run(["git", *args], capture_output=True, text=True)
     if r.returncode:
         raise ReleaseError("git %s failed: %s" % (" ".join(args), r.stderr.strip()))
     return r.stdout
 
 
-def check(tag, branch="origin/master"):
+def check(
+    tag,
+    branch="origin/master",
+):
     """The step outputs for releasing `tag`; ReleaseError says why it can't be released."""
     version = parse(tag)
     if version is None:
@@ -84,7 +95,7 @@ def check(tag, branch="origin/master"):
             for t in git("tag", "--list", "v*").split()
             if t != tag and parse(t) and precedence(parse(t)) >= precedence(version)
         ),
-        key=lambda t: precedence(parse(t)),
+        key=lambda tag: precedence(parse(tag)),
     )
     if newer:
         raise ReleaseError("%s is not newer than the release tag(s) %s" % (tag, ", ".join(newer)))
@@ -96,24 +107,27 @@ def check(tag, branch="origin/master"):
     }
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description="Check a release tag and print the release workflow's step outputs.")
-    parser.add_argument("tag")
-    parser.add_argument("--branch", default="origin/master", help="the branch releases are cut from")
-    args = parser.parse_args(argv)
+@click.command(help="Check a release tag and print the release workflow's step outputs.")
+@click.argument("tag")
+@click.option("--branch", default="origin/master", show_default=True, help="the branch releases are cut from")
+@click.pass_context
+def main(
+    context,
+    tag,
+    branch,
+):
     try:
-        outputs = check(args.tag, args.branch)
-    except ReleaseError as e:
-        print("::error::%s" % e, file=sys.stderr)
-        return 1
-    print(
+        outputs = check(tag, branch)
+    except ReleaseError as error:
+        click.echo("::error::%s" % error, err=True)
+        context.exit(1)
+    click.echo(
         "%s (%s) is on %s, matches pyproject.toml and is newer than every release tag"
-        % (args.tag, outputs["sha"][:8], args.branch),
-        file=sys.stderr,
+        % (tag, outputs["sha"][:8], branch),
+        err=True,
     )
-    print("".join("%s=%s\n" % kv for kv in outputs.items()), end="")
-    return 0
+    click.echo("".join("%s=%s\n" % item for item in outputs.items()), nl=False)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

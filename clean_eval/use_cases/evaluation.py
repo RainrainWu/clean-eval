@@ -51,47 +51,75 @@ from clean_eval.use_cases.store import JUDGING_ERRORS, invalid, read_json, valid
 SNAPSHOT = "clean-eval.orig"  # in the context folder: .clean-eval/ as it was before the agent ran
 
 
-def _text(fs: FileSystem, path: str) -> Optional[str]:
+def text_or_none(
+    fs: FileSystem,
+    path: str,
+) -> Optional[str]:
     return fs.read_text(path) if fs.is_file(path) else None
 
 
-def _clear(fs: FileSystem, path: str) -> None:
+def clear_path(
+    fs: FileSystem,
+    path: str,
+) -> None:
     if fs.is_dir(path) and not fs.is_link(path):
         fs.remove_tree(path)
     elif fs.lexists(path):
         fs.remove(path)
 
 
-def snapshot_tuning(fs: FileSystem, workspace: str, snapshot_dir: str) -> None:
+def snapshot_tuning(
+    fs: FileSystem,
+    workspace: str,
+    snapshot_dir: str,
+) -> None:
     """Copy .clean-eval/ aside, as it is now."""
     live = fs.join(workspace, REPO_DIR)
     if fs.is_dir(live):
         fs.copy_tree(live, snapshot_dir)
 
 
-def current_tuning(fs: FileSystem, workspace: str, name: str) -> Optional[str]:
+def current_tuning(
+    fs: FileSystem,
+    workspace: str,
+    name: str,
+) -> Optional[str]:
     """The text of .clean-eval/<name> now, or None when there is no such file."""
-    return _text(fs, fs.join(workspace, REPO_DIR, name))
+    return text_or_none(fs, fs.join(workspace, REPO_DIR, name))
 
 
-def original_tuning(fs: FileSystem, snapshot_dir: str, name: str) -> Optional[str]:
+def original_tuning(
+    fs: FileSystem,
+    snapshot_dir: str,
+    name: str,
+) -> Optional[str]:
     """The text of .clean-eval/<name> in the snapshot, or None when there was no such file."""
-    return _text(fs, fs.join(snapshot_dir, name))
+    return text_or_none(fs, fs.join(snapshot_dir, name))
 
 
-def restore_tuning(fs: FileSystem, workspace: str, snapshot_dir: str, name: str) -> None:
+def restore_tuning(
+    fs: FileSystem,
+    workspace: str,
+    snapshot_dir: str,
+    name: str,
+) -> None:
     """Put .clean-eval/<name> back as it was in the snapshot (removed when it wasn't there)."""
     live, orig = fs.join(workspace, REPO_DIR, name), fs.join(snapshot_dir, name)
     if fs.is_file(orig):
         if not fs.is_file(live) or not fs.same_content(live, orig):
-            _clear(fs, live)
+            clear_path(fs, live)
             fs.make_dirs(fs.parent(live))
             fs.copy_file(orig, live)
     else:
-        _clear(fs, live)
+        clear_path(fs, live)
 
 
-def restore_other_tuning(fs: FileSystem, workspace: str, snapshot_dir: str, keep: Collection[str]) -> list[str]:
+def restore_other_tuning(
+    fs: FileSystem,
+    workspace: str,
+    snapshot_dir: str,
+    keep: Collection[str],
+) -> list[str]:
     """Put every file under .clean-eval/ except `keep` back as it was; the paths that needed it, sorted."""
     live_dir, restored = fs.join(workspace, REPO_DIR), set()
     for top, in_snapshot in ((live_dir, False), (snapshot_dir, True)):
@@ -119,7 +147,9 @@ def restore_other_tuning(fs: FileSystem, workspace: str, snapshot_dir: str, keep
 
 
 def review_of(
-    host: CodeHost, pr: int, reviewer_logins: Optional[list[str]] = None
+    host: CodeHost,
+    pr: int,
+    reviewer_logins: Optional[list[str]] = None,
 ) -> Union[ReviewSignal, FetchFailure]:
     """The ReviewSignal of one PR, or a FetchFailure when its reviews couldn't be fetched."""
     try:
@@ -129,7 +159,13 @@ def review_of(
     return review_signal(view, inline, reviewer_logins)
 
 
-def _heatmap_at(git: Git, clock: Clock, rev: str, policy: Policy, cache: RatingCache) -> Heatmap:
+def heatmap_at(
+    git: Git,
+    clock: Clock,
+    rev: str,
+    policy: Policy,
+    cache: RatingCache,
+) -> Heatmap:
     try:
         return rate_revision(git, clock, rev, policy, cache)
     except NoPythonSource:  # nothing to rate: every path a PR on this base touched is unrated
@@ -167,14 +203,14 @@ def collect_history(
             for sha, parents, author, ts, subject in log
             if parents
         ),
-        key=lambda u: u.ts,
+        key=lambda merged_pr: merged_pr.ts,
     )
     prs = in_period(units, period)
 
     cache, heatmaps = cache or RatingCache(), {}  # one rating per base
     for u in prs:
         if u.base not in heatmaps:
-            heatmaps[u.base] = _heatmap_at(git, clock, u.base, policy, cache)
+            heatmaps[u.base] = heatmap_at(git, clock, u.base, policy, cache)
         risk = change_risk(heatmaps[u.base], u.files, policy)
         u.max_tier, u.max_score = risk.max_band, risk.max_score
         u.modules = [ModuleRecord(**m.model_dump(exclude={"evidence"})) for m in risk.modules]
@@ -244,7 +280,12 @@ def prepare_eval(
     write_json(fs, fs.join(ctx, "sensitivity.json"), sensitivity(hist, policy))
 
     links = [(u, d) for u in hist.prs for d in u.defects]
-    links.sort(key=lambda ud: (DEFECT_ORDER.get(ud[0].max_tier, 9), ud[1].confidence != "high"))
+    links.sort(
+        key=lambda pr_and_defect: (
+            DEFECT_ORDER.get(pr_and_defect[0].max_tier, 9),
+            pr_and_defect[1].confidence != "high",
+        )
+    )
     index = []
     for i, (u, d) in enumerate(links[:MAX_DEFECT_PATCHES], 1):
         stem = "%02d-pr%s" % (i, u.pr or u.sha[:8])
@@ -285,7 +326,13 @@ def prepare_eval(
 
 
 def finalize_eval(
-    fs: FileSystem, env: Environment, ctx: str, agent: str, out: str, apply: bool = False, workspace: str = "."
+    fs: FileSystem,
+    env: Environment,
+    ctx: str,
+    agent: str,
+    out: str,
+    apply: bool = False,
+    workspace: str = ".",
 ) -> tuple[EvalResult, StepOutputs]:
     """(the EvalResult CI trusts, its StepOutputs) from what the CI agent proposed in `agent`. An edit of the tuning
     files is kept only with `apply` on, and only if it passes the checks of the domain and the eval's rules; everything
@@ -296,10 +343,12 @@ def finalize_eval(
     snapshot_dir = fs.join(ctx, SNAPSHOT)
     try:
         history = validated(EvalHistory, fs, ctx, "eval-history.json")
-        model_change = _judge(
+        model_change = judge_tuning_edit(
             fs, workspace, snapshot_dir, MODEL_FILE, apply, lambda new, orig: judge_model_edit(new, orig, history)
         )
-        rules_change = _judge(fs, workspace, snapshot_dir, RULES_FILE, apply, lambda new, orig: judge_rules_edit(new))
+        rules_change = judge_tuning_edit(
+            fs, workspace, snapshot_dir, RULES_FILE, apply, lambda new, orig: judge_rules_edit(new)
+        )
         other = restore_other_tuning(fs, workspace, snapshot_dir, TUNING_FILES)
         recommendations = eval_recommendations(read_json(fs, fs.join(agent, "result.json")), secrets)
         result, outputs = eval_result(history, recommendations, model_change, rules_change, other)
@@ -312,7 +361,7 @@ def finalize_eval(
     return result, outputs
 
 
-def _judge[T](
+def judge_tuning_edit[T](
     fs: FileSystem,
     workspace: str,
     snapshot_dir: str,

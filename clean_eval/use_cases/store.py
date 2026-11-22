@@ -17,7 +17,10 @@ from clean_eval.use_cases.interfaces import FileSystem
 from clean_eval.use_cases.rules.review import sanitize_report
 
 
-def read_json(fs: FileSystem, path: str) -> object:
+def read_json(
+    fs: FileSystem,
+    path: str,
+) -> object:
     """The parsed JSON file (to validate before use); HeatmapError when it can't be read or parsed."""
     try:
         return json.loads(fs.read_text(path))
@@ -25,12 +28,20 @@ def read_json(fs: FileSystem, path: str) -> object:
         raise HeatmapError("cannot read %s: %s" % (path, e))
 
 
-def write_json(fs: FileSystem, path: str, obj: object) -> None:
+def write_json(
+    fs: FileSystem,
+    path: str,
+    obj: object,
+) -> None:
     """Write models (or plain data holding them) as JSON."""
     fs.write_text(path, json.dumps(to_jsonable_python(obj), indent=2))
 
 
-def load_policy(fs: FileSystem, repo_root: Optional[str] = None, path: Optional[str] = None) -> tuple[Policy, str]:
+def load_policy(
+    fs: FileSystem,
+    repo_root: Optional[str] = None,
+    path: Optional[str] = None,
+) -> tuple[Policy, str]:
     """(Policy, source): `path`, else <repo>/.clean-eval/risk-model.json when present, else the defaults."""
     if path:
         return Policy.from_text(fs.read_text(path), path), path
@@ -40,23 +51,37 @@ def load_policy(fs: FileSystem, repo_root: Optional[str] = None, path: Optional[
     return Policy(), "clean-eval default"
 
 
-def save_heatmap(fs: FileSystem, heatmap: Heatmap, path: str) -> None:
+def save_heatmap(
+    fs: FileSystem,
+    heatmap: Heatmap,
+    path: str,
+) -> None:
     fs.write_text(path, heatmap.model_dump_json(indent=1))
 
 
-def load_heatmap(fs: FileSystem, path: str) -> Heatmap:
+def load_heatmap(
+    fs: FileSystem,
+    path: str,
+) -> Heatmap:
     try:
         return Heatmap.model_validate_json(fs.read_text(path))
     except ValidationError as e:
         raise HeatmapError.from_validation(e, "%s is not a heat map" % path)
 
 
-def load_judgement(fs: FileSystem, path: str) -> Judgement:
+def load_judgement(
+    fs: FileSystem,
+    path: str,
+) -> Judgement:
     """The levels in a judgement file; entries that don't validate are dropped (see Judgement)."""
     return Judgement.model_validate(read_json(fs, path))
 
 
-def write_step_outputs(fs: FileSystem, path: str, outputs: StepOutputs) -> None:
+def write_step_outputs(
+    fs: FileSystem,
+    path: str,
+    outputs: StepOutputs,
+) -> None:
     """Append the StepOutputs (validated: one line each) as `name=value` lines to a GitHub Actions step-outputs file."""
     fs.append_text(path, "".join("%s=%s\n" % kv for kv in outputs.root.items()))
 
@@ -65,14 +90,24 @@ def write_step_outputs(fs: FileSystem, path: str, outputs: StepOutputs) -> None:
 JUDGING_ERRORS = (HeatmapError, ArithmeticError, ValueError, KeyError, TypeError, AttributeError)
 
 
-def invalid(e: Exception, suffix: str = "") -> InvalidOutput:
+def invalid(
+    error: Exception,
+    suffix: str = "",
+) -> InvalidOutput:
     """The InvalidOutput that a failure to judge the CI agent's output becomes."""
-    if isinstance(e, ValidationError):
-        return InvalidOutput(str(InvalidOutput.from_validation(e)) + suffix)
-    return InvalidOutput((str(e) if isinstance(e, HeatmapError) else "%s: %s" % (type(e).__name__, e)) + suffix)
+    if isinstance(error, ValidationError):
+        return InvalidOutput(str(InvalidOutput.from_validation(error)) + suffix)
+    return InvalidOutput(
+        (str(error) if isinstance(error, HeatmapError) else "%s: %s" % (type(error).__name__, error)) + suffix
+    )
 
 
-def validated[M: BaseModel](model: type[M], fs: FileSystem, folder: str, name: str) -> M:
+def validated[M: BaseModel](
+    model: type[M],
+    fs: FileSystem,
+    folder: str,
+    name: str,
+) -> M:
     """`name` in `folder`, validated as `model`; InvalidOutput says which file and what is wrong."""
     try:
         return model.model_validate(read_json(fs, fs.join(folder, name)))
@@ -81,7 +116,11 @@ def validated[M: BaseModel](model: type[M], fs: FileSystem, folder: str, name: s
 
 
 def write_run_output(
-    fs: FileSystem, out: str, report_path: str, result: Optional[Union[Review, EvalResult]], secrets: Sequence[str]
+    fs: FileSystem,
+    out: str,
+    report_path: str,
+    result: Optional[Union[Review, EvalResult]],
+    secrets: Sequence[str],
 ) -> None:
     """report.md (`report_path` redacted, or a note that there is none) and, when there is a result, result.json into
     `out`. The result counts the report's redactions too."""

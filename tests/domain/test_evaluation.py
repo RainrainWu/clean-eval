@@ -19,91 +19,94 @@ from clean_eval.domain.evaluation import (
     RulesChange,
 )
 
-# The merged-PR history models (domain/evaluation.py): periods, merged PRs and their review signal.
-
-SHA = "a" * 40
-
-
-def test_period():
-    p = Period(since="2026-01-01", until="2026-01-31", window_days=10)
-    assert p.lookahead_until == dt.date(2026, 2, 10)
-    assert p.until_ts == dt.datetime(2026, 1, 31, 23, 59, 59, tzinfo=dt.timezone.utc).timestamp()
+# An edit of the risk model that the replay accepted.
+ACCEPTED_MODEL_CHANGE = ModelChange(changed_keys=["x"], auc_before=0.6, auc_after=0.7)
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
-        {"since": "2026-02-01", "until": "2026-01-01"},
-        {"since": "last week", "until": "2026-01-01"},
-        {"since": "2026-01-01", "until": "2026-02-30"},
-    ],
-    ids=["ends before it starts", "not a date", "no such day"],
-)
-def test_an_invalid_period_is_refused(bad):
-    with pytest.raises(ValidationError):
-        Period(**bad)
+class TestPeriod:
+    """The PRs merged from `since` to `until` (inclusive days), and how long after each one a fix still counts."""
 
+    @pytest.mark.parametrize("period", [{"window_days": 10}], indirect=True, ids=["a 10-day window"])
+    def test_a_period_ends_with_its_last_day_and_looks_ahead_its_window(
+        self,
+        period,
+    ):
+        read = Period.model_validate(period)
+        assert read.lookahead_until == dt.date(2026, 2, 10)
+        assert read.until_ts == dt.datetime(2026, 1, 31, 23, 59, 59, tzinfo=dt.timezone.utc).timestamp()
 
-def test_merged_prs_keep_a_file_count_not_the_files():
-    u = MergedPR(sha=SHA, base="b" * 40, author="a", ts=1, subject="s", files=["x.py", "y.py"])
-    dumped = u.model_dump()
-    assert "files" not in dumped
-    assert MergedPR.model_validate(dumped).file_count == 2
-
-
-def test_a_fetch_failure_never_passes_for_a_review():
-    failed = MergedPR.model_validate(
-        {
-            "sha": SHA,
-            "base": SHA,
-            "author": "a",
-            "ts": 1,
-            "subject": "s",
-            "review": {"error": "not_found", "message": "gone"},
-        }
+    @pytest.mark.parametrize(
+        "period",
+        [
+            {"since": "2026-02-01", "until": "2026-01-01"},
+            {"since": "last week", "until": "2026-01-01"},
+            {"since": "2026-01-01", "until": "2026-02-30"},
+        ],
+        indirect=True,
+        ids=["ends before it starts", "not a date", "no such day"],
     )
-    assert isinstance(failed.review, FetchFailure)
-    reviewed = MergedPR.model_validate(
-        {"sha": SHA, "base": SHA, "author": "a", "ts": 1, "subject": "s", "review": {"rules_cited": ["CA-01"]}}
+    def test_an_invalid_period_is_refused(
+        self,
+        period,
+    ):
+        with pytest.raises(ValidationError):
+            Period.model_validate(period)
+
+
+class TestMergedPR:
+    """One merged PR: it stores how many files it changed, not which, and a review that couldn't be fetched never
+    passes for a review."""
+
+    @pytest.mark.parametrize("merged_pr", [{"files": ["x.py", "y.py"]}], indirect=True, ids=["two files"])
+    def test_merged_prs_keep_a_file_count_not_the_files(
+        self,
+        merged_pr,
+    ):
+        dumped = MergedPR.model_validate(merged_pr).model_dump()
+        assert "files" not in dumped
+        assert MergedPR.model_validate(dumped).file_count == 2
+
+    @pytest.mark.parametrize(
+        ("merged_pr", "kind"),
+        [
+            ({"review": {"error": "not_found", "message": "gone"}}, FetchFailure),
+            ({"review": {"rules_cited": ["CA-01"]}}, ReviewSignal),
+        ],
+        indirect=["merged_pr"],
+        ids=["a fetch failure", "a review"],
     )
-    assert isinstance(reviewed.review, ReviewSignal)
+    def test_a_fetch_failure_never_passes_for_a_review(
+        self,
+        merged_pr,
+        kind,
+    ):
+        assert isinstance(MergedPR.model_validate(merged_pr).review, kind)
 
 
-# The eval's tuning models (domain/evaluation.py): proposed policy and rules edits, and their outcome.
+class TestPolicyEdit:
+    """An edit of the risk-model overrides: comments are no change, only tunable knobs (and the version) may change,
+    and the edit must still be a valid policy."""
 
-
-class TestTuningModels:
-    def test_policy_edits(self):
-        edit = PolicyEdit(new={"business_weights": {"dependents": 0.45}, "_why": "x"}, orig={"_why": "y"})
-        assert edit.changed_keys == {"business_weights"}
-
-    def test_recommendations_are_text(self):
-        r = AgentEvalResult.model_validate(
-            {
-                "recommendations": [{"target": 1, "change": None, "evidence": "e" * 3000}, "junk"]
-                + [{"target": "t"}] * 40,
-                "auc": 0.99,
-            }
-        )
-        assert len(r.recommendations) == 30
-        first = r.recommendations[0]
-        assert (first.target, first.change, len(first.evidence)) == ("1", "None", 2000)
-
-    def test_applied_is_derived(self):
-        def result(**change):
-            return EvalResult(since="2026-01-01", until="2026-02-01", prs=30, defective_prs=6, auc=0.7, **change)
-
-        assert not result(model_change=Rejection(reason="no")).applied
-        assert result(rules_change=RulesChange()).applied
-        accepted = result(model_change=ModelChange(changed_keys=["x"], auc_before=0.6, auc_after=0.7))
-        assert EvalResult.model_validate(accepted.model_dump()).model_change == accepted.model_change
-
-
-class TestModelChange:
-    def test_tunable_change_ok(self):
-        new = {"business_weights": {"dependents": 0.45}, "unrated_band": "High", "_why": "a comment"}
-        assert PolicyEdit(new=new).changed_keys == {"business_weights", "unrated_band"}
-        assert PolicyEdit(new={"version": 3}, orig={"version": 2}).changed_keys == {"version"}
+    @pytest.mark.parametrize(
+        ("new", "orig", "changed"),
+        [
+            ({"business_weights": {"dependents": 0.45}, "_why": "x"}, {"_why": "y"}, {"business_weights"}),
+            (
+                {"business_weights": {"dependents": 0.45}, "unrated_band": "High", "_why": "a comment"},
+                {},
+                {"business_weights", "unrated_band"},
+            ),
+            ({"version": 3}, {"version": 2}, {"version"}),
+        ],
+        ids=["a comment is no change", "tunable knobs", "the version"],
+    )
+    def test_the_changed_keys_are_the_knobs_that_differ(
+        self,
+        new,
+        orig,
+        changed,
+    ):
+        assert PolicyEdit(new=new, orig=orig).changed_keys == changed
 
     @pytest.mark.parametrize(
         "new",
@@ -123,6 +126,63 @@ class TestModelChange:
         ],
         ids=repr,
     )
-    def test_structural_or_bad_changes_rejected(self, new):
+    def test_structural_or_bad_changes_are_refused(
+        self,
+        new,
+    ):
         with pytest.raises(ValidationError):
             PolicyEdit(new=new)
+
+
+class TestAgentEvalResult:
+    """The eval agent's result.json: its recommendations, as text cut to size, objects only and at most 30; whatever
+    else it writes (counts, AUC) is ignored."""
+
+    def test_recommendations_are_text(
+        self,
+    ):
+        result = AgentEvalResult.model_validate(
+            {
+                "recommendations": [{"target": 1, "change": None, "evidence": "e" * 3000}, "junk"]
+                + [{"target": "t"}] * 40,
+                "auc": 0.99,
+            }
+        )
+        assert len(result.recommendations) == 30
+        first = result.recommendations[0]
+        assert (first.target, first.change, len(first.evidence)) == ("1", "None", 2000)
+
+
+class TestEvalResult:
+    """The eval CI trusts: whether it applied an edit is derived from the changes it kept, and a kept change survives
+    being stored."""
+
+    @pytest.mark.parametrize(
+        ("eval_result", "applied"),
+        [
+            ({"model_change": Rejection(reason="no")}, False),
+            ({"rules_change": RulesChange()}, True),
+            ({"model_change": ACCEPTED_MODEL_CHANGE}, True),
+        ],
+        indirect=["eval_result"],
+        ids=["a rejected model change", "an accepted rules change", "an accepted model change"],
+    )
+    def test_applied_is_derived(
+        self,
+        eval_result,
+        applied,
+    ):
+        assert EvalResult.model_validate(eval_result).applied is applied
+
+    @pytest.mark.parametrize(
+        "eval_result",
+        [{"model_change": ACCEPTED_MODEL_CHANGE}],
+        indirect=True,
+        ids=["an accepted model change"],
+    )
+    def test_an_accepted_model_change_survives_a_dump_and_a_load(
+        self,
+        eval_result,
+    ):
+        accepted = EvalResult.model_validate(eval_result)
+        assert EvalResult.model_validate(accepted.model_dump()).model_change == accepted.model_change

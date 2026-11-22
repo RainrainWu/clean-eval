@@ -36,33 +36,40 @@ DIAGRAM_PATH = "docs/risk-heatmap.svg"  # default location of the README diagram
 
 
 def squarify[T](
-    items: Sequence[tuple[T, float]], x: float, y: float, w: float, h: float
+    items: Sequence[tuple[T, float]],
+    left: float,
+    top: float,
+    width: float,
+    height: float,
 ) -> list[tuple[T, float, float, float, float]]:
     """`items` is [(payload, area)] sorted by area descending; returns [(payload, x, y, w, h)] filling the rectangle."""
     out, rest = [], list(items)
 
-    def worst(row: list[tuple[T, float]], side: float) -> float:
+    def worst(
+        row: list[tuple[T, float]],
+        side: float,
+    ) -> float:
         s, mx, mn = sum(a for _, a in row), max(a for _, a in row), min(a for _, a in row)
         return max(side * side * mx / (s * s), s * s / (side * side * mn))
 
     while rest:
-        side, row, i = min(w, h), [rest[0]], 1
+        side, row, i = min(width, height), [rest[0]], 1
         while i < len(rest) and worst(row + [rest[i]], side) <= worst(row, side):
             row.append(rest[i])
             i += 1
         s = sum(a for _, a in row)
-        if w >= h:
-            cw, cy = s / h, y
+        if width >= height:
+            cw, cy = s / height, top
             for p, a in row:
-                out.append((p, x, cy, cw, a / cw))
+                out.append((p, left, cy, cw, a / cw))
                 cy += a / cw
-            x, w = x + cw, w - cw
+            left, width = left + cw, width - cw
         else:
-            rh, cx = s / w, x
+            rh, cx = s / width, left
             for p, a in row:
-                out.append((p, cx, y, a / rh, rh))
+                out.append((p, cx, top, a / rh, rh))
                 cx += a / rh
-            y, h = y + rh, h - rh
+            top, height = top + rh, height - rh
         rest = rest[len(row) :]
     return out
 
@@ -74,12 +81,16 @@ TEXT_MIN_W, TEXT_MIN_H = 96, 44
 COLUMNS = tuple((key, label) for _, key, label, _, _ in ASPECTS)
 
 
-def _band(score: Optional[int]) -> str:
+def band_label(
+    score: Optional[int],
+) -> str:
     return "N/A" if score is None else band(score)
 
 
-def _fmt(n: int) -> str:
-    return "%dk" % round(n / 1000) if n >= 10000 else "%.1fk" % (n / 1000) if n >= 1000 else str(n)
+def format_loc(
+    lines: int,
+) -> str:
+    return "%dk" % round(lines / 1000) if lines >= 10000 else "%.1fk" % (lines / 1000) if lines >= 1000 else str(lines)
 
 
 def legend() -> str:
@@ -89,8 +100,11 @@ def legend() -> str:
 
 
 class SvgDiagramPresenter(DiagramPresenter):
-    def svg(self, heatmap: Heatmap) -> str:
-        mods = sorted(heatmap.modules, key=lambda m: -m.loc)
+    def svg(
+        self,
+        heatmap: Heatmap,
+    ) -> str:
+        mods = sorted(heatmap.modules, key=lambda module: -module.loc)
         total = sum(m.loc for m in mods) or 1
         weights = [max(m.loc, total * MIN_TILE_SHARE) for m in mods]
         scale = WIDTH * HEIGHT / (sum(weights) or 1)
@@ -104,7 +118,7 @@ class SvgDiagramPresenter(DiagramPresenter):
             '<rect width="%d" height="%d" rx="6" fill="%s"/>' % (WIDTH, HEIGHT, DIAGRAM_BACKING),
         ]
         for m, x, y, w, h in rects:
-            name = _band(m.scores.overall)
+            name = band_label(m.scores.overall)
             colour, _, glyph = BAND_STYLE[name]
             detail = " · ".join(
                 "%s %s" % (label, "N/A" if getattr(m.scores, k) is None else getattr(m.scores, k))
@@ -128,13 +142,18 @@ class SvgDiagramPresenter(DiagramPresenter):
                 )
                 out.append(
                     '<text class="t" x="%.1f" y="%.1f" font-size="12">%s %s · %s</text>'
-                    % (x + 10, y + 39, glyph, m.scores.overall, _fmt(m.loc))
+                    % (x + 10, y + 39, glyph, m.scores.overall, format_loc(m.loc))
                 )
             out.append("</g>")
         out.append("</svg>")
         return "\n".join(out) + "\n"
 
-    def readme_block(self, heatmap: Heatmap, image_link: str, fingerprint: str) -> str:
+    def readme_block(
+        self,
+        heatmap: Heatmap,
+        image_link: str,
+        fingerprint: str,
+    ) -> str:
         start, end = MARKERS
         return "\n".join(
             [
@@ -159,19 +178,26 @@ class SvgDiagramPresenter(DiagramPresenter):
 TOP = 10
 
 
-def _cell(score: Optional[int]) -> str:
+def score_cell(
+    score: Optional[int],
+) -> str:
     if score is None:
         return "%s N/A" % BAND_STYLE["N/A"][1]
     return "%s %d" % (BAND_STYLE[band(score)][1], score)
 
 
-def _name(name: str) -> str:
+def markdown_name(
+    name: str,
+) -> str:
     return "`%s`" % name.replace("`", "'").replace("|", "\\|")
 
 
 class MarkdownReportPresenter(ReportPresenter):
-    def report(self, heatmap: Heatmap) -> str:
-        mods = sorted(heatmap.modules, key=lambda m: (-m.scores.overall, m.name))
+    def report(
+        self,
+        heatmap: Heatmap,
+    ) -> str:
+        mods = sorted(heatmap.modules, key=lambda module: (-module.scores.overall, module.name))
         head = [
             "**%s** risk heat map · `%s` @ `%s` · %s · %d modules · %d lines%s"
             % (
@@ -193,9 +219,9 @@ class MarkdownReportPresenter(ReportPresenter):
             rows.append(
                 "| %s | %s | %s | %d |"
                 % (
-                    _name(m.name),
-                    _cell(m.scores.overall),
-                    " | ".join(_cell(getattr(m.scores, k)) for _, k, _, _, _ in ASPECTS),
+                    markdown_name(m.name),
+                    score_cell(m.scores.overall),
+                    " | ".join(score_cell(getattr(m.scores, k)) for _, k, _, _, _ in ASPECTS),
                     m.loc,
                 )
             )

@@ -1,14 +1,17 @@
-"""The code-review-graph gateway (external/code_review_graph.py), against a fake CLI that writes the SQLite
-database a build would."""
+"""The code-review-graph gateway (external/code_review_graph.py): the CLI's build is mocked (the `graph_build` fixture,
+subprocess.run), and the graph.db a build leaves is made for real with sqlite3 (the `graph_db` fixture), so the gateway
+reads a real database."""
 
-import os
+from subprocess import CalledProcessError
 
 import pytest
 
 from clean_eval.domain.errors import HeatmapError
 from clean_eval.external.code_review_graph import CodeReviewGraphGateway
-from tests.helpers import make_executable, read
 
+CLI = "/opt/code-review-graph/bin/code-review-graph"  # where the composition root found it
+# The graph of repository /r: f in src/a.py calls g in src/b.py and print (unresolved), and is tested by
+# tests/test_a.py; two flows start at f and g; and a node in a Terraform file.
 GRAPH_DB = """
     create table nodes (id integer primary key, kind text, qualified_name text, file_path text, language text, is_test integer);
     create table edges (kind text, source_qualified text, target_qualified text, confidence_tier text, target_resolution text);
@@ -24,57 +27,60 @@ GRAPH_DB = """
 """
 
 
-def fake_code_review_graph(path, database=GRAPH_DB):
-    """The code-review-graph CLI, as a fake: it records its arguments and writes the graph.db a build would (with
-    `database` as its SQL; none when that is None)."""
-    make_executable(
-        path,
-        "import pathlib, sqlite3, sys\n"
-        "data = pathlib.Path(sys.argv[sys.argv.index('--data-dir') + 1])\n"
-        "(data / 'args').write_text(' '.join(sys.argv[1:]))\n"
-        "sql = %r\n"
-        "if sql is not None:\n"
-        "    con = sqlite3.connect(data / 'graph.db')\n"
-        "    con.executescript(sql)\n"
-        "    con.commit()\n" % (database,),
-    )
+class TestGraphOf:
+    """graph_of builds the knowledge graph of a working tree into a data folder with the CLI, then reads the graph.db
+    it leaves: Python only, with paths relative to the repository. A build that fails, or leaves no graph to read, is a
+    HeatmapError."""
 
-
-class TestCodeReviewGraphGateway:
-    @pytest.fixture(autouse=True)
-    def data_dir(self, tmp_path):
-        self.dir = os.path.realpath(tmp_path)
-        self.cli = os.path.join(self.dir, "code-review-graph")
-
-    def test_builds_then_reads_links_tests_and_flows_with_repo_relative_paths(self):
-        fake_code_review_graph(self.cli)
-        g = CodeReviewGraphGateway(self.cli).graph_of("/r", self.dir)
-        assert read(os.path.join(self.dir, "args")) == "build --repo /r --data-dir %s -q" % self.dir
-        assert g.links == {"src/a.py": {"src/b.py"}}
-        assert g.tested == {"/r/src/a.py::f": {"tests/test_a.py"}}
-        assert g.flows == [(0.9, "src/a.py", {"src/a.py", "src/b.py"}), (0.0, "src/b.py", set())]
-        assert (g.has_flows, g.stats["nodes"], g.stats["source"]) == (True, 4, "code-review-graph")
-        assert "/r/x.tf::r" not in g.nodes  # Python only
+    @pytest.mark.parametrize("graph_db", [GRAPH_DB], indirect=True)
+    def test_builds_then_reads_links_tests_and_flows_with_repo_relative_paths(
+        self,
+        graph_build,
+        graph_db,
+        graph_dir,
+    ):
+        graph = CodeReviewGraphGateway(CLI).graph_of("/r", graph_dir)
+        graph_build.assert_called_once_with(
+            [CLI, "build", "--repo", "/r", "--data-dir", graph_dir, "-q"], capture_output=True, text=True, check=True
+        )
+        assert graph.links == {"src/a.py": {"src/b.py"}}
+        assert graph.tested == {"/r/src/a.py::f": {"tests/test_a.py"}}
+        assert graph.flows == [(0.9, "src/a.py", {"src/a.py", "src/b.py"}), (0.0, "src/b.py", set())]
+        assert (graph.has_flows, graph.stats["nodes"], graph.stats["source"]) == (True, 4, "code-review-graph")
+        assert "/r/x.tf::r" not in graph.nodes  # Python only
 
     @pytest.mark.parametrize(
-        ("database", "expect"),
+        ("graph_db", "expected"),
         [(None, "no readable graph.db"), ("create table other (a integer);", "cannot read")],
+        indirect=["graph_db"],
         ids=["no database", "not a graph"],
     )
-    def test_a_build_without_a_readable_database_fails(self, database, expect):
-        fake_code_review_graph(self.cli, database)
-        if os.path.exists(os.path.join(self.dir, "graph.db")):
-            os.remove(os.path.join(self.dir, "graph.db"))
-        with pytest.raises(HeatmapError) as cm:
-            CodeReviewGraphGateway(self.cli).graph_of("/r", self.dir)
-        assert expect in str(cm.value)
+    def test_a_build_without_a_readable_database_fails(
+        self,
+        graph_build,
+        graph_db,
+        graph_dir,
+        expected,
+    ):
+        with pytest.raises(HeatmapError) as raised:
+            CodeReviewGraphGateway(CLI).graph_of("/r", graph_dir)
+        assert expected in str(raised.value)
 
-    def test_a_failing_or_missing_cli_fails(self):
-        failing = os.path.join(self.dir, "failing")
-        make_executable(failing, "import sys\nsys.stderr.write('boom')\nsys.exit(1)\n")
-        with pytest.raises(HeatmapError) as cm:
-            CodeReviewGraphGateway(failing).graph_of("/r", self.dir)
-        assert "boom" in str(cm.value)
-        with pytest.raises(HeatmapError) as cm:
-            CodeReviewGraphGateway(os.path.join(self.dir, "missing")).graph_of("/r", self.dir)
-        assert "install it" in str(cm.value)
+    @pytest.mark.parametrize(
+        ("graph_build", "expected"),
+        [
+            ({"side_effect": CalledProcessError(1, [CLI, "build"], stderr="boom")}, "boom"),
+            ({"side_effect": FileNotFoundError(2, "No such file or directory", CLI)}, "install it"),
+        ],
+        indirect=["graph_build"],
+        ids=["a failing build", "no CLI"],
+    )
+    def test_a_failing_or_missing_cli_fails(
+        self,
+        graph_build,
+        graph_dir,
+        expected,
+    ):
+        with pytest.raises(HeatmapError) as raised:
+            CodeReviewGraphGateway(CLI).graph_of("/r", graph_dir)
+        assert expected in str(raised.value)

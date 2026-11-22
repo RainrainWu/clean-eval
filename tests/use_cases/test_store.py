@@ -1,5 +1,5 @@
-"""The files of a run (use_cases/store.py), through the FileSystem interface: JSON, the policy, the heat map, a reviewer's
-judgement and GitHub step outputs."""
+"""The files of a run (use_cases/store.py), through a mock of the FileSystem interface: JSON, the heat map, a reviewer's
+judgement, the policy and GitHub step outputs."""
 
 import json
 
@@ -18,58 +18,128 @@ from clean_eval.use_cases.store import (
     write_json,
     write_step_outputs,
 )
-from tests.domain.builders import facts, heatmap, rating
+
+NOT_JSON = "{nope"
+# Two rated modules: "a" with the facts behind its scores, and "b" whose Unverified aspect doesn't apply.
+TWO_MODULES = [{"name": "a", "loc": 10, "facts": {"name": "a"}}, {"name": "b", "loc": 20, "unverified": None}]
+NOT_A_HEATMAP = json.dumps({"repo": "x", "modules": [{"name": "m"}]})
+# A judgement with a valid level for module "m" and one out of range.
+JUDGEMENT = json.dumps({"modules": {"m": {"business": {"level": 1, "reason": "core"}, "entropy": {"level": 7}}}})
+POLICY_FILE = "/repo/.clean-eval/risk-model.json"
+HIGH_UNRATED = json.dumps({"unrated_band": "High"})
 
 
-def test_the_heatmap_round_trips_with_its_facts(fs):
-    h = heatmap(rating("a", 10, fact=facts(name="a")), rating("b", 20, unverified=None))
-    save_heatmap(fs, h, "/out/data.json")
-    assert load_heatmap(fs, "/out/data.json") == h
-    with pytest.raises(HeatmapError):
-        load_heatmap(fs, "/out/missing.json")
-    fs.write_text("/out/data.json", json.dumps({"repo": "x", "modules": [{"name": "m"}]}))
-    with pytest.raises(HeatmapError) as cm:
-        load_heatmap(fs, "/out/data.json")
-    assert "is not a heat map" in str(cm.value)
+class TestJson:
+    """JSON files: models inside plain data are written as JSON, and reading what isn't JSON is an error."""
+
+    def test_models_inside_are_written_as_json(
+        self,
+        fs,
+        heatmap,
+    ):
+        write_json(fs, "/out/x.json", {"heatmap": heatmap})
+        data = read_json(fs, "/out/x.json")
+        assert isinstance(data, dict)
+        assert data["heatmap"]["repo"] == "demo"
+
+    @pytest.mark.parametrize("files", [{"/out/bad.json": NOT_JSON}], indirect=True)
+    def test_a_file_that_is_not_json_is_an_error(
+        self,
+        fs,
+    ):
+        with pytest.raises(HeatmapError):
+            read_json(fs, "/out/bad.json")
 
 
-def test_json_with_models_inside(fs):
-    write_json(fs, "/out/x.json", {"heatmap": heatmap()})
-    data = read_json(fs, "/out/x.json")
-    assert isinstance(data, dict)
-    assert data["heatmap"]["repo"] == "demo"
-    fs.write_text("/out/bad.json", "{nope")
-    with pytest.raises(HeatmapError):
-        read_json(fs, "/out/bad.json")
+class TestHeatmapFile:
+    """The rated heat map's file: saved and loaded back whole, and refused when it is missing or isn't a heat map."""
+
+    @pytest.mark.parametrize("ratings", [TWO_MODULES], indirect=True)
+    def test_the_heatmap_round_trips_with_its_facts(
+        self,
+        fs,
+        heatmap,
+    ):
+        save_heatmap(fs, heatmap, "/out/data.json")
+        assert load_heatmap(fs, "/out/data.json") == heatmap
+
+    def test_a_missing_file_is_an_error(
+        self,
+        fs,
+    ):
+        with pytest.raises(HeatmapError):
+            load_heatmap(fs, "/out/missing.json")
+
+    @pytest.mark.parametrize("files", [{"/out/data.json": NOT_A_HEATMAP}], indirect=True)
+    def test_a_file_that_is_not_a_heat_map_is_an_error(
+        self,
+        fs,
+    ):
+        with pytest.raises(HeatmapError, match="is not a heat map"):
+            load_heatmap(fs, "/out/data.json")
 
 
-def test_judgements_keep_only_valid_levels(fs):
-    fs.write_text(
-        "/j.json",
-        json.dumps({"modules": {"m": {"business": {"level": 1, "reason": "core"}, "entropy": {"level": 7}}}}),
+class TestLoadJudgement:
+    """A reviewer's judgement file."""
+
+    @pytest.mark.parametrize("files", [{"/j.json": JUDGEMENT}], indirect=True)
+    def test_judgements_keep_only_valid_levels(
+        self,
+        fs,
+    ):
+        loaded = load_judgement(fs, "/j.json")
+        assert isinstance(loaded, Judgement)
+        assert list(loaded.modules["m"]) == ["business"]
+
+
+class TestLoadPolicy:
+    """The policy of a run: a file given, else the repository's .clean-eval/risk-model.json unless it is a symlink, else
+    the defaults."""
+
+    def test_without_a_policy_file_the_defaults(
+        self,
+        fs,
+    ):
+        assert load_policy(fs, "/repo") == (Policy(), "clean-eval default")
+
+    @pytest.mark.parametrize("files", [{POLICY_FILE: HIGH_UNRATED}], indirect=True)
+    def test_the_repositorys_policy_file_overrides_the_defaults(
+        self,
+        fs,
+    ):
+        loaded, source = load_policy(fs, "/repo")
+        assert (loaded.unrated_band, source) == ("High", ".clean-eval/risk-model.json")
+
+    @pytest.mark.parametrize("files", [{POLICY_FILE: HIGH_UNRATED, "/bad.json": NOT_JSON}], indirect=True)
+    def test_a_policy_file_given_is_read_and_must_be_valid(
+        self,
+        fs,
+    ):
+        with pytest.raises(InvalidPolicy):
+            load_policy(fs, "/repo", "/bad.json")
+
+    @pytest.mark.parametrize(
+        ("files", "links"),
+        [({"/elsewhere.json": json.dumps({"unrated_band": "Low"})}, {POLICY_FILE: "/elsewhere.json"})],
+        indirect=True,
     )
-    judgement = load_judgement(fs, "/j.json")
-    assert isinstance(judgement, Judgement)
-    assert list(judgement.modules["m"]) == ["business"]
+    def test_a_symlinked_policy_is_not_read(
+        self,
+        fs,
+    ):
+        assert load_policy(fs, "/repo") == (Policy(), "clean-eval default")
+        fs.read_text.assert_not_called()
 
 
-def test_policy_sources(fs):
-    assert load_policy(fs, "/repo") == (Policy(), "clean-eval default")
-    fs.write_text("/repo/.clean-eval/risk-model.json", json.dumps({"unrated_band": "High"}))
-    policy, source = load_policy(fs, "/repo")
-    assert (policy.unrated_band, source) == ("High", ".clean-eval/risk-model.json")
-    fs.write_text("/bad.json", "{nope")
-    with pytest.raises(InvalidPolicy):
-        load_policy(fs, "/repo", "/bad.json")
+class TestWriteStepOutputs:
+    """GitHub Actions step outputs."""
 
-
-def test_a_symlinked_policy_is_not_read(fs):
-    fs.write_text("/elsewhere.json", json.dumps({"unrated_band": "Low"}))
-    fs.link("/repo/.clean-eval/risk-model.json", "/elsewhere.json")
-    assert load_policy(fs, "/repo") == (Policy(), "clean-eval default")
-
-
-def test_step_outputs_are_appended_one_per_line(fs):
-    fs.write_text("/gh_out", "a=1\n")
-    write_step_outputs(fs, "/gh_out", StepOutputs({"verdict": "approve", "blockers": "0"}))
-    assert fs.read_text("/gh_out") == "a=1\nverdict=approve\nblockers=0\n"
+    @pytest.mark.parametrize("files", [{"/gh_out": "a=1\n"}], indirect=True)
+    def test_step_outputs_are_appended_one_per_line(
+        self,
+        fs,
+        memory_fs,
+    ):
+        write_step_outputs(fs, "/gh_out", StepOutputs({"verdict": "approve", "blockers": "0"}))
+        assert memory_fs.read_text("/gh_out") == "a=1\nverdict=approve\nblockers=0\n"
+        fs.append_text.assert_called_once_with("/gh_out", "verdict=approve\nblockers=0\n")

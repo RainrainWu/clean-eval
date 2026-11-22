@@ -26,9 +26,11 @@ This layer holds exactly two things; `UseCasesHoldInterfacesAndFunctions` in `te
 1. Declare it as an abstract method in `interfaces.py`, with its contract as the docstring.
 2. Implement it in the gateway or presenter. Implementations expose nothing beyond their interface, and the
    architecture tests reject extra public methods.
-3. Give the fakes the same behavior in `tests/use_cases/fakes.py` (`MemoryGit`, `MemoryFileSystem`).
-4. Add a check for it to the contract tests in `tests/external/test_git.py` or `test_filesystem.py`, which run against
-   both the fake and the gateway.
+3. Let the tests stand in for it. A new interface gets a mock fixture in `tests/use_cases/conftest.py`. A new method
+   of `Git` or `FileSystem` gets the same behavior in the in-memory fakes behind the `git` and `fs` mocks
+   (`MemoryGit`, `MemoryFileSystem` in `tests/use_cases/fakes.py`).
+4. For `Git` and `FileSystem`, add a check to the contract tests in `tests/external/test_git.py` or
+   `test_filesystem.py`, which run against both the fake and the gateway.
 
-**Tests** go in `tests/use_cases/test_<module>.py` and `tests/use_cases/rules/test_<module>.py`. They use the fakes,
-never real git, files or `gh`.
+**Tests** go in `tests/use_cases/test_<module>.py` and `tests/use_cases/rules/test_<module>.py`. A use case's tests
+pass it the MagicMock fixtures of `tests/use_cases/conftest.py`, never real git, files or `gh`.

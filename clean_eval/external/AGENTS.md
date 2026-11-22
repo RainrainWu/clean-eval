@@ -11,9 +11,12 @@ The only code that touches anything outside the process.
 - **What a gateway reads** is validated into domain models.
 
 **Drivers:** only they use the console (`print`, `sys.stdin`/`stdout`/`exit`).
-- `cli.py` is the command line: the user commands, and the CI commands the action runs (`prepare`, `finalize`,
-  `post`, `redact`, `guard`). It is also the composition root: it builds the gateways and presenters it hands to the use
-  cases.
+- `cli.py` is the command line, built on click, and the entry point of every utility: the user commands, and the
+  CI commands the action runs (`prepare`, `finalize`, `post`, `redact`, `guard`). It is also the composition root: it
+  builds the gateways and presenters it hands to the use cases.
+  - A new utility is a new click command of the `clean_eval` group, with its options declared on it.
+  - A command that fails with a status calls `context.exit(<status>)`. A `HeatmapError` it raises reads
+    `clean_eval: <message>` with status 1, never a traceback.
 - `agent_guard.py` is the CI agent's PreToolUse hook: an allowlist that fails closed.
 
 **What `ExternalDependenciesStayInTheirGateways` enforces** (in `tests/test_architecture.py`)
@@ -34,5 +37,9 @@ The only code that touches anything outside the process.
 - Code-host values are validated before use; a head commit must be an object id before it reaches git.
 - Pair any change to `agent_guard.py` with a test in `tests/external/test_agent_guard.py`.
 
-**Tests** go in `tests/external/test_<module>.py`. They run against the real dependency (throwaway repositories, temp
-folders) or a fake executable (the `fake_bin` fixture for `gh` and `claude`).
+**Tests** go in `tests/external/test_<module>.py`; their fixtures are in `tests/external/conftest.py`.
+- The git and file-system gateways run against real throwaway repositories and folders, in contract tests that the
+  in-memory fakes pass too.
+- The `gh` and code-review-graph gateways get a MagicMock of `subprocess.run` (the `gh` and `graph_build` fixtures);
+  code-review-graph's SQLite database is real.
+- The guard resolves real paths; the command line gets its code host as a mock (the `host` fixture).

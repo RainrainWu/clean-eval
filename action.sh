@@ -31,7 +31,7 @@
 #   * `clean_eval finalize` validates what the agent proposed, derives verdict/blockers/tier itself, redacts
 #     secrets, and `clean_eval post` is the only thing that posts to GitHub.
 # The checkout is untrusted too: every Python here runs isolated (-I), so a module in the checkout (a PR's json.py)
-# can't shadow the standard library or pydantic, and uv and npm run outside it.
+# can't shadow the standard library or a dependency, and uv and npm run outside it.
 set -euo pipefail
 
 ACTION_DIR="$(cd "${CE_ACTION_DIR:?CE_ACTION_DIR required}" && pwd -P)"
@@ -66,7 +66,8 @@ if [ -z "$PY" ]; then
   PY="$(cd "$ACTION_DIR" && uv run --frozen --no-config python -I -c 'import sys; print(sys.executable)')" \
     || die "no Python environment for clean-eval: install uv, or set CE_PYTHON"
 fi
-"$PY" -I -c 'import pydantic' 2>/dev/null || die "$PY can't import pydantic: run 'uv sync' in $ACTION_DIR, or set CE_PYTHON"
+"$PY" -I -c 'import pydantic, click' 2>/dev/null \
+  || die "$PY can't import clean-eval's dependencies (pydantic, click): run 'uv sync' in $ACTION_DIR, or set CE_PYTHON"
 ce() { "$PY" -I "$CE" "$@"; }
 json_field() {  # $1 = JSON file, $2 = top-level key; booleans print as true/false
   "$PY" -I -c 'import json, sys; v = json.load(open(sys.argv[1]))[sys.argv[2]]; print(json.dumps(v) if isinstance(v, bool) else v)' \
