@@ -1,5 +1,5 @@
-"""The presenters (adaptor/presenters.py): the treemap layout, the README diagram and block, and the Markdown
-summary."""
+"""The presenters (adaptor/presenters.py): the treemap layout, the README diagram and block, the Markdown summary,
+and the review comment."""
 
 import pytest
 from pytest_lazy_fixtures import lf
@@ -73,3 +73,55 @@ class TestMarkdownReportPresenter:
         heatmap,
     ):
         assert "No Python source" in MarkdownReportPresenter().report(heatmap)
+
+
+class TestReviewComment:
+    """A review's comment, in the one layout every review comment has: the one the pr-review skill's template shows, so
+    the interactive review writes what CI renders. Its tables keep a row to a line, whatever the findings' text holds;
+    an empty section says so, names are escaped and the modules cut."""
+
+    def test_the_template_shows_what_the_presenter_renders(
+        self,
+        review_comment,
+        comment_template,
+    ):
+        assert "```markdown\n" + MarkdownReportPresenter().comment(review_comment) + "```" in comment_template
+
+    @pytest.mark.parametrize(
+        "review_comment",
+        [{"verdict": "approve", "max_tier": "Low", "max_score": 3, "violations": [], "uncovered": [], "notes": ""}],
+        indirect=True,
+    )
+    def test_empty_sections_say_so(
+        self,
+        review_comment,
+    ):
+        text = MarkdownReportPresenter().comment(review_comment)
+        assert text.startswith("## clean-eval review: Approve\n")
+        assert "| 0 blocker · 0 major · 0 minor |" in text
+        assert text.count("None.") == 2
+        assert text.endswith("### Notes\n\n_No notes._\n")
+
+    @pytest.mark.parametrize(
+        "review_comment",
+        [{"modules": [{"module": "src/<x>&y|z`%d" % n, "band": "Low", "score": n, "rated": True} for n in range(7)]}],
+        indirect=True,
+    )
+    def test_module_names_are_escaped_and_the_riskiest_five_named(
+        self,
+        review_comment,
+    ):
+        summary = MarkdownReportPresenter().comment(review_comment).splitlines()[4]  # the summary table's row
+        assert summary.count("`src/<x>&y\\|z'") == 5
+        assert " and 2 more |" in summary
+
+    @pytest.mark.parametrize(
+        "review_comment",
+        [{"uncovered": [{"rule": "NEW", "severity": "major", "summary": "a | b\nc", "fix": ""}]}],
+        indirect=True,
+    )
+    def test_a_findings_text_stays_in_its_cell(
+        self,
+        review_comment,
+    ):
+        assert "| major | — | a \\| b c | — |" in MarkdownReportPresenter().comment(review_comment).splitlines()

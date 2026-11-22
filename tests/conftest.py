@@ -104,8 +104,16 @@ RATING: frozendict[str, Any] = frozendict(
         "facts": None,
     }
 )
-# The repository the action runs on, by default: one commit of one module.
-WORKSPACE: tuple[dict[str, Any], ...] = ({"message": "init", "files": {"src/a/x.py": "1\n"}},)
+# A README that publishes the heat map: its `## Risk Heat Map` section, the block between the markers as `readme`
+# writes it.
+PUBLISHED_README = (
+    "# Demo\n\n## Risk Heat Map\n\n<!-- risk-heat-map:start -->\n<!-- risk-heat-map:fingerprint=0123456789ab -->\n\n"
+    "![Risk heat map](docs/risk-heatmap.svg)\n<!-- risk-heat-map:end -->\n"
+)
+# The repository the action runs on, by default: one commit of one module, with a README that publishes its heat map.
+WORKSPACE: tuple[dict[str, Any], ...] = (
+    {"message": "init", "files": {"src/a/x.py": "1\n", "README.md": PUBLISHED_README}},
+)
 # The pull request the fake `gh` shows, by default: #7, from branch feature into main.
 PULL_REQUEST: frozendict[str, Any] = frozendict(
     {
@@ -134,7 +142,8 @@ RELEASE_SCRIPT = (
 PYPROJECT = '[project]\nname = "x"\nversion = "%s"\n'  # % the version
 
 # A change under review: the rules of the base, a finding the agent proposes, the change's risk.
-# A review-rules.md: a blocker rule that applies from the Low band, and a major and a minor one from Moderate.
+# The rules a review reads (its review-rules.md): a blocker rule that applies from the Low band, and a major and a minor
+# one from Moderate.
 REVIEW_RULES = """
 | ID | Severity | Min tier | Rule |
 |---|---|---|---|
@@ -142,6 +151,15 @@ REVIEW_RULES = """
 | Q-02 | major | Moderate | failure paths |
 | Q-04 | minor | Moderate | clarity |
 """
+# clean-eval's rule files as the tests stand them in, {file name: text}: the policy, and the rules of REVIEW_RULES by
+# category.
+RULE_PACKS = frozendict(
+    {
+        "policy.md": "# Review Rules\n\nThe tier policy.\n",
+        "architecture.md": "| CA-01 | blocker | Low | dependency rule |\n",
+        "quality.md": "| Q-02 | major | Moderate | failure paths |\n| Q-04 | minor | Moderate | clarity |\n",
+    }
+)
 # A finding as the review agent writes it in result.json.
 FINDING: frozendict[str, Any] = frozendict(
     {"rule": "Q-02", "severity": "major", "file": "a.py", "line": 3, "summary": "s"}
@@ -411,9 +429,25 @@ def judgement(
 def review_rules(
     request,
 ):
-    """The text of a review-rules.md: REVIEW_RULES (CA-01 a blocker from the Low band, Q-02 major and Q-04 minor from
-    Moderate), or `request.param`."""
+    """The rules a review reads, as one text (its review-rules.md): REVIEW_RULES (CA-01 a blocker from the Low band, Q-02
+    major and Q-04 minor from Moderate), or `request.param`."""
     return getattr(request, "param", REVIEW_RULES)
+
+
+@pytest.fixture
+def published_readme():
+    """A README that publishes the heat map: PUBLISHED_README (its `## Risk Heat Map` section, the block between the
+    markers)."""
+    return PUBLISHED_README
+
+
+@pytest.fixture
+def rule_packs(
+    request,
+):
+    """clean-eval's rule packs, {file name: text}: RULE_PACKS (a policy, CA-01 in architecture.md, and Q-02 and Q-04
+    in quality.md), or `request.param`."""
+    return dict(getattr(request, "param", RULE_PACKS))
 
 
 @pytest.fixture
@@ -1008,7 +1042,7 @@ def billing_and_users_workspace():
 def billing_change_workspace():
     """A pull request's workspace: billing on main, then changed on branch feature."""
     return [
-        {"message": "init", "files": {"src/billing/a.py": "a\n" * 10}, "days_ago": 5},
+        {"message": "init", "files": {"src/billing/a.py": "a\n" * 10, "README.md": PUBLISHED_README}, "days_ago": 5},
         {"branch": "feature", "message": "feat: billing", "files": {"src/billing/a.py": "b\n" * 10}},
     ]
 
@@ -1017,7 +1051,7 @@ def billing_change_workspace():
 def discounts_workspace():
     """PR #7's workspace: billing on main, then on branch feature discounts in billing, and a new module."""
     return [
-        {"message": "init", "files": {"src/billing/a.py": "a\n" * 10}, "days_ago": 5},
+        {"message": "init", "files": {"src/billing/a.py": "a\n" * 10, "README.md": PUBLISHED_README}, "days_ago": 5},
         {
             "branch": "feature",
             "message": "feat: discounts",
@@ -1032,7 +1066,11 @@ def v1_policy_at_base_workspace():
     return [
         {
             "message": "init",
-            "files": {"src/a.py": "1\n", ".clean-eval/risk-model.json": '{"window_days": 30}'},
+            "files": {
+                "src/a.py": "1\n",
+                "README.md": PUBLISHED_README,
+                ".clean-eval/risk-model.json": '{"window_days": 30}',
+            },
             "days_ago": 3,
         },
         {"branch": "feature", "message": "change", "files": {"src/a.py": "2\n"}},
@@ -1041,17 +1079,58 @@ def v1_policy_at_base_workspace():
 
 @pytest.fixture
 def rules_weakened_workspace():
-    """A pull request's workspace whose branch weakens the review rules of its base."""
+    """A pull request's workspace whose branch weakens the review rules of its base: the base keeps a rule pack of its
+    own (house.md) and skips the Q rules; the branch empties the pack and selects one rule."""
     return [
         {
             "message": "init",
-            "files": {"src/a/x.py": "1\n", ".clean-eval/review-rules.md": "| CA-01 | blocker | Low | base rule |\n"},
+            "files": {
+                "src/a/x.py": "1\n",
+                "README.md": PUBLISHED_README,
+                ".clean-eval/rules/house.md": "| H-01 | blocker | Low | base rule |\n",
+                ".clean-eval/review.json": '{"exclude": ["Q-*"]}',
+            },
             "days_ago": 5,
         },
         {
             "branch": "feature",
             "message": "weaken rules",
-            "files": {".clean-eval/review-rules.md": "nothing to see\n", "src/a/x.py": "2\n"},
+            "files": {
+                ".clean-eval/rules/house.md": "nothing to see\n",
+                ".clean-eval/review.json": '{"include": ["R-05"]}',
+                "src/a/x.py": "2\n",
+            },
+        },
+    ]
+
+
+@pytest.fixture
+def selection_at_base_workspace(
+    request,
+):
+    """A pull request's workspace whose base selects the review rules in .clean-eval/review.json: `request.param` (the
+    file's text), else the architecture rules (CA-*) only, though it excludes CA-06 too."""
+    selection = getattr(request, "param", '{"include": ["CA-*"], "exclude": ["CA-06"]}')
+    return [
+        {
+            "message": "init",
+            "files": {"src/a.py": "1\n", "README.md": PUBLISHED_README, ".clean-eval/review.json": selection},
+            "days_ago": 3,
+        },
+        {"branch": "feature", "message": "change", "files": {"src/a.py": "2\n"}},
+    ]
+
+
+@pytest.fixture
+def unpublished_heat_map_workspace():
+    """A pull request's workspace whose base publishes no heat map: its README has none, and only the branch adds
+    one."""
+    return [
+        {"message": "init", "files": {"src/a.py": "1\n", "README.md": "# Demo\n"}, "days_ago": 3},
+        {
+            "branch": "feature",
+            "message": "publish a heat map",
+            "files": {"src/a.py": "2\n", "README.md": PUBLISHED_README},
         },
     ]
 

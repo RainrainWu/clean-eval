@@ -1,18 +1,26 @@
 """Use cases of the PR review: the risk a change carries, the context the CI reviewer reads, posting the review CI
 trusts, and the review's run in CI."""
 
+from collections.abc import (
+    Mapping,
+    Sequence,
+)
 from typing import Optional
+
+from pydantic import ValidationError
 
 from clean_eval.domain.errors import (
     InvalidOutput,
     InvalidPolicy,
+    InvalidRequest,
     NoPythonSource,
     RemoteError,
     RunFailed,
 )
 from clean_eval.domain.policy import (
     REPO_POLICY,
-    REPO_RULES,
+    REPO_REVIEW,
+    REPO_RULE_PACKS,
     Policy,
 )
 from clean_eval.domain.rating import (
@@ -34,6 +42,7 @@ from clean_eval.domain.review import (
     ReviewContext,
     ReviewPost,
     RiskReport,
+    RuleSelection,
     RunFolders,
     Secrets,
     Skill,
@@ -60,16 +69,24 @@ from clean_eval.use_cases.interfaces import (
     Environment,
     FileSystem,
     Git,
+    ReportPresenter,
     RunLog,
     Runner,
 )
+from clean_eval.use_cases.rules.heatmap import heat_map_block
 from clean_eval.use_cases.rules.review import (
     change_risk,
+    combine_rule_packs,
     compose_review,
+    duplicate_rule_ids,
     finalize_review,
+    is_rule_pack,
     parse_rules,
     redact,
+    review_comment,
     review_outputs,
+    sanitize_report,
+    select_rules,
     stale_reviews,
     truncate,
 )
@@ -79,7 +96,6 @@ from clean_eval.use_cases.store import (
     read_json,
     validated,
     write_json,
-    write_run_output,
 )
 
 # Use case: the risk a change carries, from the heat map of its base. The PR review scales its depth by this.
@@ -112,11 +128,12 @@ def assess_change(
 
 
 # Use case: precompute everything the CI reviewer needs, so it runs with no shell, no network and no token: the PR's
-# metadata, its diff (one patch per file), per-file history, the risk the change carries (from the heat map of its base)
-# and the base's config. Through the CodeHost, Git, FileSystem and Clock interfaces, into the context folder `ctx`.
+# metadata, its diff (one patch per file), per-file history, the heat map its README publishes, the risk the change
+# carries (from the heat map of its base) and the base's config. Through the CodeHost, Git, FileSystem and Clock
+# interfaces, into the context folder `ctx`.
 #
 # Config always comes from the PR's *base* commit (or the defaults), so a PR can't relax the rules or the risk model it
-# is judged by.
+# is judged by. A review needs a published heat map: without one in the base's README, it is blocked.
 
 MAX_HISTORY_FILES = 60
 DEFAULT_SOURCE = "clean-eval default"
@@ -177,6 +194,22 @@ def write_split_diff(
     return index
 
 
+def published_heat_map(
+    git: Git,
+    rev: str,
+    readme: str,
+) -> str:
+    """The heat map the README `readme` publishes at `rev` (its block); InvalidRequest when it publishes none, which
+    blocks the review until one is published."""
+    block = heat_map_block(git.show(rev, readme))
+    if block is None:
+        raise InvalidRequest(
+            "no risk heat map in %s at %s: publish one with the risk-heat-map skill before reviewing"
+            % (readme, rev[:8]),
+        )
+    return block
+
+
 def pull_request_commits(
     host: CodeHost,
     git: Git,
@@ -189,20 +222,73 @@ def pull_request_commits(
     return info, git.merge_base(info.base_sha, info.head_sha), info.head_sha
 
 
-def write_rules_at_base(
+def rule_selection(
+    include: Sequence[str],
+    exclude: Sequence[str],
+) -> Optional[RuleSelection]:
+    """The selection of the rules named in `include` and `exclude` (IDs or globs of IDs), or None when neither names
+    any; InvalidRequest when a name is neither."""
+    if not include and not exclude:
+        return None
+    try:
+        return RuleSelection(
+            include=tuple(include),
+            exclude=tuple(exclude),
+        )
+    except ValidationError as error:
+        raise InvalidRequest.from_validation(error, "the rule selection")
+
+
+def rule_packs_at(
     git: Git,
-    fs: FileSystem,
-    ctx: str,
-    base: str,
-    default_rules: str,
-) -> tuple[str, str]:
-    """Write the review rules the change is judged by into `ctx`: the base commit's .clean-eval/review-rules.md, else
-    `default_rules`. Their text, and where they come from."""
-    rules = git.show(base, REPO_RULES)
-    source = "%s@%s" % (REPO_RULES, base[:8]) if rules is not None else DEFAULT_SOURCE
-    rules = rules if rules is not None else default_rules
-    fs.write_text(fs.join(ctx, "review-rules.md"), rules)
-    return rules, source
+    rev: str,
+) -> tuple[dict[str, str], int]:
+    """The rule packs the repository keeps at `rev` ({file name: text} of .clean-eval/rules/<name>.md), and how many
+    other files that folder holds (not packs, so not read)."""
+    prefix = REPO_RULE_PACKS + "/"
+    found = {path.removeprefix(prefix): blob for path, blob, _ in git.ls_tree(rev) if path.startswith(prefix)}
+    packs = {name: blob for name, blob in found.items() if is_rule_pack(name)}
+    texts = git.read_blobs(list(packs.values()))
+    return {name: texts[blob] for name, blob in packs.items() if blob in texts}, len(found) - len(packs)
+
+
+def selection_at(
+    git: Git,
+    rev: str,
+) -> tuple[RuleSelection, Optional[str]]:
+    """The rule selection the repository keeps at `rev` (.clean-eval/review.json), else every rule, and a note when the
+    file is invalid: it is ignored then, rather than failing every review."""
+    text = git.show(rev, REPO_REVIEW)
+    if text is None:
+        return RuleSelection(), None
+    try:
+        return RuleSelection.model_validate_json(text), None
+    except ValidationError as error:
+        return RuleSelection(), "ignored %s: %s" % (REPO_REVIEW, InvalidRequest.from_validation(error))
+
+
+def rules_at(
+    git: Git,
+    rev: str,
+    default_packs: Mapping[str, str],
+    chosen: Optional[RuleSelection] = None,
+) -> tuple[str, str, list[str]]:
+    """The review rules at `rev` as one text: clean-eval's packs `default_packs` ({file name: text}) with the
+    repository's own packs over them, keeping only the rules its .clean-eval/review.json selects (or `chosen` instead).
+    Their text, where they come from, and notes on them. A selection that would leave no rule is ignored with a note,
+    like an invalid file, rather than failing every review."""
+    packs, others = rule_packs_at(git, rev)
+    selection, note = (chosen, None) if chosen is not None else selection_at(git, rev)
+    notes = [note] if note else []
+    if others:
+        notes.append("ignored %d file(s) in %s that are not rule packs (<name>.md)" % (others, REPO_RULE_PACKS))
+    full = combine_rule_packs(default_packs, packs)
+    notes += ["%s is defined more than once (its last row counts)" % rule_id for rule_id in duplicate_rule_ids(full)]
+    rules, selection_notes = select_rules(full, selection)
+    if parse_rules(full).rules and not parse_rules(rules).rules:
+        rules, selection_notes = full, ["ignored the rule selection: it leaves none of the rules"]
+    source = "%s@%s" % (REPO_RULE_PACKS, rev[:8]) if packs else DEFAULT_SOURCE
+    return rules, source, notes + selection_notes
 
 
 def write_risk_report(
@@ -251,14 +337,18 @@ def prepare_review(
     clock: Clock,
     ctx: str,
     pr: int,
-    default_rules: str,
+    default_packs: Mapping[str, str],
+    readme: str,
 ) -> ReviewContext:
-    """Write the review context of PR `pr` into `ctx`; its ReviewContext. `default_rules` is the rules text used when
-    the base has no .clean-eval/review-rules.md."""
+    """Write the review context of PR `pr` into `ctx`: the heat map the README `readme` publishes at its base, and the
+    rules there (clean-eval's rule packs `default_packs`, {file name: text}, under the base's own) among it; its
+    ReviewContext. InvalidRequest, before anything is written, when the base's README publishes no heat map."""
     info, base, head = pull_request_commits(host, git, pr)
+    fs.write_text(fs.join(ctx, "heat-map.md"), published_heat_map(git, base, readme))
     policy, model_src, model_text, model_note = policy_at(git, base)
     fs.write_text(fs.join(ctx, "risk-model.json"), model_text)
-    rules, rules_src = write_rules_at_base(git, fs, ctx, base, default_rules)
+    rules, rules_src, rules_notes = rules_at(git, base, default_packs)
+    fs.write_text(fs.join(ctx, "review-rules.md"), rules)
     heatmap, risk = assess_change(git, clock, base, head, policy)
     files = list(risk.files)
     header = ChangeHeader(
@@ -281,6 +371,7 @@ def prepare_review(
         **header.model_dump(),
         diff_patches=len(index),
         diff_truncated=any(e.truncated for e in index),
+        rules_notes=rules_notes,
     )
     write_json(fs, fs.join(ctx, "context.json"), context)
     return context
@@ -394,27 +485,30 @@ def post_review(
 def finalize_pr_review(
     fs: FileSystem,
     env: Environment,
+    report: ReportPresenter,
     ctx: str,
     agent: str,
     out: str,
 ) -> tuple[Review, StepOutputs]:
     """(the Review CI trusts, its StepOutputs) from what the CI agent proposed in `agent`: the domain models check the
     findings' shape, and the review rules hold them to the rules table and derive the verdict, blocker count, band and
-    score. report.md and result.json go to `out`, redacted (the environment names the secrets). InvalidOutput when the
-    agent's output can't be trusted; nothing is written then."""
+    score. The review's comment (report.md: the layout every review comment has, with the agent's report.md as its
+    notes) and result.json go to `out`, redacted (the environment names the secrets). InvalidOutput when the agent's
+    output can't be trusted; nothing is written then."""
     secrets = env.secrets()
     try:
-        review = finalize_review(
-            validated(AgentReview, fs, agent, "result.json"),
-            validated(RiskReport, fs, ctx, "risk.json"),
-            parse_rules(fs.read_text(fs.join(ctx, "review-rules.md"))),
-            secrets,
-        )
+        risk = validated(RiskReport, fs, ctx, "risk.json")
+        rules = parse_rules(fs.read_text(fs.join(ctx, "review-rules.md")))
+        review = finalize_review(validated(AgentReview, fs, agent, "result.json"), risk, rules, secrets)
     except JUDGING_ERRORS as e:
         raise invalid(e)
-    outputs = review_outputs(review)
-    write_run_output(fs, out, fs.join(agent, "report.md"), review, secrets)
-    return review, outputs
+    notes_path = fs.join(agent, "report.md")
+    notes = fs.read_text(notes_path) if fs.is_file(notes_path) else ""
+    comment, redactions = sanitize_report(report.comment(review_comment(review, risk, rules, notes)), secrets)
+    review.redactions += redactions
+    fs.write_text(fs.join(out, "report.md"), comment)
+    write_json(fs, fs.join(out, "result.json"), review)
+    return review, review_outputs(review)
 
 
 # Use case: the PR review's CI run (the action's pr-review skill): prepare the context, let the agent review the
@@ -433,6 +527,7 @@ def review_task(
         inputs=(
             "context.json",
             "pr.json",
+            "heat-map.md",
             "risk.json",
             "review-rules.md",
             "diff/index.json (one patch per changed file — read them all)",
@@ -445,6 +540,7 @@ def review_task(
 def trusted_review(
     fs: FileSystem,
     env: Environment,
+    report: ReportPresenter,
     log: RunLog,
     folders: RunFolders,
     fail_on: FailOn,
@@ -452,7 +548,7 @@ def trusted_review(
     """The review CI trusts, finalized from what the agent proposed, and its step outputs. Agent output that can't be
     trusted is RunFailed, failing closed, unless `fail_on` is never: then it is a warning, and None."""
     try:
-        return finalize_pr_review(fs, env, folders.context, folders.agent, folders.out)
+        return finalize_pr_review(fs, env, report, folders.context, folders.agent, folders.out)
     except InvalidOutput as error:
         if fail_on == FailOn.NEVER:
             log.warning("invalid agent output, so nothing is posted: %s" % error)
@@ -504,25 +600,31 @@ def run_review_action(
     clock: Clock,
     env: Environment,
     agent: Agent,
+    report: ReportPresenter,
     runner: Runner,
     log: RunLog,
     folders: RunFolders,
     settings: Settings,
-    default_rules: str,
+    default_packs: Mapping[str, str],
 ) -> None:
-    """The PR review's CI run for the settings' PR: prepare its context, let the agent review it, finalize the review
-    CI trusts, post it when the settings say `post`, and report it to the runner. RunFailed as the settings' `fail_on`
-    says (fail_as_told), and on agent output that can't be trusted unless `fail_on` is never (trusted_review)."""
+    """The PR review's CI run for the settings' PR: prepare its context with the heat map the settings' README publishes
+    and the rules at its base (clean-eval's rule packs `default_packs` under the base's own, warning about any note on
+    them), let the agent review it, finalize the review CI trusts, post it when the settings say `post`, and report it
+    to the runner. Blocked (InvalidRequest) when the base's README publishes no heat map. RunFailed as the settings'
+    `fail_on` says (fail_as_told), and on agent output that can't be trusted unless `fail_on` is never
+    (trusted_review)."""
     pr, fail_on = settings.review.pr, settings.review.fail_on
     if pr is None:
         raise RunFailed(
             "pr-review needs a PR number (input 'pr')",
         )
     log.step("Prepare the review context of #%d" % pr)
-    context = prepare_review(host, git, fs, clock, folders.context, pr, default_rules)
+    context = prepare_review(host, git, fs, clock, folders.context, pr, default_packs, settings.heatmap.readme)
+    for note in context.rules_notes:
+        log.warning("review rules: %s" % note)
     agent.require()
     run_agent(agent, fs, env, log, folders, review_task(pr))
-    trusted = trusted_review(fs, env, log, folders, fail_on)
+    trusted = trusted_review(fs, env, report, log, folders, fail_on)
     if trusted is None:
         return
     review, outputs = trusted

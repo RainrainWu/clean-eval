@@ -5,6 +5,7 @@ import datetime as dt
 from collections.abc import (
     Callable,
     Collection,
+    Mapping,
 )
 from typing import (
     Optional,
@@ -35,12 +36,14 @@ from clean_eval.domain.retro import (
     FetchFailure,
     HistoryPeriod,
     MergedPR,
+    ModelChange,
     Period,
     Rejection,
     RetroContext,
     RetroHistory,
     RetroResult,
     ReviewSignal,
+    RulesChange,
     RuleStats,
     Totals,
 )
@@ -72,8 +75,7 @@ from clean_eval.use_cases.interfaces import (
 )
 from clean_eval.use_cases.rules.retro import (
     MODEL_FILE,
-    RULES_FILE,
-    TUNING_FILES,
+    RULE_PACKS,
     attribute_defects,
     calibration,
     in_period,
@@ -88,6 +90,8 @@ from clean_eval.use_cases.rules.retro import (
 )
 from clean_eval.use_cases.rules.review import (
     change_risk,
+    combine_rule_packs,
+    is_rule_pack,
     truncate,
 )
 from clean_eval.use_cases.store import (
@@ -105,6 +109,8 @@ from clean_eval.use_cases.store import (
 # ran, through the FileSystem interface: what a retro may change, and how anything it may not keep is put back.
 
 SNAPSHOT = "clean-eval.orig"  # in the context folder: .clean-eval/ as it was before the agent ran
+RULES_ORIG = "rules.orig"  # in the context folder: the repository's own rule packs, as the agent found them
+RULES_DEFAULTS = "rules.defaults"  # in the context folder: clean-eval's rule packs
 
 
 def text_or_none(
@@ -182,6 +188,40 @@ def restore_other_tuning(
                 continue
             restored.add(rel)
     return sorted(restored)
+
+
+def rule_pack_names(
+    fs: FileSystem,
+    folder: str,
+) -> list[str]:
+    """The file names of the rule packs in `folder` (<name>.md). Symlinks are skipped: one could point outside the
+    checkout."""
+    if fs.is_link(folder):
+        return []
+    return [
+        fs.name(path)
+        for path in fs.glob(folder, "*.md")
+        if is_rule_pack(fs.name(path)) and fs.is_file(path) and not fs.is_link(path)
+    ]
+
+
+def rule_packs_in(
+    fs: FileSystem,
+    folder: str,
+) -> dict[str, str]:
+    """{file name: text} of the rule packs in `folder`."""
+    return {name: fs.read_text(fs.join(folder, name)) for name in rule_pack_names(fs, folder)}
+
+
+def rule_pack_files(
+    fs: FileSystem,
+    workspace: str,
+    snapshot_dir: str,
+) -> list[str]:
+    """The repository's rule packs, there now or in the snapshot, as paths in .clean-eval/ (rules/<name>.md)."""
+    names = set(rule_pack_names(fs, fs.join(workspace, REPO_DIR, RULE_PACKS)))
+    names |= set(rule_pack_names(fs, fs.join(snapshot_dir, RULE_PACKS)))
+    return sorted("%s/%s" % (RULE_PACKS, name) for name in names)
 
 
 # Use case: collect the merged-PR history of a period and score how well the heat map and the review rules did,
@@ -353,17 +393,21 @@ def snapshot_current_tuning(
     fs: FileSystem,
     ctx: str,
     workspace: str,
-    default_rules: str,
-) -> tuple[Optional[str], Optional[str]]:
-    """Keep the tuning as it is now in the context `ctx`: the risk model and the review rules (or their defaults), the
-    policy's defaults, and a snapshot of .clean-eval/ that finalizing restores from. The model and rules files' texts,
-    None where the repository has none."""
-    model, rules = current_tuning(fs, workspace, MODEL_FILE), current_tuning(fs, workspace, RULES_FILE)
+    default_packs: Mapping[str, str],
+) -> tuple[Optional[str], list[str]]:
+    """Keep the tuning as it is now in the context `ctx`: the risk model and the policy's defaults, the repository's
+    rule packs and clean-eval's (`default_packs`, {file name: text}), and a snapshot of .clean-eval/ that finalizing
+    restores from. The model's text (None where the repository has none), and the names of its packs."""
+    model = current_tuning(fs, workspace, MODEL_FILE)
+    packs = rule_packs_in(fs, fs.join(workspace, REPO_DIR, RULE_PACKS))
     fs.write_text(fs.join(ctx, "risk-model.orig.json"), model if model is not None else "{}")
     write_json(fs, fs.join(ctx, "risk-model.defaults.json"), Policy())
     snapshot_tuning(fs, workspace, fs.join(ctx, SNAPSHOT))
-    fs.write_text(fs.join(ctx, "review-rules.orig.md"), rules if rules is not None else default_rules)
-    return model, rules
+    fs.make_dirs(fs.join(ctx, RULES_ORIG))
+    for folder, written in ((RULES_ORIG, packs), (RULES_DEFAULTS, default_packs)):
+        for name, text in written.items():
+            fs.write_text(fs.join(ctx, folder, name), text)
+    return model, sorted(packs)
 
 
 def write_defect_patches(
@@ -414,13 +458,13 @@ def prepare_retro(
     policy: Policy,
     model_source: str,
     period: Period,
-    default_rules: str,
+    default_packs: Mapping[str, str],
     with_reviews: bool = False,
     branch: Optional[str] = None,
 ) -> RetroContext:
-    """Write the retro context of `period` into `ctx` (with each PR's review signal when `with_reviews`); its
-    RetroContext."""
-    model, rules = snapshot_current_tuning(fs, ctx, workspace, default_rules)
+    """Write the retro context of `period` into `ctx` (with each PR's review signal when `with_reviews`), with
+    clean-eval's rule packs `default_packs` ({file name: text}); its RetroContext."""
+    model, packs = snapshot_current_tuning(fs, ctx, workspace, default_packs)
     hist = collect_history(git, host, clock, policy, period, with_reviews, branch, model_source)
     write_json(fs, fs.join(ctx, "retro-history.json"), hist)
     write_json(fs, fs.join(ctx, "sensitivity.json"), sensitivity(hist, policy))
@@ -433,7 +477,7 @@ def prepare_retro(
         auc=hist.calibration.auc_max_score,
         model_source=model_source,
         model_existed=model is not None,
-        rules_existed=rules is not None,
+        repo_rule_packs=packs,
         with_gh=hist.rules is not None,
         rules_reliable=hist.rules.reliable if hist.rules else None,
         defect_patches=len(index),
@@ -459,47 +503,84 @@ def finalize_retro(
     InvalidOutput when the agent's output can't be trusted."""
     secrets = env.secrets()
     snapshot_dir = fs.join(ctx, SNAPSHOT)
+    packs = rule_pack_files(fs, workspace, snapshot_dir)
+    tuning = [MODEL_FILE, *packs]
     try:
         history = validated(RetroHistory, fs, ctx, "retro-history.json")
-        model_change = judge_tuning_edit(
-            fs, workspace, snapshot_dir, MODEL_FILE, apply, lambda new, orig: judge_model_edit(new, orig, history)
-        )
-        rules_change = judge_tuning_edit(
-            fs, workspace, snapshot_dir, RULES_FILE, apply, lambda new, orig: judge_rules_edit(new)
-        )
-        other = restore_other_tuning(fs, workspace, snapshot_dir, TUNING_FILES)
+        model_change, rules_change = judge_tuning_edits(fs, ctx, workspace, packs, history, apply)
+        other = restore_other_tuning(fs, workspace, snapshot_dir, tuning)
         recommendations = retro_recommendations(read_json(fs, fs.join(agent, "result.json")), secrets)
         result, outputs = retro_result(history, recommendations, model_change, rules_change, other)
     except JUDGING_ERRORS as e:
-        for name in sorted(TUNING_FILES):
+        for name in tuning:
             restore_tuning(fs, workspace, snapshot_dir, name)
-        restore_other_tuning(fs, workspace, snapshot_dir, TUNING_FILES)
+        restore_other_tuning(fs, workspace, snapshot_dir, tuning)
         raise invalid(e, " (any .clean-eval/ edits were reverted)")
     write_run_output(fs, out, fs.join(agent, "report.md"), result, secrets)
     return result, outputs
+
+
+def judge_tuning_edits(
+    fs: FileSystem,
+    ctx: str,
+    workspace: str,
+    packs: list[str],
+    history: RetroHistory,
+    apply: bool,
+) -> tuple[Optional[Union[ModelChange, Rejection]], Optional[Union[RulesChange, Rejection]]]:
+    """The agent's changes of the tuning files, each kept only with `apply` and when accepted: the risk model's on the
+    collected `history`, and the rule packs' (`packs`, paths in .clean-eval/) over clean-eval's, from the context `ctx`.
+    The model's change and the packs'."""
+    snapshot_dir = fs.join(ctx, SNAPSHOT)
+    model_change = judge_tuning_edit(
+        fs,
+        workspace,
+        snapshot_dir,
+        [MODEL_FILE],
+        apply,
+        lambda changed: judge_model_edit(
+            current_tuning(fs, workspace, MODEL_FILE), original_tuning(fs, snapshot_dir, MODEL_FILE), history
+        ),
+    )
+    rules_change = judge_tuning_edit(
+        fs,
+        workspace,
+        snapshot_dir,
+        packs,
+        apply,
+        lambda changed: judge_rules_edit(
+            combine_rule_packs(
+                rule_packs_in(fs, fs.join(ctx, RULES_DEFAULTS)),
+                rule_packs_in(fs, fs.join(workspace, REPO_DIR, RULE_PACKS)),
+            ),
+            [name.removeprefix(RULE_PACKS + "/") for name in changed],
+        ),
+    )
+    return model_change, rules_change
 
 
 def judge_tuning_edit[T](
     fs: FileSystem,
     workspace: str,
     snapshot_dir: str,
-    name: str,
+    names: list[str],
     apply: bool,
-    judge: Callable[[Optional[str], Optional[str]], T],
+    judge: Callable[[list[str]], T],
 ) -> Optional[Union[T, Rejection]]:
-    """The agent's change of one tuning file: kept when `judge` accepts it, else restored (a Rejection says why). None
-    when the file is unchanged."""
-    new, orig = current_tuning(fs, workspace, name), original_tuning(fs, snapshot_dir, name)
-    if new == orig:
+    """The agent's change of the tuning files `names` (paths in .clean-eval/): kept when `judge` accepts the changed
+    ones, else they are restored (a Rejection says why). None when none of them changed."""
+    changed = [name for name in names if current_tuning(fs, workspace, name) != original_tuning(fs, snapshot_dir, name)]
+    if not changed:
         return None
     try:
         if not apply:
             raise InvalidOutput(
                 "apply=false",
             )
-        return judge(new, orig)
+        return judge(changed)
     except JUDGING_ERRORS as e:
-        restore_tuning(fs, workspace, snapshot_dir, name)
+        for name in changed:
+            restore_tuning(fs, workspace, snapshot_dir, name)
         return Rejection(
             reason=str(invalid(e)) if isinstance(e, ValidationError) else str(e),
         )
@@ -525,7 +606,7 @@ def retro_task(
             "sensitivity.json",
             "defects/index.json (patches alongside)",
             "risk-model.orig.json",
-            "review-rules.orig.md",
+            "rules.defaults/ and rules.orig/ (clean-eval's rule files, and the repository's own over them)",
         ),
         outputs=("report.md", "result.json"),
     )
@@ -610,12 +691,13 @@ def run_retro_action(
     log: RunLog,
     folders: RunFolders,
     settings: Settings,
-    default_rules: str,
+    default_packs: Mapping[str, str],
 ) -> None:
     """The retro's CI run over the PRs merged in the settings' period (retro_period): collect their history (with their
-    review signal when the code host is signed in), let the agent evaluate it and, when the settings say `apply`, edit
-    .clean-eval/; then report what passes the retro's checks (report_retro). RunFailed on a period that ends before it
-    starts, on a symlinked .clean-eval with `apply`, or on agent output that can't be trusted."""
+    review signal when the code host is signed in, and clean-eval's rule packs `default_packs`), let the agent evaluate
+    it and, when the settings say `apply`, edit .clean-eval/; then report what passes the retro's checks
+    (report_retro). RunFailed on a period that ends before it starts, on a symlinked .clean-eval with `apply`, or on
+    agent output that can't be trusted."""
     period = retro_period(clock, settings)
     writable = tuning_the_agent_may_edit(fs, folders, settings.retro.apply)
     with_reviews = signed_in(host)
@@ -631,7 +713,7 @@ def run_retro_action(
         policy,
         source,
         period,
-        default_rules,
+        default_packs,
         with_reviews=with_reviews,
     )
     agent.require()

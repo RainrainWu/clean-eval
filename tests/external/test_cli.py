@@ -22,7 +22,12 @@ from clean_eval.domain.review import (
 from clean_eval.external import cli
 from clean_eval.external.filesystem import FileSystemGateway
 from clean_eval.use_cases.review import lines_on_diff
-from clean_eval.use_cases.rules.review import redact
+from clean_eval.use_cases.rules.review import (
+    check_rules,
+    combine_rule_packs,
+    parse_rules,
+    redact,
+)
 
 pytestmark = pytest.mark.e2e  # the command line's tests: most run `python -I clean_eval ...` in a subprocess
 
@@ -56,7 +61,20 @@ class TestSecrets:
         assert redact("pw hunter2-hunter2", cli.secrets())[0] == "pw [REDACTED]"
 
 
-class TestFinalizeEvalJudgesTheModelEdit:
+class TestDefaultRulePacks:
+    """clean-eval's rule files, as the command line reads them from the pr-review skill's references/rules/: the policy,
+    then files of rule rows, every rule ID once. Nothing else belongs there, since every file in it is read as rules."""
+
+    def test_every_file_is_the_policy_or_a_file_of_rules(
+        self,
+    ):
+        packs = cli.default_rule_packs()
+        assert parse_rules(packs.pop("policy.md")).rules == []
+        assert [name for name, text in packs.items() if not parse_rules(text).rules] == []
+        assert check_rules(combine_rule_packs(packs, {})).rules  # no rule ID twice
+
+
+class TestFinalizeRetroJudgesTheModelEdit:
     """`finalize --skill retro` keeps the agent's edit of .clean-eval/risk-model.json only with --apply, and only when it
     validates and holds the AUC on a sample large enough to tell; otherwise the file is put back as it was before the
     agent ran (removed when it wasn't there)."""
@@ -222,14 +240,22 @@ class TestFinalizeEvalJudgesTheModelEdit:
         assert json.loads(model.read_text()) == earlier_model
 
 
-class TestFinalizeEvalJudgesTheRulesEdit:
-    """`finalize --skill retro` keeps the agent's edit of .clean-eval/review-rules.md when its table is valid; removing
-    the file, or a table that isn't, is reverted."""
+@pytest.mark.parametrize(
+    "tuning", [{"rules/quality.md": "| Q-02 | major | Moderate | failure paths |\n"}], indirect=True
+)
+class TestFinalizeRetroJudgesTheRulesEdit:
+    """`finalize --skill retro` keeps the agent's edits of the rule packs in .clean-eval/rules/ when the rules of all
+    packs, over clean-eval's, still parse into unique rule IDs; otherwise every pack it changed is put back. Removing a
+    pack is an edit too: clean-eval's pack of its name applies again."""
 
-    @pytest.mark.parametrize("tuning", [{"review-rules.md": lf("review_rules")}], indirect=True)
     @pytest.mark.parametrize(
         "tuning_edits",
-        [{"review-rules.md": lfc(lambda rules: rules + "| Q-05 | major | High | new rule |\n", lf("review_rules"))}],
+        [
+            {
+                "rules/quality.md": "| Q-02 | major | Moderate | failure paths |\n| Q-13 | major | High | new rule |\n",
+                "rules/api.md": "| A-01 | blocker | Low | stable API |\n",
+            }
+        ],
         indirect=True,
     )
     def test_a_valid_edit_is_kept(
@@ -244,24 +270,21 @@ class TestFinalizeEvalJudgesTheRulesEdit:
                 ci_folders.out,
                 "result.json",
             ).read_text()
-        )["rules_change"] == {"accepted": True}
-        assert (
-            "Q-05"
-            in Path(
-                ci_folders.ws,
-                ".clean-eval",
-                "review-rules.md",
-            ).read_text()
+        )["rules_change"] == {"accepted": True, "packs": ["api.md", "quality.md"]}
+        packs = Path(
+            ci_folders.ws,
+            ".clean-eval",
+            "rules",
         )
+        assert "Q-13" in (packs / "quality.md").read_text()
+        assert (packs / "api.md").exists()
 
-    @pytest.mark.parametrize("tuning", [{"review-rules.md": lf("review_rules")}], indirect=True)
-    @pytest.mark.parametrize("tuning_edits", [{"review-rules.md": None}], indirect=True)
-    def test_removing_the_rules_is_reverted(
+    @pytest.mark.parametrize("tuning_edits", [{"rules/quality.md": None}], indirect=True)
+    def test_removing_a_pack_brings_back_clean_evals(
         self,
         finalize_retro_args,
         cli_runner,
         ci_folders,
-        review_rules,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 0
         assert json.loads(
@@ -269,39 +292,42 @@ class TestFinalizeEvalJudgesTheRulesEdit:
                 ci_folders.out,
                 "result.json",
             ).read_text()
-        )["rules_change"] == {
-            "accepted": False,
-            "reason": "review-rules.md may not be removed",
-        }
-        assert (
-            Path(
-                ci_folders.ws,
-                ".clean-eval",
-                "review-rules.md",
-            ).read_text()
-            == review_rules
-        )
+        )["rules_change"] == {"accepted": True, "packs": ["quality.md"]}
 
     @pytest.mark.parametrize(
         "tuning_edits",
-        [{"review-rules.md": lfc(lambda rules: rules + "| CA-01 | major | Low | duplicate |\n", lf("review_rules"))}],
+        [
+            {
+                "rules/quality.md": "| Q-02 | major | Moderate | edited |\n",
+                "rules/api.md": "| CA-01 | major | Low | duplicate |\n",
+            }
+        ],
         indirect=True,
     )
-    def test_a_bad_edit_is_reverted(
+    def test_a_bad_edit_puts_every_pack_back(
         self,
         finalize_retro_args,
         cli_runner,
         ci_folders,
+        tuning,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 0
-        assert not Path(
+        assert json.loads(
+            Path(
+                ci_folders.out,
+                "result.json",
+            ).read_text()
+        )["rules_change"] == {"accepted": False, "reason": "duplicate rule IDs: CA-01"}
+        packs = Path(
             ci_folders.ws,
             ".clean-eval",
-            "review-rules.md",
-        ).exists()  # it wasn't there
+            "rules",
+        )
+        assert (packs / "quality.md").read_text() == tuning["rules/quality.md"]
+        assert not (packs / "api.md").exists()  # it wasn't there
 
 
-class TestFinalizeEvalRestoresTheOtherFiles:
+class TestFinalizeRetroRestoresTheOtherFiles:
     """`finalize --skill retro` puts every other file of .clean-eval/ back as it was: changed, created and deleted
     ones."""
 
@@ -343,7 +369,7 @@ class TestFinalizeEvalRestoresTheOtherFiles:
 
 
 @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": lf("valid_model_edit")}], indirect=True)
-class TestFinalizeEvalFailsClosed:
+class TestFinalizeRetroFailsClosed:
     """When the agent's output or the history can't be trusted, `finalize --skill retro` exits 2 and reverts every edit,
     even one that would pass."""
 
@@ -551,7 +577,7 @@ class TestPost:
 )
 class TestPostOnTheDiff:
     """With the diff in the context, `post` attaches inline only the findings on lines of the diff, where a code host
-    takes them, and lists the others in the review's body."""
+    takes them; the review's body is the comment `finalize` rendered, which lists every finding."""
 
     def test_only_on_diff_comments_attached(
         self,
@@ -565,11 +591,11 @@ class TestPostOnTheDiff:
         host.post_review.assert_called_once()
         post = host.post_review.call_args.args[1]
         assert [comment.line for comment in post.comments] == [2]
-        assert "`a.py:40`" in post.body
+        assert post.body.startswith("## Review\n\n<!-- clean-eval:pr-review ")
 
 
 class TestCommands:
-    """The commands of the command line: the README section is the only publishing output, so the old ones are gone."""
+    """The commands of the command line, as its usage lists them."""
 
     def test_the_usage_lists_the_commands(
         self,
@@ -581,15 +607,6 @@ class TestCommands:
         listed = [line.split()[0] for line in usage.split("Commands:\n", 1)[1].splitlines() if line.strip()]
         assert listed == cli_commands
         assert run_cli("-h", cwd=tmp_path).stdout == usage
-
-    @pytest.mark.parametrize("gone", ["render", "diagram"])
-    def test_a_removed_command_fails(
-        self,
-        run_cli,
-        tmp_path,
-        gone,
-    ):
-        assert run_cli(gone, "x", cwd=tmp_path).returncode != 0
 
 
 @pytest.mark.parametrize("history", [lf("billing_history")], indirect=True)
@@ -642,6 +659,54 @@ class TestAssess:
         assert not modules["infra"]["rated"]
         assert modules["infra"]["band"] == "Moderate"
         assert risk["max_band"] in ("Moderate", "High", "Critical")
+
+    def test_with_a_readme_a_base_that_publishes_no_heat_map_is_refused(
+        self,
+        repo,
+        shas,
+        run_cli,
+    ):
+        refused = run_cli("assess", "--base", shas[0], "--head", shas[1], "--readme", "README.md", cwd=repo.path)
+        assert refused.returncode == 1
+        assert "clean_eval: no risk heat map in README.md at %s" % shas[0][:8] in refused.stderr
+
+
+@pytest.mark.parametrize("history", [lf("house_rules_history")], indirect=True)
+class TestRulesCommand:
+    """`rules` prints the rules a review of a change based at a revision applies: clean-eval's packs, the repository's
+    own packs over them, and the rules its review.json selects, or those --include and --exclude select instead. Notes
+    go to stderr; a name that is no rule ID or glob is refused."""
+
+    def test_the_rules_at_a_revision(
+        self,
+        repo,
+        shas,
+        run_cli,
+        tmp_path,
+    ):
+        printed = run_cli("rules", "--rev", shas[0], cwd=repo.path)
+        assert printed.returncode == 0, printed.stderr
+        assert ("| H-01 |" in printed.stdout, "| CA-01 |" in printed.stdout, "| Q-01 |" in printed.stdout) == (
+            True,
+            True,
+            False,
+        )
+        out = tmp_path / "rules.md"
+        chosen = run_cli(
+            "rules", "--rev", shas[0], "--include", "Q-01", "--include", "ZZ-9?", "--out", str(out), cwd=repo.path
+        )
+        assert chosen.stdout == "1 rules from .clean-eval/rules@%s -> %s\n" % (shas[0][:8], out)
+        assert "clean_eval: no rule matches ZZ-9?" in chosen.stderr
+        assert "| Q-01 |" in out.read_text()
+
+    def test_a_name_that_is_no_rule_or_glob_is_refused(
+        self,
+        repo,
+        run_cli,
+    ):
+        refused = run_cli("rules", "--exclude", "CA-01;rm", cwd=repo.path)
+        assert refused.returncode == 1
+        assert "clean_eval: the rule selection: exclude[0]:" in refused.stderr
 
 
 @pytest.mark.parametrize("history", [lf("app_with_readme_history")], indirect=True)

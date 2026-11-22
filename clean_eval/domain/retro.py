@@ -272,7 +272,8 @@ class DefectPatch(BaseModel):
 
 
 class RetroContext(BaseModel):
-    """context.json of a retro."""
+    """context.json of a retro: the period and its counts, where the risk model is from, the rule packs the repository
+    keeps of its own (the rest are clean-eval's), and what the history could read."""
 
     since: dt.date
     until: dt.date
@@ -281,7 +282,7 @@ class RetroContext(BaseModel):
     auc: Optional[Fraction]
     model_source: Optional[str]
     model_existed: bool
-    rules_existed: bool
+    repo_rule_packs: list[str] = []
     with_gh: bool
     rules_reliable: Optional[bool]
     defect_patches: Count
@@ -340,7 +341,10 @@ class ModelChange(BaseModel):
 
 
 class RulesChange(BaseModel):
+    """An accepted edit of the repository's rule packs: the packs it added, changed or removed."""
+
     accepted: Literal[True] = True
+    packs: list[str] = []
 
 
 class Rejection(BaseModel):

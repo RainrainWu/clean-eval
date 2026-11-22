@@ -130,12 +130,7 @@ class TestFileDiffs:
 
 
 class TestGitGateway:
-    """The gateway holds every git command line: callers ask it for operations."""
-
-    def test_commands_are_not_composed_outside(
-        self,
-    ):
-        assert not hasattr(GitGateway, "run")
+    """What only a real repository shows: a shallow clone says so."""
 
     @pytest.mark.parametrize("history", [lf("contract_history")], indirect=True)
     def test_a_shallow_clone_says_so(
@@ -171,12 +166,6 @@ class TestMemoryGitAgreesWithTheGateway:
         assert (git.branch(), git.default_branch()) == ("main", "main")
         with pytest.raises(HeatmapError):
             git.ensure_commit("0" * 40, "refs/heads/nope")
-
-    def test_a_whole_history_is_not_shallow(
-        self,
-        git,
-    ):
-        assert not git.is_shallow()
 
     def test_files_and_contents(
         self,

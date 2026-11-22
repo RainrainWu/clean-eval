@@ -624,7 +624,37 @@ def context_files(
 @pytest.fixture
 def cli_commands():
     """The commands of the command line, in the order its usage (`clean_eval --help`) lists them."""
-    return ["action", "assess", "finalize", "guard", "history", "post", "prepare", "rate", "readme", "redact", "report"]
+    return [
+        "action",
+        "assess",
+        "finalize",
+        "guard",
+        "history",
+        "post",
+        "prepare",
+        "rate",
+        "readme",
+        "redact",
+        "report",
+        "rules",
+    ]
+
+
+@pytest.fixture
+def house_rules_history():
+    """A repository that keeps a rule pack of its own (house.md, holding H-01) and skips the Q rules (review.json); then
+    a commit that empties the pack."""
+    return [
+        {
+            "subject": "init",
+            "files": {
+                "a.py": "x = 1\n",
+                ".clean-eval/rules/house.md": "| H-01 | blocker | Low | house rule |\n",
+                ".clean-eval/review.json": '{"exclude": ["Q-*"]}',
+            },
+        },
+        {"subject": "empty the house rules", "files": {".clean-eval/rules/house.md": "nothing\n"}},
+    ]
 
 
 @pytest.fixture
@@ -973,32 +1003,26 @@ def finalize_retro_args(
     tuning,
     tuning_edits,
     retro_history,
+    rule_packs,
     context_files,
     agent_files,
     write_files,
 ):
     """The arguments of `finalize --skill retro` over `ci_folders`, as `prepare retro` and the agent leave them: the
     workspace's .clean-eval/ held `tuning` when it was snapshotted into the context, then the agent made `tuning_edits`
-    and wrote `agent_files`; the context holds `retro_history` and `context_files`. `request.param` is the options after
-    the folders: ["--apply"] by default ([] for a run without it)."""
+    and wrote `agent_files`; the context holds `retro_history`, clean-eval's `rule_packs` (in rules.defaults/) and
+    `context_files`. `request.param` is the options after the folders: ["--apply"] by default ([] for a run without
+    it)."""
     tuning_dir = Path(
         ci_folders.ws,
         ".clean-eval",
     )
     tuning_dir.mkdir()
     write_files(tuning_dir, tuning)
-    snapshot_tuning(
-        FileSystemGateway(),
-        ci_folders.ws,
-        str(
-            Path(
-                ci_folders.ctx,
-                SNAPSHOT,
-            )
-        ),
-    )
+    snapshot_tuning(FileSystemGateway(), ci_folders.ws, ci_folders.ctx + "/" + SNAPSHOT)
     write_files(tuning_dir, tuning_edits)
-    write_files(ci_folders.ctx, {"retro-history.json": retro_history, **context_files})
+    defaults = {"rules.defaults/" + name: text for name, text in rule_packs.items()}
+    write_files(ci_folders.ctx, {"retro-history.json": retro_history, **defaults, **context_files})
     write_files(ci_folders.agent, agent_files)
     return [
         "finalize",

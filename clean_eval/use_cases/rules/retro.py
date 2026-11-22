@@ -381,13 +381,13 @@ def sensitivity(
     return rows
 
 
-# Which edits of the tuning files (`.clean-eval/risk-model.json` and `review-rules.md`) an unattended retro may keep.
+# Which edits of the tuning files (`.clean-eval/risk-model.json` and the rule packs in `.clean-eval/rules/`) an unattended
+# retro may keep.
 #
 # The domain models check the shape of an edit (a valid policy changing only tunable knobs; rules that parse into unique
 # rows). The evidence is judged here: enough PRs in the period, and a replay AUC no lower than the current model's.
 
-MODEL_FILE, RULES_FILE = "risk-model.json", "review-rules.md"  # in .clean-eval/
-TUNING_FILES = frozenset({MODEL_FILE, RULES_FILE})
+MODEL_FILE, RULE_PACKS = "risk-model.json", "rules"  # in .clean-eval/
 MIN_PRS, MIN_DEFECTIVE = 20, 5  # below this, a model edit has no evidence behind it
 
 
@@ -431,18 +431,18 @@ def judge_model_edit(
 
 
 def judge_rules_edit(
-    new_text: Optional[str],
+    rules: str,
+    packs: list[str],
 ) -> RulesChange:
-    """The accepted change of the review rules; InvalidOutput when they are removed or don't parse into unique rows."""
-    if new_text is None:
-        raise InvalidOutput(
-            "review-rules.md may not be removed",
-        )
+    """The accepted change of the rule packs `packs`, by the `rules` all packs make together; InvalidOutput when those
+    don't parse into unique rule rows."""
     try:
-        check_rules(new_text)
+        check_rules(rules)
     except ValidationError as e:
         raise InvalidOutput.from_validation(e)
-    return RulesChange()
+    return RulesChange(
+        packs=packs,
+    )
 
 
 def retro_recommendations(

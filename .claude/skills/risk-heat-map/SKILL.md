@@ -37,7 +37,8 @@ fails or writes invalid JSON, continue without it and say the levels are static-
 `CE readme <OUT>/data.json [--judgement <OUT>/judgement.json]` puts the treemap into the `## Risk Heat Map` section of
 `README.md` (between `<!-- risk-heat-map:start -->` and `<!-- risk-heat-map:end -->`) and writes
 `docs/risk-heatmap.svg`. It writes nothing when the ratings are unchanged. That is the only output: don't publish the
-heat map anywhere else. Don't commit unless asked.
+heat map anywhere else. Don't commit unless asked. `/pr-review` needs this section at a PR's base, and is blocked
+without it.
 
 ## Step 4 - Report
 

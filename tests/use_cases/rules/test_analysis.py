@@ -96,7 +96,7 @@ class TestIgnoredAndExcludedPaths:
             ".claude/skills/x/SKILL.md",
             "CLAUDE.md",
             "AGENTS.md",
-            ".clean-eval/review-rules.md",
+            ".clean-eval/rules/quality.md",
         ],
     )
     def test_dependencies_agent_instructions_and_review_rules_carry_risk(

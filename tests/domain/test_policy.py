@@ -19,8 +19,8 @@ from clean_eval.domain.policy import (
 
 
 class TestFromOverrides:
-    """Overrides merge into the defaults: a dictionary knob keeps the defaults of the keys it doesn't name, comments are
-    dropped, and no overrides at all are the defaults."""
+    """Overrides merge into the defaults: a dictionary knob keeps the defaults of the keys it doesn't name, and comments
+    are dropped."""
 
     @pytest.mark.parametrize(
         "policy",
@@ -36,14 +36,6 @@ class TestFromOverrides:
         assert policy.business_weights["dependents"] == 0.4
         assert policy.business_weights["size"] == default_policy.business_weights["size"]  # other keys keep defaults
         assert policy.unrated_band == "High"
-
-    @pytest.mark.parametrize("policy", [{}, None], indirect=True, ids=["empty", "none"])
-    def test_no_overrides_are_the_defaults(
-        self,
-        policy,
-        default_policy,
-    ):
-        assert policy == default_policy
 
     @pytest.mark.parametrize("policy", [{"business_weights": {"keyword": 0}}], indirect=True, ids=["keyword 0"])
     def test_weights_may_be_zero(

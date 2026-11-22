@@ -1,21 +1,28 @@
 """The PR review's use cases (use_cases/review.py), with their dependencies mocked: a change's risk, the context the
-CI reviewer reads, and a CI run without a PR to review."""
+CI reviewer reads (the rules and the policy of its base among it), and a CI run without a PR to review."""
 
 import pytest
 from pytest_lazy_fixtures import lf
 
 from clean_eval.domain.errors import (
     HeatmapError,
+    InvalidRequest,
     RunFailed,
 )
 from clean_eval.domain.policy import Policy
-from clean_eval.domain.review import DiffIndex
+from clean_eval.domain.review import (
+    DiffIndex,
+    RuleSelection,
+)
 from clean_eval.use_cases.review import (
     assess_change,
     policy_at,
+    published_heat_map,
+    rules_at,
     run_review_action,
     write_split_diff,
 )
+from clean_eval.use_cases.rules.review import parse_rules
 
 
 class TestAssessChange:
@@ -72,6 +79,141 @@ class TestWriteSplitDiff:
         assert counts == {"src/a/keep.py": (1, 1), "src/a/old.py": (0, 30), 'src/a/we"ird name.py': (1, 0)}
         assert index[1].hunks == []  # old.py is removed: none of its lines is left to comment on
         assert DiffIndex.model_validate_json(memory_fs.read_text("/ctx/diff/index.json")).root == index
+
+
+class TestPublishedHeatMap:
+    """A review is scaled by the heat map the README publishes at the change's base: its block; without one there,
+    InvalidRequest blocks the review."""
+
+    @pytest.mark.parametrize(
+        "history", [[{"subject": "base", "files": {"README.md": lf("published_readme")}}]], indirect=True
+    )
+    def test_the_block_the_readme_publishes(
+        self,
+        git,
+        shas,
+    ):
+        block = published_heat_map(git, shas[0], "README.md")
+        assert block.startswith("<!-- risk-heat-map:start -->")
+        assert block.endswith("<!-- risk-heat-map:end -->")
+
+    @pytest.mark.parametrize(
+        "history",
+        [
+            [{"subject": "base", "files": {"a.py": "x = 1\n"}}],
+            [{"subject": "base", "files": {"README.md": "# Demo\n\n## Risk Heat Map\n"}}],
+            [{"subject": "base", "files": {"README.md": "<!-- risk-heat-map:start -->\nunfinished\n"}}],
+            [
+                {"subject": "base", "files": {"a.py": "x = 1\n"}},
+                {"subject": "publish", "files": {"README.md": lf("published_readme")}},
+            ],
+        ],
+        indirect=True,
+        ids=["no README", "a heading only", "no end marker", "published after the base"],
+    )
+    def test_without_one_at_the_base_the_review_is_blocked(
+        self,
+        git,
+        shas,
+    ):
+        with pytest.raises(InvalidRequest, match="no risk heat map in README.md at %s" % shas[0][:8]):
+            published_heat_map(git, shas[0], "README.md")
+
+
+class TestRulesAt:
+    """The rules a change is judged by: clean-eval's packs, the base's own packs over them, and only the rules the
+    base's .clean-eval/review.json selects (or a selection given instead). What the base holds that a review can't use
+    is ignored with a note, rather than failing every review."""
+
+    @pytest.mark.parametrize(
+        "history",
+        [
+            [
+                {
+                    "subject": "base",
+                    "files": {
+                        ".clean-eval/rules/quality.md": "| Q-02 | blocker | Low | failure paths |\n",
+                        ".clean-eval/rules/api.md": "| A-01 | major | Low | stable API |\n",
+                    },
+                },
+                {"subject": "later", "files": {".clean-eval/rules/api.md": "nothing to see\n"}},
+            ]
+        ],
+        indirect=True,
+    )
+    def test_the_bases_packs_replace_or_add_to_clean_evals(
+        self,
+        git,
+        shas,
+        rule_packs,
+    ):
+        rules, source, notes = rules_at(git, shas[0], rule_packs)
+        assert rules.startswith(rule_packs["policy.md"])
+        assert [(rule.id, rule.severity) for rule in parse_rules(rules).rules] == [
+            ("A-01", "major"),
+            ("CA-01", "blocker"),
+            ("Q-02", "blocker"),
+        ]
+        assert (source, notes) == (".clean-eval/rules@" + shas[0][:8], [])
+
+    @pytest.mark.parametrize(
+        "history", [[{"subject": "base", "files": {".clean-eval/review.json": '{"exclude": ["Q-*"]}'}}]], indirect=True
+    )
+    @pytest.mark.parametrize(
+        ("chosen", "applied"),
+        [(None, ["CA-01"]), (RuleSelection.model_validate({"include": ["Q-04"]}), ["Q-04"])],
+        ids=["the base's", "one given instead"],
+    )
+    def test_only_the_selected_rules_apply(
+        self,
+        git,
+        shas,
+        rule_packs,
+        chosen,
+        applied,
+    ):
+        rules, source, notes = rules_at(git, shas[0], rule_packs, chosen)
+        assert [rule.id for rule in parse_rules(rules).rules] == applied
+        assert (source, notes) == ("clean-eval default", [])
+
+    @pytest.mark.parametrize(
+        ("history", "applied", "note"),
+        [
+            (
+                [{"subject": "base", "files": {".clean-eval/review.json": '{"excludes": ["Q-*"]}'}}],
+                ["CA-01", "Q-02", "Q-04"],
+                "ignored .clean-eval/review.json: excludes: unknown key",
+            ),
+            (
+                [{"subject": "base", "files": {".clean-eval/review.json": '{"include": ["ZZ-01"]}'}}],
+                ["CA-01", "Q-02", "Q-04"],
+                "ignored the rule selection: it leaves none of the rules",
+            ),
+            (
+                [{"subject": "base", "files": {".clean-eval/rules/notes.txt": "| Z-01 | major | Low | z |\n"}}],
+                ["CA-01", "Q-02", "Q-04"],
+                "ignored 1 file(s) in .clean-eval/rules that are not rule packs (<name>.md)",
+            ),
+            (
+                [{"subject": "base", "files": {".clean-eval/rules/security.md": "| Q-02 | blocker | Low | again |\n"}}],
+                ["CA-01", "Q-02", "Q-04", "Q-02"],
+                "Q-02 is defined more than once (its last row counts)",
+            ),
+        ],
+        indirect=["history"],
+        ids=["an invalid selection", "a selection of no rule", "a file that is no pack", "a rule in two packs"],
+    )
+    def test_what_a_review_cant_use_is_noted(
+        self,
+        git,
+        shas,
+        rule_packs,
+        applied,
+        note,
+    ):
+        rules, _, notes = rules_at(git, shas[0], rule_packs)
+        assert [rule.id for rule in parse_rules(rules).rules] == applied
+        assert notes == [note]
 
 
 class TestPolicyAt:
@@ -178,12 +320,15 @@ class TestRunReviewAction:
         clock,
         env,
         agent,
+        report_presenter,
         runner,
         run_log,
         settings,
         run_folders,
     ):
         with pytest.raises(RunFailed, match="needs a PR number"):
-            run_review_action(host, git, fs, clock, env, agent, runner, run_log, run_folders, settings, "")
+            run_review_action(
+                host, git, fs, clock, env, agent, report_presenter, runner, run_log, run_folders, settings, {}
+            )
         host.pull_request.assert_not_called()
         agent.run.assert_not_called()

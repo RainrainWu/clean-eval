@@ -148,7 +148,8 @@ AtLeastOne = Annotated[
 # Where a repository keeps its own tuning (git paths, so always "/"-separated).
 REPO_DIR = ".clean-eval"
 REPO_POLICY = REPO_DIR + "/risk-model.json"
-REPO_RULES = REPO_DIR + "/review-rules.md"
+REPO_RULE_PACKS = REPO_DIR + "/rules"  # the repository's own rule packs, <name>.md each
+REPO_REVIEW = REPO_DIR + "/review.json"  # which rules its reviews apply
 
 # Level texts, most severe first (the wording of references/rate.md).
 BUSINESS_LEVELS = frozendict(

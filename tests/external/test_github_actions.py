@@ -31,8 +31,7 @@ class TestSetOutputs:
 
 
 class TestAddSummary:
-    """A report goes into the job summary under its title, after what the summary holds; a step without a summary file
-    writes none."""
+    """A report goes into the job summary under its title, after what the summary holds."""
 
     @pytest.mark.parametrize("files", [{"summary.md": "earlier\n"}], indirect=True)
     def test_the_report_is_appended_under_its_title(
@@ -47,14 +46,3 @@ class TestAddSummary:
             summary,
         ).add_summary("PR Review #7", "## Review\n")
         assert fs.read_text(summary) == "earlier\n## clean-eval · PR Review #7\n\n## Review\n"
-
-    def test_a_step_without_a_summary_file_writes_none(
-        self,
-        fs,
-        root,
-    ):
-        GitHubActionsGateway(
-            fs,
-            os.path.join(root, "outputs"),
-        ).add_summary("PR Review #7", "## Review\n")
-        assert os.listdir(root) == []

@@ -139,7 +139,7 @@ class TestPolicyEdit:
             )
 
 
-class TestAgentEvalResult:
+class TestAgentRetroResult:
     """The retro agent's result.json: its recommendations, as text cut to size, objects only and at most 30; whatever
     else it writes (counts, AUC) is ignored."""
 
@@ -158,7 +158,7 @@ class TestAgentEvalResult:
         assert (first.target, first.change, len(first.evidence)) == ("1", "None", 2000)
 
 
-class TestEvalResult:
+class TestRetroResult:
     """The retro CI trusts: whether it applied an edit is derived from the changes it kept, and a kept change survives
     being stored."""
 

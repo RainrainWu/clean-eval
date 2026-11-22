@@ -23,6 +23,7 @@ uv run ty check                                          # type check: the packa
 uv run python -I clean_eval rate --out <dir>             # rate this repository -> <dir>/data.json
 uv run python -I clean_eval report <dir>/data.json       # the summary table
 uv run python -I clean_eval assess --base master --head HEAD   # the risk a change carries
+uv run python -I clean_eval rules --rev master           # the review rules a change based at master is held to
 uv run python -I clean_eval history --since 2026-01-01 --until 2026-02-01   # merged PRs, rated at their bases
 ```
 
@@ -39,7 +40,7 @@ The package is in four layers. Imports point inward only: domain ‚Üê use_cases ‚
 |---|---|
 | `domain/` | pydantic data models, and the enumerations (`StrEnum`) of their closed value sets; every invariant is a validator |
 | `use_cases/` | `interfaces.py` (the abstract classes of every external utility), plus module-level functions that take implementations of them: `heatmap.py`, `review.py`, `retro.py` and the shared `store.py` and `ci.py`; `rules/` holds the pure business rules, by the same features plus `analysis.py`. Business logic only: no external tool's formats or conventions |
-| `adaptor/` | the presenters (SVG treemap, Markdown summary) |
+| `adaptor/` | the presenters (SVG treemap, Markdown summary, review comment) |
 | `external/` | one gateway per external dependency (git, GitHub, GitHub Actions, Claude Code, the coverage report, files, the environment and clock), holding all there is to know about it; the click command line `cli.py` (the entry point of every utility, and the composition root) and the CI agent's guard `agent_guard.py` |
 
 Beside the layers, `settings.py` holds `Settings` (pydantic-settings): everything a run reads from its environment, in
@@ -58,7 +59,8 @@ The skills chain the commands:
 - **Rating:** `rate` writes a `Heatmap` to `data.json`. An agent then levels the four aspects in `judgement.json`. Then
   `readme` and `report` render the result.
 - **Change risk:** `assess` rates the PR's base commit and returns the risk band of each changed path. The PR review
-  scales its depth by the worst band.
+  scales its depth by the worst band. It needs the heat map the README publishes at the base (`assess --readme`), and
+  is blocked without one.
 - **History:** `history` rates every merged PR at its base and links later fixes and reverts to it. It scores how well
   the risk predicted them, and `/retro` tunes `.clean-eval/` from that.
 
@@ -67,9 +69,11 @@ deterministic code decides:
 Its inputs are environment variables, which the command reads once into `Settings` (`clean_eval action --help` lists
 them).
 1. `clean_eval prepare` precomputes the context: the diff, history, risk, and config read from the base commit.
+   A review whose base README publishes no heat map is blocked here.
 2. A sandboxed `claude` runs with no shell, no network and no token (the Claude Code gateway, behind the `Agent`
    interface). The `clean_eval guard` hook allows only listed paths and tools. It takes no instructions from the checkout: no CLAUDE.md, AGENTS.md, rules or skills.
-3. `clean_eval finalize` validates the agent's output and derives the verdict itself.
+3. `clean_eval finalize` validates the agent's output, derives the verdict itself, and renders the review's comment
+   in its one layout (the pr-review skill's `references/comment.md`).
 4. `clean_eval post` posts the review.
 
 `README.md` "Trust model" has the details.
@@ -120,8 +124,11 @@ them).
   `uv run --frozen --no-config --project ${CLEAN_EVAL_HOME:-.} python -I ${CLEAN_EVAL_HOME:-.}/clean_eval`.
 - **A repository's own tuning in `.clean-eval/` overrides the bundled defaults.**
   - `risk-model.json` overrides `domain/policy.py`; its contract is in `.claude/skills/risk-heat-map/references/rate.md`.
-  - `review-rules.md` overrides `.claude/skills/pr-review/review-rules.md`.
-  - CI reads both from the PR's base commit, so a PR can't relax the rules it is judged by.
+  - A rule file `rules/<name>.md` replaces the bundled file of its name in
+    `.claude/skills/pr-review/references/rules/` (`policy.md`, then `architecture.md`, `data.md`, `quality.md`,
+    `risk.md`), or adds one; `review.json` selects which rules apply. Keep anything else (such as the skill's CI
+    instructions, `references/ci.md`) out of those folders: every `.md` file in them is read as rules.
+  - CI reads them from the PR's base commit, so a PR can't relax the rules it is judged by.
 - **Don't hand-edit generated output.** `clean_eval readme` writes the README's `## Risk Heat Map` section (between its
   markers) and `docs/risk-heatmap.svg`.
 - **The action never commits.**
@@ -131,7 +138,7 @@ them).
   When you bump the action's `claude-code-version`, re-check with a canary checkout: plant tokens in each kind of file,
   log loads with an `InstructionsLoaded` hook, and confirm nothing loads.
 - **Each `clean_eval` layer must stay in one rules layer.** The `## Layers` table in
-  `.claude/skills/pr-review/review-rules.md` maps them, and `ReviewRulesCoverThisPackage` checks it.
+  `.claude/skills/pr-review/references/rules/policy.md` maps them, and `ReviewRulesCoverThisPackage` checks it.
 
 ## Releases
 

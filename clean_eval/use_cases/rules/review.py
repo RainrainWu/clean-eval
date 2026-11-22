@@ -1,8 +1,12 @@
 """The PR review's rules: text cut to size, redaction of what leaves the runner, a change's risk from the heat map of
-its base, and the review CI derives from what the agent proposed."""
+its base, the rules a review applies, and the review CI derives from what the agent proposed."""
 
+import fnmatch
 import re
-from collections.abc import Collection
+from collections.abc import (
+    Collection,
+    Mapping,
+)
 from typing import Optional
 
 from clean_eval.domain.policy import (
@@ -21,9 +25,12 @@ from clean_eval.domain.review import (
     HostReview,
     InlineComment,
     Review,
+    ReviewComment,
     ReviewRule,
     RiskReport,
+    RuleSelection,
     RulesTable,
+    RuleViolation,
     Secrets,
     StepOutputs,
     Verdict,
@@ -180,22 +187,34 @@ def change_risk(
     )
 
 
-# The PR review CI trusts. The agent only proposes findings: the domain models check their shape, and the rules here
-# hold them to the rules table (an unknown rule ID becomes NEW, a severity below its rule's is raised to it) and redact
-# their text; the verdict, the blocker count and the band are derived, never taken from agent text.
+# The rules a review applies. They come in packs, one Markdown file each: clean-eval's, and the repository's own over
+# them (a pack replaces clean-eval's pack of its name, or adds one), combined into one text with the policy pack first.
+# A rule is a row of a pack's tables, `| ID | severity | min tier | rule |`; a selection keeps only the rows it applies.
 
 RULE_ROW = re.compile(
-    r"^\|\s*([A-Z]{1,4}-\d{2,3})\s*\|\s*(blocker|major|minor)\s*\|\s*(Low|Moderate|Medium|High|Critical)\s*\|", re.M
+    r"^\|\s*([A-Z]{1,4}-\d{2,3})\s*\|\s*(blocker|major|minor)\s*\|\s*(Low|Moderate|Medium|High|Critical)\s*\|(.*)$",
+    re.M,
 )
-# The marker that ends every posted review; the retro reads it back to measure rule usefulness.
-REVIEW_MARKER = re.compile(r"<!--\s*clean-eval:pr-review\s+([^>]*)-->")
+RULE_TITLE = re.compile(r"\s*\*\*(.+?)\*\*")  # a rule's title: the bold lead of its text, `**Dependency rule.**`
+POLICY_PACK = "policy.md"  # the pack read first: the rule fields and the tier policy
+RULE_PACK = re.compile(r"[A-Za-z0-9_-]+\.md")  # a pack's file name
+
+
+def rule_title(
+    text: str,
+) -> str:
+    """A rule's title: the bold lead of its text, without its full stop; empty when it has none."""
+    lead = RULE_TITLE.match(text)
+    return lead.group(1).strip().rstrip(".") if lead else ""
 
 
 def rule_rows(
     text: str,
 ) -> list[ReviewRule]:
     return [
-        ReviewRule.model_validate({"id": m.group(1), "severity": m.group(2), "min_tier": m.group(3)})
+        ReviewRule.model_validate(
+            {"id": m.group(1), "severity": m.group(2), "min_tier": m.group(3), "title": rule_title(m.group(4))}
+        )
         for m in RULE_ROW.finditer(text)
     ]
 
@@ -203,7 +222,7 @@ def rule_rows(
 def parse_rules(
     text: str,
 ) -> RulesTable:
-    """The RulesTable of a rules file (rows of its Markdown tables)."""
+    """The RulesTable of a rules text (rows of its Markdown tables)."""
     return RulesTable(
         rules=rule_rows(text),
     )
@@ -212,10 +231,76 @@ def parse_rules(
 def check_rules(
     text: str,
 ) -> CheckedRules:
-    """The rules of a rules file an unattended retro may keep; a ValidationError when it has no rows or repeats an ID."""
+    """The rules of a rules text an unattended retro may keep; a ValidationError when it has no rows or repeats an ID."""
     return CheckedRules(
         rules=rule_rows(text),
     )
+
+
+def is_rule_pack(
+    name: str,
+) -> bool:
+    """Whether a file named `name` is a rule pack: <letters, digits, - or _>.md."""
+    return RULE_PACK.fullmatch(name) is not None
+
+
+def combine_rule_packs(
+    default_packs: Mapping[str, str],
+    repo_packs: Mapping[str, str],
+) -> str:
+    """The packs' rules as one text ({file name: text} each): the repository's packs replace clean-eval's of the same
+    name, and the policy pack comes first, the rest by name."""
+    packs = {**default_packs, **repo_packs}
+    names = sorted(packs, key=lambda name: (name != POLICY_PACK, name))
+    return "\n".join(packs[name].rstrip("\n") + "\n" for name in names)
+
+
+def duplicate_rule_ids(
+    text: str,
+) -> list[str]:
+    """The rule IDs a rules text defines more than once, sorted."""
+    ids = [row.group(1) for row in RULE_ROW.finditer(text)]
+    return sorted({rule_id for rule_id in ids if ids.count(rule_id) > 1})
+
+
+def applies(
+    rule_id: str,
+    selection: RuleSelection,
+) -> bool:
+    """Whether a review applies the rule `rule_id`: when the selection includes any rule, only if it includes this one
+    (include supersedes exclude); else unless it excludes it."""
+    if selection.include:
+        return any(fnmatch.fnmatchcase(rule_id, name) for name in selection.include)
+    return not any(fnmatch.fnmatchcase(rule_id, name) for name in selection.exclude)
+
+
+def select_rules(
+    text: str,
+    selection: RuleSelection,
+) -> tuple[str, list[str]]:
+    """The rules text with only the rule rows the selection applies (the rest of the text as it is), and notes on the
+    selection: each name that matches no rule, and an exclude list that an include list supersedes."""
+    ids = [row.group(1) for row in RULE_ROW.finditer(text)]
+    kept = []
+    for line in text.splitlines(keepends=True):
+        row = RULE_ROW.match(line)
+        if row is None or applies(row.group(1), selection):
+            kept.append(line)
+    names = [*selection.include, *selection.exclude]
+    notes = ["no rule matches %s" % name for name in names if not any(fnmatch.fnmatchcase(i, name) for i in ids)]
+    if selection.include and selection.exclude:
+        notes.append(
+            "the excluded rules (%s) are ignored: an include list supersedes them" % ", ".join(selection.exclude)
+        )
+    return "".join(kept), notes
+
+
+# The PR review CI trusts. The agent only proposes findings: the domain models check their shape, and the rules here
+# hold them to the rules table (an unknown rule ID becomes NEW, a severity below its rule's is raised to it) and redact
+# their text; the verdict, the blocker count and the band are derived, never taken from agent text.
+
+# The marker that ends every posted review; the retro reads it back to measure rule usefulness.
+REVIEW_MARKER = re.compile(r"<!--\s*clean-eval:pr-review\s+([^>]*)-->")
 
 
 def finalize_review(
@@ -262,6 +347,41 @@ def finalize_review(
     )
 
 
+def review_comment(
+    review: Review,
+    risk: RiskReport,
+    rules: RulesTable,
+    notes: str,
+) -> ReviewComment:
+    """What the comment on the change says: the verdict and risk of the `review`, how many `rules` its band reaches (min
+    tier up to it), the rules its findings violate (each with its findings, the most severe first, then by ID), the
+    findings no rule covers, and the reviewer's `notes`."""
+    known, cited = rules.by_id, {}
+    for finding in review.findings:
+        if finding.rule != "NEW":
+            cited.setdefault(finding.rule, []).append(finding)
+    violations = [
+        RuleViolation(
+            rule=rule,
+            title=known[rule].title if rule in known else "",
+            severity=max((f.severity for f in findings), key=lambda severity: severity.rank),
+            findings=findings,
+        )
+        for rule, findings in cited.items()
+    ]
+    return ReviewComment(
+        verdict=review.verdict,
+        max_tier=review.max_tier,
+        max_score=review.max_score,
+        modules=risk.modules,
+        rules_checked=sum(rule.min_tier.rank <= review.max_tier.rank for rule in known.values()),
+        rules_total=len(known),
+        violations=sorted(violations, key=lambda violation: (-violation.severity.rank, violation.rule)),
+        uncovered=[f for f in review.findings if f.rule == "NEW"],
+        notes=notes,
+    )
+
+
 def review_outputs(
     review: Review,
 ) -> StepOutputs:
@@ -289,29 +409,22 @@ def marker(
 
 def compose_review(
     review: Review,
-    report: str,
+    comment: str,
     on_diff: Optional[dict[str, set[int]]] = None,
 ) -> tuple[str, bool, list[InlineComment]]:
-    """(body, whether it requests changes, inline comments) of the review to post. Only findings on lines in the diff
-    (`on_diff`: {path: lines}, None when unknown) are attached inline, since a code host takes inline comments only
-    there; the rest are listed in the body, which ends with the clean-eval marker."""
-    comments, detached = [], []
-    for f in review.findings:
-        if not (f.file and f.line):
-            continue
-        if on_diff is None or f.line in on_diff.get(f.file, ()):
-            comments.append(
-                InlineComment(
-                    path=f.file,
-                    line=f.line,
-                    body="[%s][%s] %s" % (f.rule, f.severity, f.summary) + ("\n\n**Fix:** %s" % f.fix if f.fix else ""),
-                )
-            )
-        else:
-            detached.append("- [%s][%s] `%s:%s`: %s" % (f.rule, f.severity, f.file, f.line, f.summary))
-    extra = ("\n\n**Not attached inline** (line is outside the diff):\n" + "\n".join(detached)) if detached else ""
-    body = "%s%s\n\n%s" % (report.strip(), extra, marker(review))
-    return body, review.verdict == Verdict.REQUEST_CHANGES, comments
+    """(body, whether it requests changes, inline comments) of the review to post: the body is the review's `comment`
+    (which lists every finding) and ends with the clean-eval marker. Only findings on lines in the diff (`on_diff`:
+    {path: lines}, None when unknown) are attached inline too, since a code host takes inline comments only there."""
+    comments = [
+        InlineComment(
+            path=f.file,
+            line=f.line,
+            body="[%s][%s] %s" % (f.rule, f.severity, f.summary) + ("\n\n**Fix:** %s" % f.fix if f.fix else ""),
+        )
+        for f in review.findings
+        if f.file and f.line and (on_diff is None or f.line in on_diff.get(f.file, ()))
+    ]
+    return "%s\n\n%s" % (comment.strip(), marker(review)), review.verdict == Verdict.REQUEST_CHANGES, comments
 
 
 def stale_reviews(

@@ -61,13 +61,13 @@ inputs:
     description: "retro: period end YYYY-MM-DD (default: today)"
     required: false
   apply:
-    description: "retro: let the agent edit .clean-eval/risk-model.json and .clean-eval/review-rules.md (true|false). An edit is kept only if it is well-formed, changes only tunable keys and doesn't lower AUC on replay. The action never commits; follow with a create-PR step."
+    description: "retro: let the agent edit .clean-eval/risk-model.json and the rule files in .clean-eval/rules/ (true|false). A model edit is kept only if it is well-formed, changes only tunable keys and doesn't lower AUC on replay; a rules edit, only if the rules still parse into unique rule IDs. The action never commits; follow with a create-PR step."
     required: false
     default: "false"
 
   # --- risk-heat-map
   readme:
-    description: "risk-heat-map: README path, relative to the repo root"
+    description: "risk-heat-map: README path, relative to the repo root. pr-review: the README whose published heat map, at the PR's base, it requires"
     required: false
     default: README.md
   diagram:

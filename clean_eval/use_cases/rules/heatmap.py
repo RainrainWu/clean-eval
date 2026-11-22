@@ -386,14 +386,22 @@ def fingerprint(
     return hashlib.sha1(json.dumps(shown).encode()).hexdigest()[:12]
 
 
+def heat_map_block(
+    readme_text: Optional[str],
+) -> Optional[str]:
+    """The heat map a README publishes: its block, markers included, or None when it has none."""
+    start, end = MARKERS
+    if not readme_text or start not in readme_text or end not in readme_text.split(start, 1)[1]:
+        return None
+    return start + readme_text.split(start, 1)[1].split(end, 1)[0] + end
+
+
 def block_fingerprint(
     readme_text: Optional[str],
 ) -> Optional[str]:
     """The fingerprint inside the README's heat-map block, or None."""
-    if not readme_text or MARKERS[0] not in readme_text:
-        return None
-    block = readme_text.split(MARKERS[0], 1)[1].split(MARKERS[1], 1)[0]
-    m = FINGERPRINT.search(block)
+    block = heat_map_block(readme_text)
+    m = FINGERPRINT.search(block) if block else None
     return m.group(1) if m else None
 
 
