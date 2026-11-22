@@ -38,9 +38,9 @@ The package is in four layers. Imports point inward only: domain ‚Üê use_cases ‚
 | Layer | Holds |
 |---|---|
 | `domain/` | pydantic data models, and the enumerations (`StrEnum`) of their closed value sets; every invariant is a validator |
-| `use_cases/` | `interfaces.py` (the abstract classes of every external utility), plus module-level functions that take implementations of them: `heatmap.py`, `review.py`, `evaluation.py` and the shared `store.py`; `rules/` holds the pure business rules, by the same features plus `analysis.py` |
+| `use_cases/` | `interfaces.py` (the abstract classes of every external utility), plus module-level functions that take implementations of them: `heatmap.py`, `review.py`, `evaluation.py` and the shared `store.py` and `ci.py`; `rules/` holds the pure business rules, by the same features plus `analysis.py`. Business logic only: no external tool's formats or conventions |
 | `adaptor/` | the presenters (SVG treemap, Markdown summary) |
-| `external/` | one gateway per external dependency, the click command line `cli.py` (the entry point of every utility, and the composition root) and the CI agent's guard `agent_guard.py` |
+| `external/` | one gateway per external dependency (git, GitHub, GitHub Actions, Claude Code, the coverage report, files, the environment and clock), holding all there is to know about it; the click command line `cli.py` (the entry point of every utility, and the composition root) and the CI agent's guard `agent_guard.py` |
 
 Beside the layers, `settings.py` holds `Settings` (pydantic-settings): everything a run reads from its environment, in
 groups of what belongs together (`run`, `review`, `evaluation`, `heatmap`, `agent`, `github`, `credentials`,
@@ -76,6 +76,11 @@ them).
 
 ## Rules that hold everywhere
 
+- **Knowledge of an external tool lives in its gateway.** The domain and the use cases speak only in business terms:
+  no command, field name, format, convention, limit or error code of git, GitHub, GitHub Actions, Claude Code or a
+  coverage report. A gateway maps what its tool prints into domain models, and the domain's models onto what its tool
+  takes (a `ReviewPost`'s `request_changes` becomes GitHub's `event`). The action's own contract (its inputs, its
+  outputs, `claude.log`) is the product's, not a tool's.
 - **The rated repository's code is data.** Read it only as text (`ast`, regexes, git objects); never import, install or
   run it.
 - **Every Python call runs isolated, with `python -I`.** This applies in `action.yml`, the skills and the docs, so a module

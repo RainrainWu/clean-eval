@@ -10,7 +10,6 @@ import json
 import shlex
 import sys
 from collections.abc import Callable
-from enum import StrEnum
 from typing import (
     IO,
     Any,
@@ -44,9 +43,14 @@ from clean_eval.domain.rating import (
     RatingCache,
     ReadmeAction,
 )
-from clean_eval.domain.review import RunFolders
+from clean_eval.domain.review import (
+    RunFolders,
+    Secrets,
+    Skill,
+)
 from clean_eval.external import agent_guard
 from clean_eval.external.claude_code import ClaudeCodeGateway
+from clean_eval.external.cobertura import CoberturaGateway
 from clean_eval.external.environment import (
     ClockGateway,
     EnvironmentGateway,
@@ -54,6 +58,7 @@ from clean_eval.external.environment import (
 from clean_eval.external.filesystem import FileSystemGateway
 from clean_eval.external.git import GitGateway
 from clean_eval.external.github import GitHubGateway
+from clean_eval.external.github_actions import GitHubActionsGateway
 from clean_eval.settings import (
     DIAGRAM_PATH,
     Settings,
@@ -76,10 +81,12 @@ from clean_eval.use_cases.heatmap import (
 from clean_eval.use_cases.interfaces import (
     Agent,
     CodeHost,
+    CoverageReport,
     DiagramPresenter,
     Git,
     ReportPresenter,
     RunLog,
+    Runner,
 )
 from clean_eval.use_cases.review import (
     assess_change,
@@ -94,21 +101,19 @@ from clean_eval.use_cases.rules.evaluation import (
     sensitivity,
 )
 from clean_eval.use_cases.rules.review import redact as redact_text
-from clean_eval.use_cases.rules.review import secret_values
 from clean_eval.use_cases.store import (
     load_heatmap,
     load_judgement,
     load_policy,
     read_json,
     save_heatmap,
-    write_step_outputs,
 )
 
 # The stateless gateways, shared; git is per repository, gh per use.
 FS, ENV, CLOCK = FileSystemGateway(), EnvironmentGateway(), ClockGateway()
 CHECKOUT = FS.parent(FS.parent(FS.parent(FS.real_path(__file__))))  # the clean-eval checkout: package and skills
 DEFAULT_RULES = FS.join(CHECKOUT, ".claude", "skills", "pr-review", "review-rules.md")
-SKILLS_DIR = FS.join(CHECKOUT, ".claude", "skills")  # what a CI run copies into the agent's context
+SKILLS_DIR = FS.join(CHECKOUT, ".claude", "skills")  # the skills the CI agent follows
 PACKAGE_DIR = FS.join(CHECKOUT, "clean_eval")
 HELP = """Rate how risky each sub-module of a repository is to change, put the heat map into its README, and assess and
 review changes by that risk.
@@ -121,14 +126,6 @@ reports an ::error:: and exits with status 1.
 
 Its inputs are environment variables, which the run reads once into its settings (clean_eval/settings.py): action.yml
 sets the CE_* ones from the action's inputs, and the runner sets the rest. An empty variable counts as unset."""
-
-
-class Skill(StrEnum):
-    """The skills a CI run runs: what `action` and `finalize --skill` take."""
-
-    PR_REVIEW = "pr-review"
-    EVAL = "eval"
-    RISK_HEAT_MAP = "risk-heat-map"
 
 
 # The gateways and presenters the commands hand the use cases.
@@ -146,6 +143,12 @@ def github() -> CodeHost:
     return GitHubGateway()
 
 
+def coverage_report() -> CoverageReport:
+    return CoberturaGateway(
+        FS,
+    )
+
+
 def diagram_presenter() -> DiagramPresenter:
     return SvgDiagramPresenter()
 
@@ -158,13 +161,24 @@ def today() -> str:
     return CLOCK.today()
 
 
-def secrets() -> tuple[str, ...]:
-    """The values to redact: the secret-looking variables of this process's environment."""
-    return secret_values(ENV.variables())
+def secrets() -> Secrets:
+    """What to redact: the secrets of this process's environment."""
+    return ENV.secrets()
 
 
 def default_rules() -> str:
     return FS.read_text(DEFAULT_RULES)
+
+
+def runner_for(
+    settings: Settings,
+) -> Runner:
+    """GitHub Actions, the runner of a CI run: its step outputs and job summary go to the files the settings name."""
+    return GitHubActionsGateway(
+        FS,
+        settings.github.step_outputs,
+        settings.github.step_summary,
+    )
 
 
 def agent_for(
@@ -172,7 +186,8 @@ def agent_for(
     folders: RunFolders,
 ) -> Agent:
     """Claude Code for a CI run, sandboxed: its PreToolUse hook is this checkout's guard, run by this Python, and a
-    failing hook denies the call (`|| exit 2`); npm installs it from the run's output folder, away from the checkout."""
+    failing hook denies the call (`|| exit 2`); npm installs it from the run's output folder, away from the checkout;
+    and it follows this checkout's skills."""
     guard = "%s -I %s guard || exit 2" % (shlex.quote(sys.executable), shlex.quote(PACKAGE_DIR))
     return ClaudeCodeGateway(
         FS,
@@ -180,6 +195,7 @@ def agent_for(
         ENV.variables(),
         guard,
         folders.out,
+        SKILLS_DIR,
     )
 
 
@@ -276,53 +292,91 @@ def print_or_write(
         )
 
 
+def run_risk_heat_map(
+    settings: Settings,
+    folders: RunFolders,
+    agent: Agent,
+    runner: Runner,
+    log: RunLog,
+) -> None:
+    """The risk heat map's CI run in `folders`, with the gateways and presenters it takes."""
+    run_heatmap_action(
+        git(folders.workspace),
+        FS,
+        coverage_report(),
+        CLOCK,
+        ENV,
+        agent,
+        diagram_presenter(),
+        report_presenter(),
+        runner,
+        log,
+        folders,
+        settings,
+    )
+
+
+def run_pr_review(
+    settings: Settings,
+    folders: RunFolders,
+    agent: Agent,
+    runner: Runner,
+    log: RunLog,
+) -> None:
+    """The PR review's CI run in `folders`, with the gateways it takes."""
+    run_review_action(
+        github(),
+        git(repository_root(folders.workspace)),
+        FS,
+        CLOCK,
+        ENV,
+        agent,
+        runner,
+        log,
+        folders,
+        settings,
+        default_rules(),
+    )
+
+
+def run_eval(
+    settings: Settings,
+    folders: RunFolders,
+    agent: Agent,
+    runner: Runner,
+    log: RunLog,
+) -> None:
+    """The eval's CI run in `folders`, with the gateways it takes."""
+    run_eval_action(
+        git(repository_root(folders.workspace)),
+        FS,
+        CLOCK,
+        ENV,
+        github(),
+        agent,
+        runner,
+        log,
+        folders,
+        settings,
+        default_rules(),
+    )
+
+
 def run_skill(
     skill: Skill,
     settings: Settings,
     folders: RunFolders,
     agent: Agent,
+    runner: Runner,
     log: RunLog,
 ) -> None:
-    """Run `skill`'s CI run in `folders`, with the gateways and presenters it takes."""
+    """Run `skill`'s CI run in `folders`."""
     if skill == Skill.RISK_HEAT_MAP:
-        run_heatmap_action(
-            git(folders.workspace),
-            FS,
-            CLOCK,
-            ENV,
-            agent,
-            diagram_presenter(),
-            report_presenter(),
-            log,
-            folders,
-            settings,
-        )
+        run_risk_heat_map(settings, folders, agent, runner, log)
     elif skill == Skill.PR_REVIEW:
-        run_review_action(
-            github(),
-            git(repository_root(folders.workspace)),
-            FS,
-            CLOCK,
-            ENV,
-            agent,
-            log,
-            folders,
-            settings,
-            default_rules(),
-        )
+        run_pr_review(settings, folders, agent, runner, log)
     else:
-        run_eval_action(
-            git(repository_root(folders.workspace)),
-            FS,
-            CLOCK,
-            ENV,
-            github(),
-            agent,
-            log,
-            folders,
-            settings,
-            default_rules(),
-        )
+        run_eval(settings, folders, agent, runner, log)
 
 
 # The command line.
@@ -431,7 +485,9 @@ def rate(
     if rev:
         heatmap = rate_revision(git(repo), CLOCK, rev, policy, RatingCache(), depth, max_modules)
     else:
-        heatmap = rate_working_tree(git(repo), FS, CLOCK, policy, depth=depth, max_modules=max_modules)
+        heatmap = rate_working_tree(
+            git(repo), FS, coverage_report(), CLOCK, policy, depth=depth, max_modules=max_modules
+        )
     heatmap.notes.append("Policy: %s" % source)
     save_heatmap(FS, heatmap, FS.join(out, "data.json"))
     print(
@@ -616,10 +672,11 @@ def history(
             )
         result = collect_history(
             git(root),
+            github(),
             CLOCK,
             policy,
             period(since, until, defect_window_days),
-            host=github() if with_gh else None,
+            with_reviews=with_gh,
             branch=branch,
             model_source=source,
             reviewer_logins=list(reviewer_logins) or None,
@@ -678,13 +735,14 @@ def prepare_eval_context(
         git(root),
         FS,
         CLOCK,
+        github(),
         context_dir,
         root,
         policy,
         source,
         period(since, until),
         default_rules(),
-        host=github() if with_gh else None,
+        with_reviews=with_gh,
         branch=branch,
     )
     print(context.model_dump_json())
@@ -733,7 +791,10 @@ def finalize(
             "::warning::clean-eval redacted %d secret-looking value(s) from agent output" % result.redactions,
             file=sys.stderr,
         )
-    write_step_outputs(FS, gh_output, outputs)
+    GitHubActionsGateway(
+        FS,
+        gh_output,
+    ).set_outputs(outputs)
     print(outputs.model_dump_json())
 
 
@@ -808,7 +869,8 @@ def action(
     failure = None
     try:
         settings = run_settings()
-        folders = start_run(git(settings.run.workspace), FS, settings, SKILLS_DIR)
+        runner = runner_for(settings)
+        folders = start_run(git(settings.run.workspace), FS, runner, settings)
         run_skill(
             Skill(
                 skill,
@@ -816,6 +878,7 @@ def action(
             settings,
             folders,
             agent_for(settings, folders),
+            runner,
             log,
         )
     except HeatmapError as error:

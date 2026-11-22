@@ -2,10 +2,20 @@
 
 The only code that touches anything outside the process.
 
-**Gateways:** one public `*Gateway` class per external dependency.
-- **Modules:** `git.py` (the git CLI), `github.py` (the gh CLI), `claude_code.py` (the CI agent: the claude CLI, run
-  sandboxed, its npm install, and the job's OIDC token for keyless sign-in), `filesystem.py`, and `environment.py`
-  (environment variables, and the clock).
+**Gateways:** one public `*Gateway` class per external dependency, which holds everything about it, so the use cases
+know none of it.
+- **Modules:**
+  - `git.py`: the git CLI, unified diffs read into `FileDiff`s, and the ids git gives contents;
+  - `github.py`: the gh CLI and GitHub's ways: its JSON's field names, review events and states, the side of the diff
+    comments go on, what to retry with when it refuses a review, a PR's head ref, the subjects of its merge and squash
+    commits, and its app logins;
+  - `github_actions.py`: the runner's step outputs and job summary;
+  - `claude_code.py`: the CI agent: the claude CLI, run sandboxed, its npm install, its prompt and the skills it
+    follows, and the job's OIDC token for keyless sign-in;
+  - `cobertura.py`: the coverage report (coverage.xml);
+  - `filesystem.py`;
+  - `environment.py`: environment variables, what a secret looks like in them and in text (secret-looking names,
+    well-known credential formats), and the clock.
 - **One interface each.** A gateway implements exactly one interface from `clean_eval/use_cases/interfaces.py` and
   exposes nothing beyond it.
 - **Failures** map to the domain's errors: `HeatmapError`, or `RemoteError` with `kind` `not_found` or `error`.

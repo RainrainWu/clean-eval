@@ -103,8 +103,8 @@ class TestCollectHistory:
         assert any(change.startswith("unverified_mix.links") for change in changes)
 
 
-class TestCollectHistoryWithACodeHost:
-    """With a CodeHost, collecting needs its auth first, and then fetches each PR's reviews."""
+class TestCollectHistoryWithTheReviews:
+    """With the reviews, collecting needs the code host's auth first, and then fetches each PR's reviews."""
 
     @pytest.mark.parametrize(
         ("history", "host"),
@@ -128,12 +128,12 @@ class TestCollectHistoryWithACodeHost:
         period,
         host,
     ):
-        rules = collect_history(git, clock, policy, period, host).rules
+        rules = collect_history(git, host, clock, policy, period, with_reviews=True).rules
         assert rules is not None
         assert sorted(rules.prs_fetch_failed) == [1, 2]
         assert not rules.reliable
         assert rules.prs_reviewed == 0
-        assert evaluation.rules_warning(rules) == "gh review fetch failed for 2/2 PRs (100%) - rule metrics unreliable"
+        assert evaluation.rules_warning(rules) == "review fetch failed for 2/2 PRs (100%) - rule metrics unreliable"
         assert host.review_threads.call_args_list == [call(1), call(2)]
 
     @pytest.mark.parametrize(
@@ -156,7 +156,7 @@ class TestCollectHistoryWithACodeHost:
         host,
     ):
         with pytest.raises(HeatmapError, match="not logged in"):
-            collect_history(git, clock, policy, period, host)
+            collect_history(git, host, clock, policy, period, with_reviews=True)
         git.first_parent_log.assert_not_called()  # nothing is read before the auth is checked
 
 
@@ -221,12 +221,13 @@ class TestRunEvalAction:
         env,
         host,
         agent,
+        runner,
         run_log,
         settings,
         run_folders,
     ):
         with pytest.raises(RunFailed, match=r"the eval's period: since \(2026-02-01\) is after until"):
-            run_eval_action(git, fs, clock, env, host, agent, run_log, run_folders, settings, "")
+            run_eval_action(git, fs, clock, env, host, agent, runner, run_log, run_folders, settings, "")
         host.require_auth.assert_not_called()
 
     @pytest.mark.parametrize("environ", [{"CE_APPLY": "true"}], indirect=True)
@@ -239,10 +240,11 @@ class TestRunEvalAction:
         env,
         host,
         agent,
+        runner,
         run_log,
         settings,
         run_folders,
     ):
         with pytest.raises(RunFailed, match="symlink"):
-            run_eval_action(git, fs, clock, env, host, agent, run_log, run_folders, settings, "")
+            run_eval_action(git, fs, clock, env, host, agent, runner, run_log, run_folders, settings, "")
         agent.run.assert_not_called()

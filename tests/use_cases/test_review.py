@@ -1,7 +1,5 @@
-"""The PR review's use cases (use_cases/review.py), with their dependencies mocked: a change's risk, and the context
-the CI reviewer reads."""
-
-from unittest.mock import call
+"""The PR review's use cases (use_cases/review.py), with their dependencies mocked: a change's risk, the context the
+CI reviewer reads, and a CI run without a PR to review."""
 
 import pytest
 from pytest_lazy_fixtures import lf
@@ -72,17 +70,8 @@ class TestWriteSplitDiff:
             assert (e.module, e.truncated) == ("src/a", False)
         counts = {e.file: (e.added, e.removed) for e in index}
         assert counts == {"src/a/keep.py": (1, 1), "src/a/old.py": (0, 30), 'src/a/we"ird name.py': (1, 0)}
+        assert index[1].hunks == []  # old.py is removed: none of its lines is left to comment on
         assert DiffIndex.model_validate_json(memory_fs.read_text("/ctx/diff/index.json")).root == index
-
-    @pytest.mark.parametrize("git", [{"diff.side_effect": lf("rename_diffs")}], indirect=True)
-    def test_a_diff_that_does_not_split_per_file_falls_back_to_one_diff_per_path(
-        self,
-        git,
-        fs,
-    ):
-        index = write_split_diff(git, fs, "/ctx", "b", "h", ["new.py", "old.py"], {})
-        assert [(e.file, e.added, e.removed) for e in index] == [("new.py", 1, 0), ("old.py", 0, 1)]
-        assert git.diff.call_args_list == [call("b", "h"), call("b", "h", "new.py"), call("b", "h", "old.py")]
 
 
 class TestPolicyAt:
@@ -189,11 +178,12 @@ class TestRunReviewAction:
         clock,
         env,
         agent,
+        runner,
         run_log,
         settings,
         run_folders,
     ):
         with pytest.raises(RunFailed, match="needs a PR number"):
-            run_review_action(host, git, fs, clock, env, agent, run_log, run_folders, settings, "")
+            run_review_action(host, git, fs, clock, env, agent, runner, run_log, run_folders, settings, "")
         host.pull_request.assert_not_called()
         agent.run.assert_not_called()

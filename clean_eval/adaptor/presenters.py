@@ -25,7 +25,8 @@ from clean_eval.use_cases.rules.heatmap import (
 
 # How bands look: the status palette, emoji and glyphs shared by the SVG and the Markdown summary.
 
-# band -> (colour, emoji, glyph). Tiles are drawn translucent: a tint of the colour behind theme-coloured text, with a solid border.
+# band -> (colour, emoji, glyph). Tiles are drawn translucent: a tint of the colour behind theme-coloured text, with a
+# solid border.
 BAND_STYLE = frozendict(
     {
         Band.LOW: ("#0ca30c", "🟢", "✓"),
@@ -50,8 +51,8 @@ def worst_aspect_ratio[T](
     row: list[tuple[T, float]],
     side: float,
 ) -> float:
-    """The worst (largest) aspect ratio of `row`'s tiles, [(payload, area)], laid along a side of length `side`: squarify
-    adds a tile to a row only while this doesn't get worse."""
+    """The worst (largest) aspect ratio of `row`'s tiles, [(payload, area)], laid along a side of length `side`:
+    squarify adds a tile to a row only while this doesn't get worse."""
     s, mx, mn = sum(a for _, a in row), max(a for _, a in row), min(a for _, a in row)
     return max(side * side * mx / (s * s), s * s / (side * side * mn))
 

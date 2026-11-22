@@ -8,7 +8,10 @@ import pytest
 from pytest_lazy_fixtures import lf
 
 from clean_eval.domain.errors import HeatmapError
-from clean_eval.external.git import GitGateway
+from clean_eval.external.git import (
+    GitGateway,
+    split_patch,
+)
 from tests.helpers import Dates
 from tests.use_cases.fakes import MemoryGit
 
@@ -94,6 +97,38 @@ class TestHistoryReads:
         assert "+2" in git.commit_patch(shas[1], ["b.py"])
 
 
+class TestSplitPatch:
+    """A combined `git diff`, split into one patch per file."""
+
+    @pytest.mark.parametrize(
+        ("diff", "patches"),
+        [(lf("diff_of_x_and_y"), [lf("patch_of_x"), lf("patch_of_y")]), ("", [])],
+        ids=["two files", "no change"],
+    )
+    def test_one_patch_per_file(
+        self,
+        diff,
+        patches,
+    ):
+        assert split_patch(diff) == patches
+
+
+@pytest.mark.parametrize("history", [lf("rename_history")], indirect=True)
+class TestFileDiffs:
+    """A diff that git doesn't show one section per path of (a rename shows as one for two) is taken path by path."""
+
+    def test_a_rename_is_diffed_path_by_path(
+        self,
+        git,
+        shas,
+    ):
+        diffs = git.file_diffs(shas[0], shas[1], ["new.py", "old.py"])
+        assert [(diff.path, diff.added, diff.removed, diff.hunks) for diff in diffs] == [
+            ("new.py", 1, 0, [(1, 1)]),
+            ("old.py", 0, 1, []),
+        ]
+
+
 class TestGitGateway:
     """The gateway holds every git command line: callers ask it for operations."""
 
@@ -170,12 +205,23 @@ class TestMemoryGitAgreesWithTheGateway:
         shas,
     ):
         first, second = shas
-        assert git.diff_files(first, second) == ["docs/n.md", "src/a.py", "src/b.py"]
-        patch = git.diff(first, second, "src/a.py")
-        assert patch.startswith("diff --git a/src/a.py b/src/a.py\n")
-        assert "\n-a\n+a2\n" in patch
-        assert git.diff(first, second).count("diff --git ") == 3
+        changed = git.diff_files(first, second)
+        assert changed == ["docs/n.md", "src/a.py", "src/b.py"]
+        diffs = git.file_diffs(first, second, changed)
+        assert [(diff.path, diff.added, diff.removed, diff.hunks) for diff in diffs] == [
+            ("docs/n.md", 0, 1, []),  # removed: none of its lines is left
+            ("src/a.py", 1, 1, [(1, 1)]),
+            ("src/b.py", 1, 0, [(1, 1)]),
+        ]
+        assert diffs[1].patch.startswith("diff --git a/src/a.py b/src/a.py\n")
+        assert "\n-a\n+a2\n" in diffs[1].patch
         assert "+b" in git.commit_patch(second, ["src/b.py"])
+
+    def test_the_ids_of_contents_are_gits(
+        self,
+        git,
+    ):
+        assert git.blob_id("hi\n") == "45b983be36b73c0788dc9cbcb76cbb80fc7bb057"  # `git hash-object` of "hi\n"
 
     def test_history(
         self,

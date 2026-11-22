@@ -256,7 +256,8 @@ def test_files_to_modules(
 # a file once.
 
 TODO = re.compile(r"\b(TODO|FIXME|HACK|XXX)\b")
-# kind -> (call pattern, pattern the file must also match). The points per kind are business policy (Policy.effect_points).
+# kind -> (call pattern, pattern the file must also match). The points per kind are business policy
+# (Policy.effect_points).
 WRITE_CALLS = frozendict(
     {
         "db_write": (

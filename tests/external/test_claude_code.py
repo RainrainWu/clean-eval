@@ -26,10 +26,11 @@ from clean_eval.external.claude_code import (
     github_oidc_token,
 )
 from clean_eval.settings import CLAUDE_CODE_VERSION
+from tests.helpers import Contents
 
 
 class TestRequire:
-    """Claude Code is installed with npm, away from the checkout, only when it is missing; in CI it needs credentials."""
+    """Claude Code is installed with npm, away from the checkout, only when missing; in CI it needs credentials."""
 
     def test_an_installed_claude_is_used_as_it_is(
         self,
@@ -139,6 +140,25 @@ class TestRequireWithFederation:
         oidc_tokens.assert_not_called()  # the job's token is fetched only when the agent runs
 
 
+@pytest.mark.parametrize(
+    "environ",
+    [lfc(lambda variables: {**variables, "CE_EXTRA_PROMPT": "Be brief."}, lf("agent_variables"))],
+    indirect=True,
+)
+class TestExtraPrompt:
+    """The settings' extra prompt ends the task's prompt."""
+
+    def test_the_extra_prompt_ends_the_prompt(
+        self,
+        claude_code,
+        claude_runs,
+        run_folders,
+        agent_task,
+    ):
+        claude_code.run(agent_task, run_folders, [])
+        assert claude_runs.call_args.args[0][2].endswith("Write %s/result.json. Be brief." % run_folders.agent)
+
+
 @pytest.mark.parametrize("environ", [lf("agent_variables")], indirect=True)
 class TestRun:
     """The agent runs sandboxed: restricted, with the settings, the hook, the tools and the environment it may have."""
@@ -147,8 +167,9 @@ class TestRun:
         self,
         claude_code,
         run_folders,
+        agent_task,
     ):
-        claude_code.run("Review it.", run_folders, [])
+        claude_code.run(agent_task, run_folders, [])
         settings = json.loads(
             Path(
                 run_folders.context,
@@ -172,11 +193,12 @@ class TestRun:
         claude_code,
         claude_runs,
         run_folders,
+        agent_task,
     ):
         tuning = run_folders.workspace + "/.clean-eval"
-        claude_code.run("Review it.", run_folders, [tuning])
+        claude_code.run(agent_task, run_folders, [tuning])
         command = claude_runs.call_args.args[0]
-        assert command[:3] == ["claude", "-p", "Review it."]
+        assert command[:2] == ["claude", "-p"]
         for flag in ("--restricted", "--strict-mcp-config", "--settings", "--append-system-prompt", "--max-turns"):
             assert flag in command
         assert command[command.index("--add-dir") + 1 : command.index("--allowedTools")] == [
@@ -194,13 +216,51 @@ class TestRun:
         assert claude_runs.call_args.kwargs["stdin"] == subprocess.DEVNULL
         assert claude_runs.call_args.kwargs["cwd"] == run_folders.workspace
 
+    def test_it_follows_the_skill_from_the_context_on_the_task_it_is_given(
+        self,
+        claude_code,
+        claude_runs,
+        run_folders,
+        agent_task,
+    ):
+        claude_code.run(agent_task, run_folders, [])
+        context, agent = run_folders.context, run_folders.agent
+        assert claude_runs.call_args.args[0][2] == (
+            "Review it. Read %s/skills/pr-review/SKILL.md and follow its 'CI mode' section. Precomputed context: "
+            "%s/context.json. Write %s/result.json." % (context, context, agent)
+        )
+        assert (
+            Path(
+                context,
+            )
+            / "skills"
+            / "pr-review"
+            / "SKILL.md"
+        ).read_text() == "# PR review\n"
+
+    def test_a_token_a_crashed_run_left_is_removed_before_it_runs(
+        self,
+        claude_code,
+        run_folders,
+        agent_task,
+    ):
+        Contents.write(run_folders.out, {"identity/token": "stale"})
+        claude_code.run(agent_task, run_folders, [])
+        assert not (
+            Path(
+                run_folders.out,
+            )
+            / "identity"
+        ).exists()
+
     def test_its_environment_keeps_only_what_it_needs(
         self,
         claude_code,
         claude_runs,
         run_folders,
+        agent_task,
     ):
-        claude_code.run("Review it.", run_folders, [])
+        claude_code.run(agent_task, run_folders, [])
         environment = claude_runs.call_args.kwargs["env"]
         assert set(environment) == {
             "PATH",
@@ -219,8 +279,9 @@ class TestRun:
         claude_code,
         claude_runs,
         run_folders,
+        agent_task,
     ):
-        assert claude_code.run("Review it.", run_folders, []) == AgentRun(
+        assert claude_code.run(agent_task, run_folders, []) == AgentRun(
             status=3,
             transcript="reviewed, then failed",
         )
@@ -239,8 +300,9 @@ class TestRun:
         self,
         claude_code,
         run_folders,
+        agent_task,
     ):
-        run = claude_code.run("Review it.", run_folders, [])
+        run = claude_code.run(agent_task, run_folders, [])
         assert run.status == 127
         assert "could not run claude" in run.transcript
 
@@ -258,8 +320,9 @@ class TestRunAsTheSettingsSay:
         claude_code,
         claude_runs,
         run_folders,
+        agent_task,
     ):
-        claude_code.run("Review it.", run_folders, [])
+        claude_code.run(agent_task, run_folders, [])
         command = claude_runs.call_args.args[0]
         assert command[command.index("--model") + 1] == "claude-opus-5-5"
         assert command[command.index("--max-turns") + 1] == "9"
@@ -275,8 +338,9 @@ class TestRunWithFederation:
         claude_code,
         claude_runs,
         run_folders,
+        agent_task,
     ):
-        assert claude_code.run("Review it.", run_folders, []) == AgentRun(
+        assert claude_code.run(agent_task, run_folders, []) == AgentRun(
             status=0,
             transcript="done",
         )
@@ -302,8 +366,9 @@ class TestRunWithFederation:
         claude_runs,
         run_folders,
         federated_job,
+        agent_task,
     ):
-        claude_code.run("Review it.", run_folders, [])
+        claude_code.run(agent_task, run_folders, [])
         environment = claude_runs.call_args.kwargs["env"]
         assert environment["ANTHROPIC_FEDERATION_RULE_ID"] == federated_job["ANTHROPIC_FEDERATION_RULE_ID"]
         assert environment["ANTHROPIC_ORGANIZATION_ID"] == federated_job["ANTHROPIC_ORGANIZATION_ID"]
@@ -317,8 +382,9 @@ class TestRunWithFederation:
         oidc_tokens,
         run_folders,
         token_request,
+        agent_task,
     ):
-        claude_code.run("Review it.", run_folders, [])
+        claude_code.run(agent_task, run_folders, [])
         request = oidc_tokens.call_args.args[0]
         assert (
             request.full_url
@@ -332,8 +398,9 @@ class TestRunWithFederation:
         claude_code,
         claude_runs,
         run_folders,
+        agent_task,
     ):
-        assert claude_code.run("Review it.", run_folders, []) == AgentRun(
+        assert claude_code.run(agent_task, run_folders, []) == AgentRun(
             status=0,
             transcript="reviewed",
         )
@@ -358,8 +425,9 @@ class TestRunWithFederation:
         claude_code,
         claude_runs,
         run_folders,
+        agent_task,
     ):
-        assert claude_code.run("Review it.", run_folders, []) == AgentRun(
+        assert claude_code.run(agent_task, run_folders, []) == AgentRun(
             status=0,
             transcript="done",
         )
@@ -381,8 +449,9 @@ class TestRunWithFederation:
         claude_code,
         claude_runs,
         run_folders,
+        agent_task,
     ):
-        run = claude_code.run("Review it.", run_folders, [])
+        run = claude_code.run(agent_task, run_folders, [])
         assert run.status == 1
         assert run.transcript.startswith("could not sign in to Claude: could not get the job's OIDC token")
         claude_runs.assert_not_called()
@@ -399,9 +468,10 @@ class TestRunWithFederation:
         claude_runs,
         oidc_tokens,
         run_folders,
+        agent_task,
     ):
         with pytest.raises(HeatmapError, match="an output folder outside the checkout"):
-            claude_code.run("Review it.", run_folders, [])
+            claude_code.run(agent_task, run_folders, [])
         oidc_tokens.assert_not_called()
         claude_runs.assert_not_called()
 
@@ -418,8 +488,9 @@ class TestRunWithFederation:
         self,
         claude_code,
         run_folders,
+        agent_task,
     ):
-        assert claude_code.run("Review it.", run_folders, []).status == 127
+        assert claude_code.run(agent_task, run_folders, []).status == 127
         assert not Path(
             run_folders.out,
             "identity",
@@ -432,9 +503,10 @@ class TestRunWithFederation:
         claude_code,
         claude_runs,
         run_folders,
+        agent_task,
     ):
         with pytest.raises(KeyboardInterrupt):
-            claude_code.run("Review it.", run_folders, [])
+            claude_code.run(agent_task, run_folders, [])
         claude_runs.return_value.kill.assert_called_once_with()
         assert not Path(
             run_folders.out,

@@ -1,5 +1,5 @@
-"""Support for the end-to-end tests of the GitHub Action (tests/test_action.py): its command, `clean_eval action`, run as
-action.yml runs it on a GitHub runner (its step's `run:` line, by bash), with fake `gh` and `claude`
+"""Support for the end-to-end tests of the GitHub Action (tests/test_action.py): its command, `clean_eval action`, run
+as action.yml runs it on a GitHub runner (its step's `run:` line, by bash), with fake `gh` and `claude`
 (tests.helpers.FakeBin) and fake credentials. Classes and constants only; the fixtures that hand them out (`action`,
 `action_run`) are in tests/conftest.py."""
 
@@ -37,9 +37,9 @@ RUNNER_TOKEN = "x" * 20  # some other secret of the runner's environment
 
 
 class Action:
-    """The action's command on `workspace` (a tests.helpers.Repo), run as action.yml runs it on a GitHub runner: the action's inputs as CE_*
-    variables, fake credentials, the fake `gh` and `claude` of `fake_bin` first on PATH, and the runner's files in
-    `folder`: the output folder `out`, the step outputs `gh_out` and the step summary `summary`.
+    """The action's command on `workspace` (a tests.helpers.Repo), run as action.yml runs it on a GitHub runner: the
+    action's inputs as CE_* variables, fake credentials, the fake `gh` and `claude` of `fake_bin` first on PATH, and the
+    runner's files in `folder`: the output folder `out`, the step outputs `gh_out` and the step summary `summary`.
 
     Every run first configures the fakes: `claude` with `claude_plan`, and `gh` with `gh_replies` plus `pull_request`
     under `pr_view`, its base and head being the workspace's main and HEAD as they are then."""

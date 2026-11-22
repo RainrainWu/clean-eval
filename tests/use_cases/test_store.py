@@ -1,5 +1,5 @@
 """The files of a run (use_cases/store.py), through a mock of the FileSystem interface: JSON, the heat map, a reviewer's
-judgement, the policy and GitHub step outputs."""
+judgement and the policy."""
 
 import json
 
@@ -12,7 +12,6 @@ from clean_eval.domain.errors import (
 )
 from clean_eval.domain.policy import Policy
 from clean_eval.domain.rating import Judgement
-from clean_eval.domain.review import StepOutputs
 from clean_eval.use_cases.store import (
     load_heatmap,
     load_judgement,
@@ -20,7 +19,6 @@ from clean_eval.use_cases.store import (
     read_json,
     save_heatmap,
     write_json,
-    write_step_outputs,
 )
 
 
@@ -128,23 +126,3 @@ class TestLoadPolicy:
     ):
         assert load_policy(fs, "/repo") == (Policy(), "clean-eval default")
         fs.read_text.assert_not_called()
-
-
-class TestWriteStepOutputs:
-    """GitHub Actions step outputs."""
-
-    @pytest.mark.parametrize("files", [{"/gh_out": "a=1\n"}], indirect=True)
-    def test_step_outputs_are_appended_one_per_line(
-        self,
-        fs,
-        memory_fs,
-    ):
-        write_step_outputs(
-            fs,
-            "/gh_out",
-            StepOutputs(
-                {"verdict": "approve", "blockers": "0"},
-            ),
-        )
-        assert memory_fs.read_text("/gh_out") == "a=1\nverdict=approve\nblockers=0\n"
-        fs.append_text.assert_called_once_with("/gh_out", "verdict=approve\nblockers=0\n")

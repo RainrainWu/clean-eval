@@ -1,33 +1,38 @@
-"""The abstract classes of every external utility the business logic uses. The use-case functions take them as
-parameters and call only their abstract methods, so they never know (or import) what is behind them; the outer layers
-inherit and implement them:
+"""The abstract classes of every external utility the business logic uses, in its own terms. The use-case functions
+take them as parameters and call only their abstract methods, so they never know (or import) what is behind them; the
+outer layers inherit and implement them:
 
-  Git, CodeHost, FileSystem, Agent, Environment, Clock           the external layer's gateways (external/*.py)
-  DiagramPresenter, ReportPresenter                              the adaptor layer's presenters (rendering only)
-  RunLog                                                         the command line's console (external/cli.py)
+  Git, CodeHost, FileSystem, CoverageReport,      the external layer's gateways (external/*.py)
+  Agent, Environment, Clock, Runner
+  DiagramPresenter, ReportPresenter               the adaptor layer's presenters (rendering only)
+  RunLog                                          the command line's console (external/cli.py)
 """
 
 from abc import (
     ABC,
     abstractmethod,
 )
-from typing import (
-    Any,
-    Optional,
-)
+from typing import Optional
 
+from clean_eval.domain.evaluation import ReviewThreads
 from clean_eval.domain.rating import Heatmap
 from clean_eval.domain.review import (
     AgentRun,
+    AgentTask,
+    FileDiff,
     HostReview,
     PullRequest,
     ReviewPost,
+    ReviewPosting,
     RunFolders,
+    Secrets,
+    StepOutputs,
 )
 
 
 class Git(ABC):
-    """A git repository: the sources of its working tree and revisions, its history, diffs and patches."""
+    """A git repository: the sources of its working tree and revisions, its history, diffs and patches, and the ids it
+    gives files' contents."""
 
     @abstractmethod
     def toplevel(
@@ -121,13 +126,21 @@ class Git(ABC):
         """Fetch `refspec` when `sha` is missing; HeatmapError when it still is."""
 
     @abstractmethod
-    def diff(
+    def file_diffs(
         self,
         base: str,
         head: str,
-        path: Optional[str] = None,
+        paths: list[str],
+    ) -> list[FileDiff]:
+        """The diff base..head of each of `paths`, in their order (renames detected): its patch, the lines it adds and
+        removes, and the lines of the new file its hunks show."""
+
+    @abstractmethod
+    def blob_id(
+        self,
+        text: str,
     ) -> str:
-        """The patch base..head of one path, or of all of them (renames detected)."""
+        """The id git gives `text` as a file's content (what `git hash-object` prints for a file holding it)."""
 
     @abstractmethod
     def file_log(
@@ -163,14 +176,15 @@ class Git(ABC):
 
 
 class CodeHost(ABC):
-    """The pull requests of the repository on its code host. Failures raise RemoteError."""
+    """The pull requests of the repository on its code host, and how the host names the commits that merge them.
+    Failures raise RemoteError."""
 
     @abstractmethod
     def pull_request(
         self,
         number: int,
     ) -> PullRequest:
-        """A PR: its title, body, author, URL, and base and head refs and commits."""
+        """A PR: its title, body, author, URL, base and head refs and commits, and where its head is fetched from."""
 
     @abstractmethod
     def require_auth(
@@ -182,16 +196,18 @@ class CodeHost(ABC):
     def review_threads(
         self,
         number: int,
-    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        """(the PR with its reviews, comments, labels and size; its inline review comments), as the host gives them."""
+    ) -> ReviewThreads:
+        """What was said on a PR: its reviews, comments and inline review comments, with its URL, labels and size."""
 
     @abstractmethod
     def post_review(
         self,
         number: int,
         post: ReviewPost,
-    ) -> HostReview:
-        """Post one review; the review as posted."""
+    ) -> ReviewPosting:
+        """Post `post` as one review of PR `number`, as much of it as the host takes: when the host refuses its inline
+        comments or its request for changes, again without them. Each attempt, and the review as posted (None when the
+        host refused them all)."""
 
     @abstractmethod
     def reviews(
@@ -208,6 +224,14 @@ class CodeHost(ABC):
         message: str,
     ) -> None:
         """Dismiss one review."""
+
+    @abstractmethod
+    def merged_pr(
+        self,
+        subject: str,
+    ) -> Optional[int]:
+        """The PR a commit of the main branch merged, from its subject, as the host writes a merge's or a squash's; None
+        for a direct push."""
 
 
 class FileSystem(ABC):
@@ -387,10 +411,22 @@ class FileSystem(ABC):
     ) -> None: ...
 
 
+class CoverageReport(ABC):
+    """The line coverage a working tree's tests measured, from the coverage report they left in it."""
+
+    @abstractmethod
+    def line_rates(
+        self,
+        root: str,
+    ) -> dict[str, float]:
+        """{file path, relative to `root`: the share of its lines covered, 0-1}, from the coverage report at or one
+        level below the working tree `root`; {} when there is none."""
+
+
 class Agent(ABC):
-    """The coding agent a CI run hands a skill to. It runs sandboxed: no shell, no network and no token; it reads the
-    workspace and the context folder, writes only to the folders it is given, and takes no instructions from the
-    checkout."""
+    """The coding agent a CI run hands its task to. It runs sandboxed: no shell, no network and no token; it reads the
+    workspace and the context folder, writes only to the folders it is given, and follows its own skills, never
+    instructions from the checkout."""
 
     @abstractmethod
     def require(
@@ -402,17 +438,18 @@ class Agent(ABC):
     @abstractmethod
     def run(
         self,
-        prompt: str,
+        task: AgentTask,
         folders: RunFolders,
         writable: list[str],
     ) -> AgentRun:
-        """Run the agent on `prompt`, in `folders.workspace`: it may read the workspace and `folders.context`, and write
-        only under `folders.agent` and the folders in `writable`. Its exit status and its transcript."""
+        """Run the agent on `task`, following its skill, in `folders.workspace`: it may read the workspace and
+        `folders.context`, and write only under `folders.agent` and the folders in `writable`. Its exit status and its
+        transcript."""
 
 
 class Environment(ABC):
-    """The process environment, as a whole: every variable (what redaction scans, what the agent may be passed) and path
-    lists (the guard's roots). A run's settings, each read from its own variable, are Settings
+    """The process environment, as a whole: every variable (what the agent may be passed), the secrets it holds, and
+    path lists (the guard's roots). A run's settings, each read from its own variable, are Settings
     (clean_eval/settings.py)."""
 
     @abstractmethod
@@ -420,6 +457,13 @@ class Environment(ABC):
         self,
     ) -> dict[str, str]:
         """A copy of every variable, as {name: value}."""
+
+    @abstractmethod
+    def secrets(
+        self,
+    ) -> Secrets:
+        """The secrets to clean from text that leaves the runner: the values of the secret-looking variables, in every
+        form the runner uses them, and the patterns of well-known credentials."""
 
     @abstractmethod
     def paths(
@@ -440,6 +484,26 @@ class Clock(ABC):
         self,
     ) -> str:
         """Today, as YYYY-MM-DD."""
+
+
+class Runner(ABC):
+    """The CI runner a run is on, which keeps what the run reports after it ends: the outputs of its step, which later
+    steps read, and the job summary, which people read."""
+
+    @abstractmethod
+    def set_outputs(
+        self,
+        outputs: StepOutputs,
+    ) -> None:
+        """Set these outputs of the step, beside those it already has."""
+
+    @abstractmethod
+    def add_summary(
+        self,
+        title: str,
+        report: str,
+    ) -> None:
+        """Add `report` (Markdown) to the job summary, under `title`."""
 
 
 class DiagramPresenter(ABC):

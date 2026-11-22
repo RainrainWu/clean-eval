@@ -31,7 +31,9 @@ from clean_eval.domain.rating import (
 )
 from clean_eval.domain.review import (
     AgentReview,
+    AgentTask,
     RiskReport,
+    Skill,
 )
 from clean_eval.settings import Settings
 from tests.action import (
@@ -89,7 +91,7 @@ FACTS: frozendict[str, Any] = frozendict(
 )
 # A source file's defaults: a spec of `source_files` adds at least `path` and `loc`.
 SOURCE_FILE: frozendict[str, Any] = frozendict({"text": "", "is_test": False, "blob": ""})
-# A rated module: its aspect scores, its overall score (None: the worst aspect) and its facts (None, or Facts overrides).
+# A rated module: its aspect scores, overall score (None: the worst aspect) and facts (None, or Facts overrides).
 RATING: frozendict[str, Any] = frozendict(
     {
         "name": "m",
@@ -119,7 +121,7 @@ PULL_REQUEST: frozendict[str, Any] = frozendict(
         "isCrossRepository": False,
     }
 )
-# What a pull request plants at the root of a checkout: modules named after the standard library's and the dependencies'.
+# What a PR plants at the root of a checkout: modules named after the standard library's and the dependencies'.
 PLANTED = ("json", "sys", "datetime", "shlex", "argparse", "os", "re", "pydantic", "typing_extensions", "click")
 RELEASE_SCRIPT = (
     Path(
@@ -246,6 +248,12 @@ def settings(
 def anthropic_api_key():
     """An Anthropic API key, as a runner may hold one (not a real one)."""
     return "sk-ant-api03-" + "k" * 40
+
+
+@pytest.fixture
+def github_token():
+    """A GitHub personal access token in its well-known format, ghp_ (not a real one)."""
+    return "ghp_" + "a" * 36
 
 
 @pytest.fixture
@@ -446,8 +454,25 @@ def pull_request(
     return copy.deepcopy({**PULL_REQUEST, **getattr(request, "param", {})})
 
 
-# The top-level tests: the codebase the architecture rules read (test_architecture.py), the GitHub Action's command run
-# end to end with fake `gh` and `claude` (test_action.py), and the release check run on throwaway repositories (test_release.py).
+@pytest.fixture
+def agent_task(
+    request,
+):
+    """The task a CI run gives its agent (an AgentTask): follow the pr-review skill to "Review it.", reading
+    context.json and writing result.json; or validated from the fields in `request.param`."""
+    return AgentTask.model_validate(
+        {
+            "skill": Skill.PR_REVIEW,
+            "goal": "Review it.",
+            "inputs": ("context.json",),
+            "outputs": ("result.json",),
+            **getattr(request, "param", {}),
+        }
+    )
+
+
+# The top-level tests: the codebase the architecture rules read (test_architecture.py), the action's command run end
+# to end with fake `gh` and `claude` (test_action.py), and the release check on throwaway repos (test_release.py).
 
 
 @pytest.fixture
@@ -521,9 +546,9 @@ def action(
     claude_plan,
     pull_request,
 ):
-    """The action's command, ready to run on `workspace` as a GitHub runner runs it (tests.action.Action), with its output folder,
-    step outputs and step summary in the temporary folder. Each run first gives the fake `claude` its `claude_plan`, and
-    the fake `gh` its `gh_replies` and the `pull_request`."""
+    """The action's command, ready to run on `workspace` as a GitHub runner runs it (tests.action.Action), with its
+    output folder, step outputs and step summary in the temporary folder. Each run first gives the fake `claude` its
+    `claude_plan`, and the fake `gh` its `gh_replies` and the `pull_request`."""
     return Action(
         tmp_path,
         fake_bin,
@@ -745,6 +770,8 @@ def gateway_rules():
         gateways={
             "external/git.py": ({"subprocess"}, {"GitGateway"}),  # the git CLI
             "external/github.py": ({"subprocess"}, {"GitHubGateway"}),  # the gh CLI
+            "external/github_actions.py": (set(), {"GitHubActionsGateway"}),  # the runner's outputs and summary
+            "external/cobertura.py": (set(), {"CoberturaGateway"}),  # the coverage report
             "external/filesystem.py": ({"os", "shutil", "filecmp", "pathlib"}, {"FileSystemGateway"}),  # files, folders
             # variables, today's date
             "external/environment.py": ({"os", "datetime"}, {"EnvironmentGateway", "ClockGateway"}),
@@ -761,6 +788,8 @@ def gateway_rules():
             "Environment": "external/environment.py",
             "Clock": "external/environment.py",
             "Agent": "external/claude_code.py",
+            "Runner": "external/github_actions.py",
+            "CoverageReport": "external/cobertura.py",
             "DiagramPresenter": "adaptor/presenters.py",
             "ReportPresenter": "adaptor/presenters.py",
             "RunLog": "external/cli.py",  # a CI run's log is the console, the driver's
@@ -788,8 +817,8 @@ def architecture(
 
 @pytest.fixture
 def planted_test_module():
-    """A test module, as source text, breaking every convention a test module can: module-level values (`pytestmark`
-    aside), a helper, a fixture, a test outside a class, a non-test class, and in its test class a helper and a fixture."""
+    """A test module, as source text, that breaks every convention: module-level values (`pytestmark` aside), a helper,
+    a fixture, a test outside a class, a non-test class, and a helper and a fixture in its test class."""
     return """\"\"\"A test module.\"\"\"
 import pytest
 

@@ -451,7 +451,7 @@ class Policy(BaseModel):
         overrides: Optional[dict[str, Any]] = None,
         source: Optional[str] = None,
     ) -> Self:
-        """The default policy with `overrides` (a JSON object) applied; InvalidPolicy tells what the validators refused."""
+        """The default policy with `overrides` (a JSON object) applied; InvalidPolicy says what was refused."""
         try:
             return cls.model_validate({} if overrides is None else overrides)
         except ValidationError as e:

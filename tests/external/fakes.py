@@ -47,9 +47,8 @@ class ClaudeProcess:
 
 
 class TokenEndpoint:
-    """GitHub's OIDC token endpoint (`respond`, the side effect of the urlopen mock): it gives its `replies` in turn, each
-    a token it issues (a str), a raw body (bytes) or an exception it raises, and past them issues "jwt-<n>" on its n-th
-    call."""
+    """GitHub's OIDC token endpoint (`respond`, the urlopen mock's side effect): it gives its `replies` in turn (a
+    token it issues as a str, a raw body as bytes, or an exception it raises), then "jwt-<n>" on its n-th call."""
 
     def __init__(
         self,

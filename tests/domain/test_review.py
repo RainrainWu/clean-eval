@@ -1,5 +1,5 @@
 """The PR review models (domain/review.py): what an agent's proposed review may hold, the review CI derives, the rules
-tables, the pull request, and the CI run's step outputs and tool calls."""
+tables, the pull request, and a CI run's step outputs."""
 
 import pytest
 from pydantic import ValidationError
@@ -12,7 +12,6 @@ from clean_eval.domain.review import (
     Review,
     ReviewRule,
     StepOutputs,
-    ToolCall,
 )
 
 
@@ -150,32 +149,32 @@ class TestCheckedRules:
 
 
 class TestPullRequest:
-    """A pull request as the code host describes it: its author is a login, and its commits must be object ids."""
+    """A pull request as the code host describes it: its commits must be object ids."""
 
     def test_a_pull_request_whose_commits_are_object_ids_is_read(
         self,
-        pull_request,
+        host_pull_request,
     ):
-        read = PullRequest.model_validate(pull_request)
-        assert (read.author, read.baseRefOid, read.headRefOid) == ("dev", "a" * 40, "b" * 40)
+        read = PullRequest.model_validate(host_pull_request)
+        assert (read.author, read.base_sha, read.head_sha) == ("dev", "a" * 40, "b" * 40)
 
     @pytest.mark.parametrize(
-        "pull_request",
+        "host_pull_request",
         [
-            {"headRefOid": "HEAD"},
-            {"headRefOid": "a" * 39},
-            {"headRefOid": "--upload-pack=x"},
-            {"headRefOid": "g" * 40},
+            {"head_sha": "HEAD"},
+            {"head_sha": "a" * 39},
+            {"head_sha": "--upload-pack=x"},
+            {"head_sha": "g" * 40},
         ],
         indirect=True,
         ids=["a ref name", "too short", "an option", "not hexadecimal"],
     )
     def test_a_pull_requests_head_must_be_an_object_id(
         self,
-        pull_request,
+        host_pull_request,
     ):
         with pytest.raises(ValidationError):
-            PullRequest.model_validate(pull_request)
+            PullRequest.model_validate(host_pull_request)
 
 
 class TestStepOutputs:
@@ -201,26 +200,3 @@ class TestStepOutputs:
             StepOutputs(
                 outputs,
             )
-
-
-class TestToolCall:
-    """A tool call the CI agent asks to make, as Claude Code hands it to the hook: what is missing reads as empty, and
-    malformed JSON is refused."""
-
-    def test_a_null_input_is_empty_and_unknown_keys_are_ignored(
-        self,
-    ):
-        call = ToolCall.model_validate_json('{"tool_name": "Read", "tool_input": null, "session_id": "s"}')
-        assert (call.tool_name, call.tool_input, call.cwd) == ("Read", {}, None)
-
-    @pytest.mark.parametrize(
-        "text",
-        ['{"tool_name": ["Read"]}', '{"tool_input": "x"}', "[1, 2]", "not json"],
-        ids=["a list for a name", "a string for an input", "not an object", "not JSON"],
-    )
-    def test_malformed_tool_calls_are_refused(
-        self,
-        text,
-    ):
-        with pytest.raises(ValidationError):
-            ToolCall.model_validate_json(text)

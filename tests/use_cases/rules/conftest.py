@@ -5,18 +5,18 @@ cross-layer ones of tests/conftest.py (`environ`, `policy`, `facts`, `source_fil
 The rules are pure functions over domain models and take no interfaces, so these are all data fixtures.
 - A model fixture has a default, and reads its customisation from `request.param`; a test sets it with
   `@pytest.mark.parametrize("<fixture>", [<value>], indirect=True)`, on the test or on its whole class.
-- A static asset (source files, a repository, a file's text, a README, a patch, a token, a rules file) takes no param.
+- A static asset (source files, a repository, a file's text, a README, secrets, a rules file) takes no param.
   A test takes it as an argument, or a decorator names it with pytest-lazy-fixtures' `lf`, mostly as the param of a
   model fixture: `@pytest.mark.parametrize("source_files", [lf("src_layout_files")], indirect=True)`."""
 
-import base64
+import re
 from typing import Any
 
 import pytest
 
 from clean_eval.domain.evaluation import MergedPR
 from clean_eval.domain.rating import AspectScores
-from clean_eval.domain.review import InlineComment
+from clean_eval.domain.review import Secrets
 from clean_eval.use_cases.rules.heatmap import (
     MARKERS,
     SECTION_HEADING,
@@ -24,7 +24,6 @@ from clean_eval.use_cases.rules.heatmap import (
 
 # The aspect scores of the module the `ratings` fixture rates by default.
 ASPECT_SCORES: frozendict[str, Any] = frozendict({"biz": 40, "effects": 10, "entropy": 20, "unverified": 30})
-INLINE_COMMENT: frozendict[str, Any] = frozendict({"path": "a.py", "line": 1, "side": "RIGHT", "body": "b"})
 MERGED_PR: frozendict[str, Any] = frozendict(
     {"sha": "a" * 40, "base": "b" * 40, "author": "a", "ts": 1, "subject": "s"}
 )
@@ -214,60 +213,34 @@ def readme_without_markers():
     return "# T\n\n## Risk Heat Map\nstale table\n\n## Next\nkeep\n"
 
 
-# A PR review: its rules, what the agent proposed, the change's risk, and what is posted.
+# What a PR review reads: the secrets it redacts, the modules it touches, and a rules file.
 
 
 @pytest.fixture
-def inline_comment(
-    request,
+def token_secrets(
+    github_token,
 ):
-    """An InlineComment of a review: on line 1 of a.py, with the fields in `request.param` replaced."""
-    return InlineComment.model_validate({**INLINE_COMMENT, **getattr(request, "param", {})})
-
-
-# What a PR review reads: the diff of a change, the secrets it redacts, the modules it touches, and a rules file.
-
-
-@pytest.fixture
-def patch_of_x():
-    """The patch of file x, as `git diff` writes it: a line added."""
-    return "diff --git a/x b/x\n+1\n"
+    """The Secrets a review is cleaned of: the value of `github_token`."""
+    return Secrets(
+        values=(github_token,),
+    )
 
 
 @pytest.fixture
-def patch_of_y():
-    """The patch of file y, as `git diff` writes it: a line removed."""
-    return "diff --git a/y b/y\n-2\n"
+def nested_secrets():
+    """Secrets of two values, one of which holds the other: s3cr3t-value-123 and s3cr3t-value-1234."""
+    return Secrets(
+        values=("s3cr3t-value-123", "s3cr3t-value-1234"),
+    )
 
 
 @pytest.fixture
-def diff_of_x_and_y(
-    patch_of_x,
-    patch_of_y,
-):
-    """A `git diff` of files x and y: `patch_of_x` followed by `patch_of_y`."""
-    return patch_of_x + patch_of_y
-
-
-@pytest.fixture
-def github_token():
-    """A GitHub personal access token in its well-known format, ghp_ (not a real one)."""
-    return "ghp_" + "a" * 36
-
-
-@pytest.fixture
-def github_app_token():
-    """A GitHub App's token, ghs_, as a runner's GH_TOKEN holds one (not a real one)."""
-    return "ghs_" + "z" * 36
-
-
-@pytest.fixture
-def github_app_token_basic(
-    github_app_token,
-):
-    """The base64 of the authorization header's value that actions/checkout persists in .git/config for
-    `github_app_token`."""
-    return base64.b64encode(("x-access-token:" + github_app_token).encode()).decode()
+def framed_secrets():
+    """Secrets of two patterns, as an environment names the credentials it knows: a token's whole shape (tok_ and
+    lowercase letters), and a key framed by `key=`, whose group is the key alone."""
+    return Secrets(
+        patterns=(re.compile(r"tok_[a-z]+"), re.compile(r"key=([a-z]+)")),
+    )
 
 
 @pytest.fixture

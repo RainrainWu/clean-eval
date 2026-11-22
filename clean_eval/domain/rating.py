@@ -96,7 +96,7 @@ class FileSignals(BaseModel):
 
 
 class FileSyntax(BaseModel):
-    """What the syntax tree of one Python file says about its links: its functions, its imports and the names it uses."""
+    """What the syntax tree of one Python file says about its links: its functions, imports and the names it uses."""
 
     model_config = ConfigDict(
         frozen=True,
@@ -117,7 +117,7 @@ class Graph(BaseModel):
     stats: dict[str, Any]
 
 
-# A rating: the facts the four aspect rules read about one module, the scores they give, and the heat map of a repository.
+# A rating: the facts the four aspect rules read about one module, the scores they give, and a repository's heat map.
 # Scores are 0-100 wherever they appear, and assignments are validated too, so no rule can push one out of range.
 
 

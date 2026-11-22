@@ -6,31 +6,8 @@ from pytest_lazy_fixtures import lf
 from clean_eval.use_cases.rules.evaluation import (
     RULE_ID,
     auc,
-    pr_number,
     rescore,
 )
-
-
-class TestPrNumber:
-    """The PR a first-parent commit merged, from its subject: a merge commit's number, or the last `(#n)` of a squash
-    commit; none for a direct push."""
-
-    @pytest.mark.parametrize(
-        ("subject", "number"),
-        [
-            ("Fix #45 (#67)", 67),
-            ("Merge pull request #12 from a/b", 12),
-            ("feat: thing (#478)", 478),
-            ("chore: no pr", None),
-        ],
-        ids=["squash that names an issue", "merge commit", "squash", "direct push"],
-    )
-    def test_the_pr_comes_from_the_subject(
-        self,
-        subject,
-        number,
-    ):
-        assert pr_number(subject) == number
 
 
 class TestRuleId:
