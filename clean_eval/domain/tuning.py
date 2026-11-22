@@ -5,9 +5,9 @@ from typing import Any, Literal, Optional, Union
 
 from pydantic import BaseModel, computed_field, field_validator, model_validator
 
-from .errors import InvalidPolicy
-from .policy import TUNABLE, Policy
-from .values import Count, Fraction
+from clean_eval.domain.errors import InvalidPolicy
+from clean_eval.domain.policy import TUNABLE, Policy
+from clean_eval.domain.values import Count, Fraction
 
 MAX_RECOMMENDATIONS = 30
 MAX_TEXT = 2000

@@ -16,8 +16,10 @@ from clean_eval.domain.errors import HeatmapError, InvalidRequest
 from clean_eval.domain.history import FetchFailure, MergedPR, ReviewSignal
 from clean_eval.domain.policy import BAND_NAMES, Policy
 from clean_eval.external import wiring
+from clean_eval.external.clock import ClockGateway
+from clean_eval.external.git import GitGateway
 from clean_eval.external.github import GitHubGateway, loads_multi
-from clean_eval.use_cases.collect_history import review_of
+from clean_eval.use_cases.collect_history import collect_history, review_of
 from clean_eval.use_cases.rules import calibration, history
 
 D = lambda s: dt.datetime.fromisoformat(s + "T12:00:00+00:00")  # noqa: E731
@@ -29,7 +31,8 @@ def model(**overrides):
 
 
 def collect(repo, policy, since, until, with_gh=False):
-    return wiring.collect_history(repo, with_gh).execute(policy, wiring.period(since, until))
+    return collect_history(GitGateway(repo), ClockGateway(), policy, wiring.period(since, until),
+                           host=GitHubGateway() if with_gh else None)
 
 
 class HistoryCommandTest(unittest.TestCase):

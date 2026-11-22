@@ -4,8 +4,8 @@ from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, computed_field, field_validator, model_validator
 
-from .change import ModuleRisk
-from .values import Band, Count, OneLine, Score, Severity, Sha
+from clean_eval.domain.change import ModuleRisk
+from clean_eval.domain.values import Band, Count, OneLine, Score, Severity, Sha
 
 RuleId = Annotated[str, Field(pattern=r"^[A-Z]{1,4}-\d{2,3}$")]
 FindingRule = Annotated[str, Field(pattern=r"^(?:[A-Z]{1,4}-\d{2,3}|NEW)$")]  # NEW: a problem no rule covers
@@ -230,3 +230,9 @@ class HostReview(BaseModel):
     @classmethod
     def _no_body(cls, body):
         return body or ""
+
+
+class PostOutcome(BaseModel):
+    """What posting a review did: whether it went up, and a log of each step ("info" or "warning")."""
+    posted: bool = False
+    log: list[tuple[Literal["info", "warning"], str]] = []

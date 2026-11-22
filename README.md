@@ -23,15 +23,17 @@ dependencies point inward. The GitHub Action is the same package behind one entr
 | Layer | Holds | May import |
 |---|---|---|
 | `clean_eval/domain/` | data models only: pydantic models of the policy, the source read, the ratings and heat map, a change's risk, reviews, merged-PR history and an eval's outcome. Every invariant is a validator: score ranges, the policy's knobs, an agent finding's rule, severity and line, commit ids, step outputs | pure stdlib modules and pydantic |
-| `clean_eval/use_cases/` | the use cases (rate a repository, assess a change, refresh the README section, collect history; for CI: prepare the agent's context, finalize its output, post the review), their ports, and `rules/`: the business rules as pure functions over the models (the four aspects, scoring, judgement, review, redaction, calibration, tuning) | `domain`, the same |
-| `clean_eval/adaptor/` | translation, never I/O: the sources (working tree, revisions), stores (heat map, README, run folders, the `.clean-eval/` snapshot), graph builders and coverage reader that implement the use cases' ports over the gateways (given as the protocols in `adaptor/ports.py`); code analysis (`ast`) and presenters (SVG, Markdown) | `domain`, `use_cases` |
-| `clean_eval/external/` | everything that touches the outside world: one gateway class per external dependency (`GitGateway`, `GitHubGateway`, `CodeReviewGraphGateway`, `SqliteGateway`, `FileSystemGateway`, `EnvironmentGateway`, `ClockGateway`), the command line (with the CI commands and the agent's guard hook) and the composition root | everything |
+| `clean_eval/use_cases/` | two things. `interfaces.py`: the abstract classes of every external utility the business logic uses (`Git`, `CodeHost`, `FileSystem`, `KnowledgeGraph`, `Environment`, `Clock`, `DiagramPresenter`, `ReportPresenter`). Everything else: module-level functions that take implementations of those interfaces as parameters and call only their abstract methods. These are the use cases (rate a repository, assess a change, refresh the README section, collect history; for CI: prepare the agent's context, finalize its output, post the review), what they share (sources, run files, the `.clean-eval/` snapshot), and `rules/`: the business rules as pure functions over the models (the four aspects, scoring, judgement, review, redaction, calibration, tuning, the built-in knowledge graph) | `domain`, the same |
+| `clean_eval/adaptor/` | the presenters (SVG treemap, Markdown summary), implementing `DiagramPresenter` and `ReportPresenter`; rendering only, never I/O | `domain`, `use_cases` |
+| `clean_eval/external/` | everything that touches the outside world: one gateway class per external dependency, each implementing its interface (`GitGateway`, `GitHubGateway`, `CodeReviewGraphGateway`, `FileSystemGateway`, `EnvironmentGateway`, `ClockGateway`), the command line (with the CI commands and the agent's guard hook) and the composition root that hands the gateways and presenters to the use cases | everything |
 
-`tests/test_architecture.py` enforces the layering, the purity of the two inner layers (no I/O, no clock), that the
-domain holds only data models (no functions; model methods are validators, computed fields, properties or
-constructors), and that each external dependency is reached only through its gateway (no other module may import
-`subprocess`, `sqlite3`, `os`, `shutil`, `filecmp` or `pathlib`, open a file, read the clock or the environment; the
-console belongs to the command line).
+`tests/test_architecture.py` enforces the layering (every import absolute, never relative), the purity of the two inner
+layers (no I/O, no clock), that the domain holds only data models (no functions; model methods are validators, computed
+fields, properties or constructors), that the use cases hold only the interfaces (abstract classes whose methods are all
+abstract) and module-level functions, that each interface has one implementation exposing nothing beyond it, and that
+each external dependency is reached only through its gateway (no other module may import `subprocess`, `sqlite3`, `os`,
+`shutil`, `filecmp` or `pathlib`, open a file, read the clock or the environment; the console belongs to the command
+line).
 
 Run it as `uv run python -I clean_eval <rate|readme|report|assess|history> ...` from this checkout; from another
 repository, `uv run --frozen --no-config --project <clean-eval> python -I <clean-eval>/clean_eval ...`. `-I` keeps the

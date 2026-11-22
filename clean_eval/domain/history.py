@@ -5,8 +5,8 @@ from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .change import ModuleRecord
-from .values import Band, Count, Fraction, Score, Sha
+from clean_eval.domain.change import ModuleRecord
+from clean_eval.domain.values import Band, Count, Fraction, Score, Sha
 
 
 class Period(BaseModel):

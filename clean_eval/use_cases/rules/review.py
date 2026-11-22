@@ -4,10 +4,10 @@ their text; the verdict, the blocker count and the band are derived, never taken
 import hashlib
 import re
 
-from ...domain.ci import StepOutputs
-from ...domain.review import CheckedRules, Finding, InlineComment, Review, ReviewRule, RulesTable
-from ...domain.values import SEVERITIES
-from .redaction import MARKER_RE, neutralize_comments
+from clean_eval.domain.ci import StepOutputs
+from clean_eval.domain.review import CheckedRules, Finding, InlineComment, Review, ReviewRule, RulesTable
+from clean_eval.domain.values import SEVERITIES
+from clean_eval.use_cases.rules.redaction import MARKER_RE, neutralize_comments, redact
 
 RULE_ROW = re.compile(r"^\|\s*([A-Z]{1,4}-\d{2,3})\s*\|\s*(blocker|major|minor)\s*\|\s*(Low|Moderate|Medium|High|Critical)\s*\|",
                       re.M)
@@ -35,8 +35,9 @@ def rules_version(text):
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()[:8]
 
 
-def finalize_review(agent, risk, rules, redactor):
-    """The Review CI trusts, from the agent's validated AgentReview, the RiskReport of the change and the base's rules."""
+def finalize_review(agent, risk, rules, secrets=()):
+    """The Review CI trusts, from the agent's validated AgentReview, the RiskReport of the change and the base's rules;
+    finding text is redacted of `secrets`."""
     known, findings, redactions = rules.by_id, [], 0
     for f in agent.findings:
         rule, severity, notes = f.rule, f.severity, []
@@ -46,8 +47,8 @@ def finalize_review(agent, risk, rules, redactor):
         if rule in known and SEVERITIES.index(severity) < SEVERITIES.index(known[rule].severity):
             notes.append("severity raised from %s to the rule's %s" % (severity, known[rule].severity))
             severity = known[rule].severity
-        summary, n1 = redactor.redact(neutralize_comments(f.summary))
-        fix, n2 = redactor.redact(neutralize_comments(f.fix))
+        summary, n1 = redact(neutralize_comments(f.summary), secrets)
+        fix, n2 = redact(neutralize_comments(f.fix), secrets)
         redactions += n1 + n2
         findings.append(Finding(rule=rule, severity=severity, file=f.file, line=f.line, summary=summary, fix=fix, notes=notes))
     return Review(pr=risk.pr, base=risk.base, head=risk.head, max_tier=risk.max_tier, max_score=risk.max_score,

@@ -6,12 +6,13 @@ import json
 
 from pydantic import ValidationError
 
-from ...domain.ci import StepOutputs
-from ...domain.errors import InvalidOutput
-from ...domain.policy import Policy
-from ...domain.tuning import AgentEvalResult, EvalResult, ModelChange, PolicyEdit, RulesChange
-from .calibration import replay
-from .review import check_rules
+from clean_eval.domain.ci import StepOutputs
+from clean_eval.domain.errors import InvalidOutput
+from clean_eval.domain.policy import Policy
+from clean_eval.domain.tuning import AgentEvalResult, EvalResult, ModelChange, PolicyEdit, RulesChange
+from clean_eval.use_cases.rules.calibration import replay
+from clean_eval.use_cases.rules.redaction import redact
+from clean_eval.use_cases.rules.review import check_rules
 
 MODEL_FILE, RULES_FILE = "risk-model.json", "review-rules.md"  # in .clean-eval/
 TUNING_FILES = frozenset({MODEL_FILE, RULES_FILE})
@@ -52,13 +53,13 @@ def judge_rules_edit(new_text):
     return RulesChange()
 
 
-def eval_recommendations(raw, redactor):
-    """The recommendations of the agent's result.json, validated and redacted."""
+def eval_recommendations(raw, secrets=()):
+    """The recommendations of the agent's result.json, validated and redacted of `secrets`."""
     try:
         recs = AgentEvalResult.model_validate(raw).recommendations
     except ValidationError as e:
         raise InvalidOutput.from_validation(e, "result.json")
-    return [r.model_copy(update={k: redactor.redact(getattr(r, k))[0] for k in ("target", "change", "evidence")})
+    return [r.model_copy(update={k: redact(getattr(r, k), secrets)[0] for k in ("target", "change", "evidence")})
             for r in recs]
 
 

@@ -1,9 +1,10 @@
-"""CodeSignals for Python: ast metrics, write-call patterns and TODO markers, read from text. Nothing is imported or run.
-Results are cached per file content, so rating many revisions of one repository parses each version of a file once."""
+"""What one Python file says about risk: ast metrics, write-call patterns and TODO markers, read from text. Nothing is
+imported or run. Results are cached per file content, so rating many revisions of a repository parses each version of
+a file once."""
 import ast
 import re
 
-from ..domain.source import FileSignals, PyStats
+from clean_eval.domain.source import FileSignals, PyStats
 
 TODO = re.compile(r"\b(TODO|FIXME|HACK|XXX)\b")
 # kind -> (call pattern, pattern the file must also match). The points per kind are business policy (Policy.effect_points).
@@ -60,13 +61,13 @@ def write_calls(text):
     return out
 
 
-class PythonSignals:
-    def __init__(self):
-        self._cache = {}
-
-    def file_signals(self, f):
-        key = f.blob or f.text
-        hit = self._cache.get(key)
-        if hit is None:
-            hit = self._cache[key] = FileSignals(stats=python_stats(f.text), todo=len(TODO.findall(f.text)), effects=write_calls(f.text))
-        return hit
+def file_signals(f, cache=None):
+    """The FileSignals of a SourceFile: function sizes, complexity, typing, exception handling, TODOs and write calls.
+    `cache` ({content id: FileSignals}, e.g. a RatingCache's) is shared across revisions."""
+    key = f.blob or f.text
+    if cache is not None and key in cache:
+        return cache[key]
+    signals = FileSignals(stats=python_stats(f.text), todo=len(TODO.findall(f.text)), effects=write_calls(f.text))
+    if cache is not None:
+        cache[key] = signals
+    return signals

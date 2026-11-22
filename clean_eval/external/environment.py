@@ -1,8 +1,10 @@
 """The process environment: its variables (secrets to redact, the guard's roots, PATH) and the home folder."""
 import os
 
+from clean_eval.use_cases.interfaces import Environment
 
-class EnvironmentGateway:
+
+class EnvironmentGateway(Environment):
     def variables(self):
         """A copy of every variable, as {name: value}."""
         return dict(os.environ)

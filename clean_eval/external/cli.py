@@ -18,28 +18,29 @@ import sys
 from pydantic import ValidationError
 from pydantic_core import to_jsonable_python
 
-from ..adaptor.presenters.diagram import SvgDiagramPresenter
-from ..adaptor.presenters.markdown_report import MarkdownReportPresenter
-from ..adaptor.presenters.style import DIAGRAM_PATH
-from ..domain.errors import HeatmapError, InvalidRequest
-from ..domain.history import EvalHistory
-from ..use_cases.rules.calibration import replay, sensitivity
-from ..use_cases.rules.history import rules_warning
-from ..use_cases.summarize_heatmap import SummarizeHeatmap
-from ..use_cases.update_readme import UpdateReadme
-from . import ci, wiring
-from .wiring import FS, load_policy
+from clean_eval.adaptor.presenters.style import DIAGRAM_PATH
+from clean_eval.domain.errors import HeatmapError, InvalidRequest
+from clean_eval.domain.history import EvalHistory
+from clean_eval.domain.rating import RatingCache
+from clean_eval.external import ci, wiring
+from clean_eval.external.wiring import CLOCK, FS
+from clean_eval.use_cases.assess_change import assess_change
+from clean_eval.use_cases.collect_history import collect_history
+from clean_eval.use_cases.rate_repository import rate_revision, rate_working_tree
+from clean_eval.use_cases.rules.calibration import replay, sensitivity
+from clean_eval.use_cases.rules.history import rules_warning
+from clean_eval.use_cases.store import load_heatmap, load_judgement, load_policy, read_json, save_heatmap
+from clean_eval.use_cases.summarize_heatmap import summarize_heatmap
+from clean_eval.use_cases.update_readme import update_readme
 
 
 def _policy(args):
-    policy, source = load_policy(args.repo, args.model)
-    return policy, source
+    return load_policy(FS, args.repo, args.model)
 
 
 def _loaded(args):
-    ws = wiring.workspace()
-    judgement = ws.load_judgement(args.judgement) if getattr(args, "judgement", None) else None
-    return ws.load_heatmap(args.data), judgement
+    judgement = load_judgement(FS, args.judgement) if getattr(args, "judgement", None) else None
+    return load_heatmap(FS, args.data), judgement
 
 
 def rate(args):
@@ -47,12 +48,14 @@ def rate(args):
     if args.rev:
         if args.graph != "builtin":
             raise HeatmapError("--rev reads git objects; only --graph builtin works there")
-        rater = wiring.RevisionRaters(args.repo).at(args.rev, policy)
+        heatmap = rate_revision(wiring.git(args.repo), CLOCK, args.rev, policy, RatingCache(), args.depth, args.max_modules)
+    elif args.graph == "code-review-graph":
+        heatmap = rate_working_tree(wiring.git(args.repo), FS, CLOCK, policy, wiring.knowledge_graph(),
+                                    FS.join(args.out, "graph"), args.depth, args.max_modules)
     else:
-        rater = wiring.working_tree_rater(args.repo, policy, args.graph, FS.join(args.out, "graph"))
-    heatmap = rater.execute(policy, wiring.today(), args.depth, args.max_modules)
+        heatmap = rate_working_tree(wiring.git(args.repo), FS, CLOCK, policy, depth=args.depth, max_modules=args.max_modules)
     heatmap.notes.append("Policy: %s" % source)
-    wiring.workspace().save_heatmap(heatmap, FS.join(args.out, "data.json"))
+    save_heatmap(FS, heatmap, FS.join(args.out, "data.json"))
     print("%s @ %s (%s): %d modules, %d source lines -> %s"
           % (heatmap.repo, heatmap.ref, heatmap.sha, len(heatmap.modules), heatmap.loc_total, FS.join(args.out, "data.json")))
     for m in sorted(heatmap.modules, key=lambda m: -m.scores.overall)[:10]:
@@ -66,8 +69,8 @@ def rate(args):
 def readme(args):
     heatmap, judgement = _loaded(args)
     root = FS.absolute(args.repo)
-    store = wiring.readme_store(FS.join(root, args.readme), FS.join(root, args.svg))
-    result = UpdateReadme(SvgDiagramPresenter(), store).execute(heatmap, judgement, _policy(args)[0])
+    result = update_readme(FS, wiring.diagram_presenter(), FS.join(root, args.readme), FS.join(root, args.svg), heatmap,
+                           judgement, _policy(args)[0])
     if args.status_json:
         FS.write_text(args.status_json, json.dumps({"readme_changed": result.changed, "action": result.action,
                                                  "fingerprint": result.fingerprint, "modules": len(result.heatmap.modules)}))
@@ -80,9 +83,9 @@ def readme(args):
 
 def report(args):
     heatmap, judgement = _loaded(args)
-    final, text = SummarizeHeatmap(MarkdownReportPresenter()).execute(heatmap, judgement, _policy(args)[0])
+    final, text = summarize_heatmap(wiring.report_presenter(), heatmap, judgement, _policy(args)[0])
     if args.json_out:
-        wiring.workspace().save_heatmap(final, args.json_out)
+        save_heatmap(FS, final, args.json_out)
     if args.out:
         FS.write_text(args.out, text)
     else:
@@ -91,7 +94,7 @@ def report(args):
 
 def assess(args):
     policy, source = _policy(args)
-    heatmap, risk = wiring.assess_change(args.repo, args.base, args.head, policy)
+    heatmap, risk = assess_change(wiring.git(args.repo), CLOCK, args.base, args.head, policy)
     out = risk.model_dump(mode="json")
     out.update(base=args.base, head=args.head, model_source=source, model_version=policy.version, notes=heatmap.notes)
     text = json.dumps(out, indent=1)
@@ -105,20 +108,21 @@ def assess(args):
 
 def history(args):
     root = wiring.repository_root(args.repo)
-    policy, source = load_policy(root, args.model)
+    policy, source = load_policy(FS, root, args.model)
     if args.replay or args.sensitivity:
         if not args.from_history:
             raise InvalidRequest("--replay/--sensitivity need --from-history")
         try:
-            collected = EvalHistory.model_validate(wiring.read_json(args.from_history))
+            collected = EvalHistory.model_validate(read_json(FS, args.from_history))
         except ValidationError as e:
             raise HeatmapError.from_validation(e, "%s is not a collected history" % args.from_history)
-        out = replay(collected, load_policy(root, args.replay)[0]) if args.replay else sensitivity(collected, policy)
+        out = replay(collected, load_policy(FS, root, args.replay)[0]) if args.replay else sensitivity(collected, policy)
     else:
         if not args.since:
             raise InvalidRequest("--since is required (or --from-history with --replay/--sensitivity)")
-        out = wiring.collect_history(root, args.with_gh).execute(
-            policy, wiring.period(args.since, args.until, args.defect_window_days), args.branch, source, args.reviewer_login)
+        out = collect_history(wiring.git(root), CLOCK, policy, wiring.period(args.since, args.until, args.defect_window_days),
+                              host=wiring.github() if args.with_gh else None, branch=args.branch, model_source=source,
+                              reviewer_logins=args.reviewer_login)
         warning = rules_warning(out.rules) if out.rules else None
         if warning:
             print("warning: " + warning, file=sys.stderr)

@@ -8,39 +8,44 @@
 """
 import sys
 
-from ..domain.errors import InvalidOutput
-from ..use_cases.finalize_run import SKILLS
-from . import agent_guard, wiring
-from .wiring import FS
+from clean_eval.domain.errors import InvalidOutput
+from clean_eval.external import agent_guard, wiring
+from clean_eval.external.wiring import CLOCK, ENV, FS
+from clean_eval.use_cases.finalize_run import SKILLS, finalize_run
+from clean_eval.use_cases.post_review import post_review
+from clean_eval.use_cases.prepare_eval import prepare_eval
+from clean_eval.use_cases.prepare_review import prepare_review
+from clean_eval.use_cases.rules.redaction import redact as redact_text
+from clean_eval.use_cases.store import load_policy, write_step_outputs
 
 
 def prepare(args):
     repo = wiring.repository_root(args.repo)
     FS.make_dirs(args.ctx)
     if args.skill == "pr-review":
-        context = wiring.prepare_review(repo, args.ctx).execute(args.pr)
+        context = prepare_review(wiring.github(), wiring.git(repo), FS, CLOCK, args.ctx, args.pr, wiring.default_rules())
     else:
-        policy, source = wiring.load_policy(repo)
-        context = wiring.prepare_eval(repo, args.ctx, args.with_gh).execute(
-            policy, source, wiring.period(args.since, args.until), args.branch)
+        policy, source = load_policy(FS, repo)
+        context = prepare_eval(wiring.git(repo), FS, CLOCK, args.ctx, repo, policy, source, wiring.period(args.since, args.until),
+                               wiring.default_rules(), host=wiring.github() if args.with_gh else None, branch=args.branch)
     print(context.model_dump_json())
 
 
 def finalize(args):
     try:
-        result, outputs = wiring.finalize_run(args.ctx, args.agent, args.out, args.workspace).execute(args.skill, args.apply)
+        result, outputs = finalize_run(FS, ENV, args.ctx, args.agent, args.out, args.skill, args.apply, args.workspace)
     except InvalidOutput as e:
         print("::error::clean-eval: invalid agent output: %s" % e, file=sys.stderr)
         return 2
     if result is not None and result.redactions:
         print("::warning::clean-eval redacted %d secret-looking value(s) from agent output" % result.redactions,
               file=sys.stderr)
-    wiring.append_step_outputs(args.gh_output, outputs)
+    write_step_outputs(FS, args.gh_output, outputs)
     print(outputs.model_dump_json())
 
 
 def post(args):
-    outcome = wiring.post_review(args.out, args.ctx).execute(args.pr, args.head)
+    outcome = post_review(wiring.github(), FS, ENV, args.out, args.pr, args.head, args.ctx)
     for level, message in outcome.log:
         if level == "warning":
             print("::warning::" + message, file=sys.stderr)
@@ -51,7 +56,7 @@ def post(args):
 
 def redact(args):
     if FS.exists(args.path):
-        text, n = wiring.redactor().redact(FS.read_text(args.path))
+        text, n = redact_text(FS.read_text(args.path), wiring.secrets())
         if n:
             FS.write_text(args.path, text)
             print("::warning::clean-eval redacted %d secret-looking value(s) from %s" % (n, FS.name(args.path)),

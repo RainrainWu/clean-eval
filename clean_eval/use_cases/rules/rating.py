@@ -1,7 +1,7 @@
 """Rate one module: run the four aspect rules over its facts."""
-from ...domain.rating import AspectScores, Evidence, ModuleRating, ModuleTests, Scores
-from . import aspects
-from .scoring import overall
+from clean_eval.domain.rating import AspectScores, Evidence, ModuleRating, ModuleTests, Scores
+from clean_eval.use_cases.rules import aspects
+from clean_eval.use_cases.rules.scoring import overall
 
 
 def _score(value):

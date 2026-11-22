@@ -5,10 +5,11 @@ import os
 import shutil
 from pathlib import Path
 
-from ..domain.errors import HeatmapError
+from clean_eval.domain.errors import HeatmapError
+from clean_eval.use_cases.interfaces import FileSystem
 
 
-class FileSystemGateway:
+class FileSystemGateway(FileSystem):
     sep = os.sep
 
     # ---------------------------------------------------------------- paths (strings only, nothing is touched)

@@ -1,20 +1,18 @@
 """Use case: the risk a change carries, from the heat map of its base. The PR review scales its depth by this."""
-from ..domain.errors import NoPythonSource
-from ..domain.rating import Heatmap
-from .rules.change import assess_change
+from clean_eval.domain.errors import NoPythonSource
+from clean_eval.domain.rating import Heatmap, RatingCache
+from clean_eval.use_cases.rate_repository import rate_revision
+from clean_eval.use_cases.rules.change import change_risk
+from clean_eval.use_cases.sources import revision_snapshot
 
 
-class AssessChange:
-    def __init__(self, rate, source):
-        self.rate = rate      # a RateRepository reading the change's base
-        self.source = source  # the SourceReader of that base (port), for the snapshot when there is nothing to rate
-
-    def execute(self, paths, policy, today):
-        """(heatmap at the base, ChangeRisk). A base with no Python yet has an empty heat map: every path is unrated."""
-        try:
-            heatmap = self.rate.execute(policy, today)
-        except NoPythonSource as e:
-            snap = self.source.snapshot()
-            heatmap = Heatmap(repo=snap.repo, ref=snap.ref, sha=snap.sha, generated_at=today, loc_total=0, modules=[],
-                              notes=[str(e)], policy_version=policy.version)
-        return heatmap, assess_change(heatmap, paths, policy)
+def assess_change(git, clock, base, head, policy, cache=None):
+    """(heat map at the base, ChangeRisk of base..head). A base with no Python yet has an empty heat map: every path is
+    unrated."""
+    try:
+        heatmap = rate_revision(git, clock, base, policy, cache or RatingCache())
+    except NoPythonSource as e:
+        snap = revision_snapshot(git, base)
+        heatmap = Heatmap(repo=snap.repo, ref=snap.ref, sha=snap.sha, generated_at=clock.today(), loc_total=0,
+                          notes=[str(e)], policy_version=policy.version)
+    return heatmap, change_risk(heatmap, git.diff_files(base, head), policy)

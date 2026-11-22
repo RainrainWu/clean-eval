@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
-from .values import Level
+from clean_eval.domain.values import Level
 
 AspectName = Literal["business", "effects", "entropy", "unverified"]
 MAX_REASON = 240
