@@ -1,6 +1,6 @@
 [project]
 name = "clean-eval"
-version = "1.0.0"
+version = "1.0.1"
 description = "Flexible, scalable, and explainable verification framework for agentic development to follow clean architecture best practices."
 readme = "README.md"
 requires-python = ">=3.15"
