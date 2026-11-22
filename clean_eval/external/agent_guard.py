@@ -36,18 +36,30 @@ ALLOW, DENY = 0, 2
 FS, ENV = FileSystemGateway(), EnvironmentGateway()
 
 
-def roots(paths: list[str], fs: FileSystem = FS) -> list[str]:
+def roots(
+    paths: list[str],
+    fs: FileSystem = FS,
+) -> list[str]:
     """The real paths of the given roots. A symlinked root would make its target reachable, so it is dropped (fail
     closed)."""
     return [fs.real_path(p) for p in paths if not fs.is_link(p.rstrip(fs.sep))]
 
 
-def _within(path: str, allowed: list[str], sep: str) -> bool:
+def is_within(
+    path: str,
+    allowed: list[str],
+    sep: str,
+) -> bool:
     return any(path == r or path.startswith(r.rstrip(sep) + sep) for r in allowed)
 
 
 def decide(
-    tool: str, tool_input: dict[str, Any], cwd: str, read_roots: list[str], write_roots: list[str], fs: FileSystem = FS
+    tool: str,
+    tool_input: dict[str, Any],
+    cwd: str,
+    read_roots: list[str],
+    write_roots: list[str],
+    fs: FileSystem = FS,
 ) -> Optional[str]:
     """Return None to allow, or a reason string to deny."""
     if tool in SAFE_TOOLS:
@@ -71,7 +83,7 @@ def decide(
                 if ".git" in v.replace("\\", "/").split("/"):
                     return "%s: %s may not target .git" % (tool, k)
         allowed = write_roots if tool in WRITE_TOOLS else read_roots + write_roots
-        if not _within(path, allowed, fs.sep):
+        if not is_within(path, allowed, fs.sep):
             kind = "write" if tool in WRITE_TOOLS else "read"
             return "%s: %s (resolves to %s) is outside the allowed %s directories" % (tool, raw, path, kind)
         return None
@@ -79,7 +91,10 @@ def decide(
 
 
 def hook(
-    stdin: Optional[TextIO] = None, stderr: Optional[TextIO] = None, env: Environment = ENV, fs: FileSystem = FS
+    stdin: Optional[TextIO] = None,
+    stderr: Optional[TextIO] = None,
+    env: Environment = ENV,
+    fs: FileSystem = FS,
 ) -> int:
     """Decide one tool call (default: the hook protocol on this process's stdin and stderr); the exit status."""
     stdin, stderr = stdin or sys.stdin, stderr or sys.stderr

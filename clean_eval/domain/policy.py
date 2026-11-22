@@ -213,7 +213,10 @@ class Policy(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _merge_overrides(cls, data: object) -> dict[str, Any]:
+    def merge_overrides(
+        cls,
+        data: object,
+    ) -> dict[str, Any]:
         """Overrides are partial: comments (`_*`, `notes`) are dropped, v1 keys are refused with a migration hint, and a
         dictionary knob keeps the defaults of the keys it doesn't name; naming a key it doesn't have is an error."""
         if not isinstance(data, dict):
@@ -236,7 +239,10 @@ class Policy(BaseModel):
 
     @field_validator(*REGEX_KNOBS)
     @classmethod
-    def _compiles(cls, pattern: str) -> str:
+    def check_patterns_compile(
+        cls,
+        pattern: str,
+    ) -> str:
         try:
             re.compile(pattern)
         except re.error as e:
@@ -245,7 +251,10 @@ class Policy(BaseModel):
 
     @field_validator("not_applicable")
     @classmethod
-    def _reasons_compile(cls, rules: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
+    def check_reasons_compile(
+        cls,
+        rules: tuple[tuple[str, str], ...],
+    ) -> tuple[tuple[str, str], ...]:
         for reason, pattern in rules:
             try:
                 re.compile(pattern)
@@ -254,14 +263,20 @@ class Policy(BaseModel):
         return rules
 
     @model_validator(mode="after")
-    def _weights_mix_something(self) -> Self:
+    def check_weights_mix_something(
+        self,
+    ) -> Self:
         for name in WEIGHT_GROUPS:
             if sum(getattr(self, name).values()) <= 0:
                 raise ValueError("%s must have a positive sum" % name)
         return self
 
     @classmethod
-    def from_overrides(cls, overrides: Optional[dict[str, Any]] = None, source: Optional[str] = None) -> Self:
+    def from_overrides(
+        cls,
+        overrides: Optional[dict[str, Any]] = None,
+        source: Optional[str] = None,
+    ) -> Self:
         """The default policy with `overrides` (a JSON object) applied; InvalidPolicy tells what the validators refused."""
         try:
             return cls.model_validate({} if overrides is None else overrides)
@@ -269,7 +284,11 @@ class Policy(BaseModel):
             raise InvalidPolicy.from_validation(e, source)
 
     @classmethod
-    def from_text(cls, text: str, source: str) -> Self:
+    def from_text(
+        cls,
+        text: str,
+        source: str,
+    ) -> Self:
         """The policy an overrides file describes (empty text: the defaults); `source` names the file in errors."""
         try:
             overrides = json.loads(text) if text and text.strip() else {}

@@ -58,34 +58,49 @@ GENERATED = re.compile(r"(_pb2(_grpc)?\.py$|/generated/|/vendor/|/site-packages/
 MAX_FILE_BYTES = 1_500_000
 
 
-def count_loc(text: str) -> int:
+def count_loc(
+    text: str,
+) -> int:
     return sum(1 for line in text.splitlines() if line.strip() and not line.strip().startswith("#"))
 
 
-def _wanted(path: str) -> bool:
+def is_python_source(
+    path: str,
+) -> bool:
     return path.endswith(".py") and not GENERATED.search("/" + path)
 
 
-def content_id(text: str) -> str:
+def content_id(
+    text: str,
+) -> str:
     """Same id as `git hash-object` for UTF-8 text, so working-tree and revision reads share caches."""
     data = text.encode("utf-8", "surrogateescape")
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
-def working_tree_snapshot(git: Git) -> Snapshot:
+def working_tree_snapshot(
+    git: Git,
+) -> Snapshot:
     sha = git.rev_parse("HEAD", short=True)
     return Snapshot(repo=git.repo_name(), ref=git.branch() or sha, sha=sha, root=git.toplevel())
 
 
-def revision_snapshot(git: Git, rev: str) -> Snapshot:
+def revision_snapshot(
+    git: Git,
+    rev: str,
+) -> Snapshot:
     return Snapshot(repo=git.repo_name(), ref=rev, sha=git.rev_parse(rev, short=True), root=git.toplevel())
 
 
-def read_working_tree(git: Git, fs: FileSystem, policy: Policy) -> tuple[Snapshot, list[SourceFile]]:
+def read_working_tree(
+    git: Git,
+    fs: FileSystem,
+    policy: Policy,
+) -> tuple[Snapshot, list[SourceFile]]:
     """(Snapshot, the tracked Python files of the working tree as they are on disk now)."""
     snapshot, out = working_tree_snapshot(git), []
     for rel in git.ls_files():
-        if not _wanted(rel):
+        if not is_python_source(rel):
             continue
         path = fs.join(snapshot.root, rel)
         # a symlink could point outside the repository; a tracked file may be gone from the working tree
@@ -102,12 +117,15 @@ def read_working_tree(git: Git, fs: FileSystem, policy: Policy) -> tuple[Snapsho
 
 
 def read_revision(
-    git: Git, rev: str, policy: Policy, blobs: Optional[dict[str, str]] = None
+    git: Git,
+    rev: str,
+    policy: Policy,
+    blobs: Optional[dict[str, str]] = None,
 ) -> tuple[Snapshot, list[SourceFile]]:
     """(Snapshot, the Python files of a revision), read from git objects (no checkout). `blobs` ({blob id: text}, e.g. a
     RatingCache's) is shared across revisions, so each file version is read once."""
     blobs = {} if blobs is None else blobs
-    entries = [(p, b) for p, b, size in git.ls_tree(rev) if _wanted(p) and size <= MAX_FILE_BYTES]
+    entries = [(p, b) for p, b, size in git.ls_tree(rev) if is_python_source(p) and size <= MAX_FILE_BYTES]
     blobs.update(git.read_blobs([b for _, b in entries if b not in blobs]))
     files = [
         SourceFile(path=p, text=blobs[b], loc=count_loc(blobs[b]), is_test=is_test(p, policy), blob=b)
@@ -123,7 +141,10 @@ def read_revision(
 CLASS = re.compile(r'<class [^>]*filename="([^"]+)"[^>]*line-rate="([0-9.]+)"')
 
 
-def coverage_line_rates(fs: FileSystem, root: str) -> dict[str, float]:
+def coverage_line_rates(
+    fs: FileSystem,
+    root: str,
+) -> dict[str, float]:
     """{file path: line rate 0-1} from the first coverage.xml at or below `root` (one level), or {}."""
     for report in fs.glob(root, "coverage.xml") + fs.glob(root, "*/coverage.xml"):
         if fs.is_link(report):
@@ -137,12 +158,17 @@ def coverage_line_rates(fs: FileSystem, root: str) -> dict[str, float]:
 # from git objects. The rating date comes from the Clock.
 
 
-def rated_sources(files: list[SourceFile], policy: Policy) -> list[SourceFile]:
+def rated_sources(
+    files: list[SourceFile],
+    policy: Policy,
+) -> list[SourceFile]:
     """The files the ratings cover: source (not tests) that the policy doesn't exclude."""
     return [f for f in files if not f.is_test and not analysis.excluded(f.path, policy)]
 
 
-def _no_python(snapshot: Snapshot) -> NoPythonSource:
+def no_python_error(
+    snapshot: Snapshot,
+) -> NoPythonSource:
     return NoPythonSource("no Python source files in %s at %s" % (snapshot.repo, snapshot.ref))
 
 
@@ -161,7 +187,7 @@ def rate(
     src = rated_sources(files, policy)
     mods, notes = split_modules(src, policy, depth, max_modules)
     if not mods:
-        raise _no_python(snapshot)
+        raise no_python_error(snapshot)
     notes.insert(
         0,
         "Knowledge graph (%s): %d nodes, %d edges, %d flows"
@@ -181,12 +207,15 @@ def rate(
     total_loc = sum(f.loc for f in src) or 1
     signals = {f.path: file_signals(f, signals_cache) for fl in mods.values() for f in fl}
 
-    def facts_of(name: str, mod_files: list[SourceFile]) -> Facts:
+    def facts_of(
+        name: str,
+        mod_files: list[SourceFile],
+    ) -> Facts:
         loc = sum(f.loc for f in mod_files)
         py = [s for s in (signals[f.path].stats for f in mod_files) if s is not None]
         n = sum(len(s.funcs) for s in py)
         counts, examples = Counter(), {}
-        for f in sorted(mod_files, key=lambda x: x.path):
+        for f in sorted(mod_files, key=lambda source_file: source_file.path):
             for kind, (count, line) in signals[f.path].effects.items():
                 counts[kind] += count
                 examples.setdefault(kind, "%s:%d" % (f.path, line))
@@ -225,9 +254,11 @@ def rate(
             flows_available=graph.has_flows,
         )
 
-    def top_files(mod_files: list[SourceFile]) -> list[TopFile]:
+    def top_files(
+        mod_files: list[SourceFile],
+    ) -> list[TopFile]:
         out = []
-        for f in sorted(mod_files, key=lambda f: -f.loc)[:5]:
+        for f in sorted(mod_files, key=lambda source_file: -source_file.loc)[:5]:
             stats = signals[f.path].stats
             out.append(
                 TopFile(path=f.path, loc=f.loc, max_fn=max((x[0] for x in stats.funcs), default=0) if stats else None)
@@ -235,7 +266,8 @@ def rate(
         return out
 
     ratings = sorted(
-        (rate_module(facts_of(name, fl), top_files(fl), policy) for name, fl in mods.items()), key=lambda r: -r.loc
+        (rate_module(facts_of(name, fl), top_files(fl), policy) for name, fl in mods.items()),
+        key=lambda rating: -rating.loc,
     )
     notes.append("Unverified uses test links from the graph" + ("" if coverage else "; no coverage report in the repo"))
     return Heatmap(
@@ -264,7 +296,7 @@ def rate_working_tree(
     default under .git) replaces the built-in one."""
     snapshot, files = read_working_tree(git, fs, policy)
     if not rated_sources(files, policy):
-        raise _no_python(snapshot)
+        raise no_python_error(snapshot)
     if knowledge_graph is None:
         graph = builtin_graph(files)
     else:
@@ -296,7 +328,7 @@ def rate_revision(
     across revisions, so rating many of them reads and parses each file version once."""
     snapshot, files = read_revision(git, rev, policy, cache.blobs)
     if not rated_sources(files, policy):
-        raise _no_python(snapshot)
+        raise no_python_error(snapshot)
     return rate(
         snapshot,
         files,
@@ -313,7 +345,11 @@ def rate_revision(
 # recompute the overall scores.
 
 
-def finalize_heatmap(heatmap: Heatmap, judgement: Optional[Judgement], policy: Policy) -> Heatmap:
+def finalize_heatmap(
+    heatmap: Heatmap,
+    judgement: Optional[Judgement],
+    policy: Policy,
+) -> Heatmap:
     if judgement is not None:
         apply_levels(heatmap, judgement)
     return refresh_overall(heatmap, policy.overall_peak_share)
@@ -323,7 +359,10 @@ def finalize_heatmap(heatmap: Heatmap, judgement: Optional[Judgement], policy: P
 
 
 def summarize_heatmap(
-    presenter: ReportPresenter, heatmap: Heatmap, judgement: Optional[Judgement], policy: Policy
+    presenter: ReportPresenter,
+    heatmap: Heatmap,
+    judgement: Optional[Judgement],
+    policy: Policy,
 ) -> tuple[Heatmap, str]:
     """(the finalized Heatmap, its report from the ReportPresenter)."""
     heatmap = finalize_heatmap(heatmap, judgement, policy)
@@ -358,7 +397,11 @@ def update_readme(
     return ReadmeUpdate(heatmap=heatmap, changed=True, action=action, fingerprint=fp)
 
 
-def finalize_heatmap_report(fs: FileSystem, env: Environment, out: str) -> tuple[None, StepOutputs]:
+def finalize_heatmap_report(
+    fs: FileSystem,
+    env: Environment,
+    out: str,
+) -> tuple[None, StepOutputs]:
     """The heat map's run in CI: its report is the deterministic summary (`out`/heatmap.md, redacted: the agent only
     levels), written to `out`/report.md. No result and no step outputs."""
     write_run_output(fs, out, fs.join(out, "heatmap.md"), None, secret_values(env.variables()))

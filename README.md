@@ -11,7 +11,7 @@ Claude Code skills in `.claude/skills/` form a feedback loop:
 | `/pr-review [PR#\|branch]` | Reviews a change against `pr-review/review-rules.md`, with depth scaled by the most severe band it touches in the heat map of its base. Every finding cites a rule ID. | heat map + rules → review |
 | `/eval [period]` | Replays merged PRs in a period, links later fixes/reverts to the PRs that caused them, measures how well risk scores and rules predicted them, and recommends changes to weights, thresholds and rules. | history → advice for model + rules |
 
-Requires [uv](https://docs.astral.sh/uv/) (it provides Python 3.15 and the locked dependencies, pydantic among them) and
+Requires [uv](https://docs.astral.sh/uv/) (it provides Python 3.15 and the locked dependencies, pydantic and click among them) and
 git; `gh` (authenticated) for PR-number reviews, posting, and rule metrics in `/eval`.
 Optional: the `code-review-graph` CLI, for call and execution-flow data in the heat map (`--graph code-review-graph`).
 
@@ -119,17 +119,18 @@ The agent reads untrusted text (PR diffs and descriptions, commit messages, comm
 uv sync                                                # Python 3.15 and the locked dependencies, in .venv
 uv run pytest                                          # every test: fake gh/claude, no network
 uv run pytest -m "not e2e"                             # skip the subprocess end-to-end tests (seconds, not ~30 s)
-uv run pytest tests/use_cases/test_heatmap.py          # one module (::test_helpers for one test, -k to filter)
+uv run pytest tests/use_cases/test_heatmap.py          # one module (::TestRate for one class, -k to filter)
 uv run ruff check --fix .                              # lint: pycodestyle, pyflakes, isort's import order
 uv run ruff format .                                   # format: Black's style, 120 columns
 uv run ty check                                        # type check (every function of the package is annotated)
 ```
 
-The tests are written for pytest (fixtures in `conftest.py`, parametrized tables, plain asserts) and laid out like the
-package: `tests/<layer>/` holds the tests of `clean_eval/<layer>/` (`test_<module>.py` for `<module>.py`) and follows
-the same dependency rule, so the use cases are tested against in-memory fakes of their interfaces
-(`tests/use_cases/fakes.py`) and the real dependencies only in `tests/external/`, where each fake runs through the same
-checks as the gateway it stands in for. The tests at the top of `tests/` span the layers: the architecture rules,
+The tests are written for pytest and laid out like the package: `tests/<layer>/` holds the tests of
+`clean_eval/<layer>/` (`test_<module>.py` for `<module>.py`) and follows the same dependency rule. Tests are grouped in
+classes. Their fixtures live in the `conftest.py` at the level of the tests that share them, and a test customises a
+fixture through `request.param` (indirect parametrization). External dependencies are MagicMocks injected into the code
+under test; the use cases' git and file system answer through in-memory fakes that run through the same contract
+checks as the real gateways. The tests at the top of `tests/` span the layers: the architecture and code-style rules,
 `action.sh` end to end, and the release check. The `tests` workflow runs the suite, both ruff checks and ty's type check
 on every push to a pull request and to `master`.
 

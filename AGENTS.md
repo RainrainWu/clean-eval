@@ -13,10 +13,10 @@ This file is the big picture. Each layer's own rules are in its `AGENTS.md`: `cl
 ## Commands
 
 ```bash
-uv sync                                                  # Python 3.15 and the locked dependencies (pydantic) in .venv
+uv sync                                                  # Python 3.15 and the locked dependencies (pydantic, click) in .venv
 uv run pytest                                            # the whole suite, ~30 s; no network (fake gh and claude)
 uv run pytest -m "not e2e"                               # without the subprocess end-to-end tests, ~5 s
-uv run pytest tests/use_cases/test_heatmap.py            # one module (::test_helpers for one test, -k to filter)
+uv run pytest tests/use_cases/test_heatmap.py            # one module (::TestRate for one class, -k to filter)
 uv run ruff check --fix .                                # lint: pycodestyle, pyflakes, isort's import order
 uv run ruff format .                                     # format: Black's style, 120 columns
 uv run ty check                                          # type check: the package, the tests and .github/scripts
@@ -40,11 +40,11 @@ The package is in four layers. Imports point inward only: domain ‚Üê use_cases ‚
 | `domain/` | pydantic data models only; every invariant is a validator |
 | `use_cases/` | `interfaces.py` (the abstract classes of every external utility), plus module-level functions that take implementations of them: `heatmap.py`, `review.py`, `evaluation.py` and the shared `store.py`; `rules/` holds the pure business rules, by the same features plus `analysis.py` |
 | `adaptor/` | the presenters (SVG treemap, Markdown summary) |
-| `external/` | one gateway per external dependency, the command line `cli.py` (also the composition root) and the CI agent's guard `agent_guard.py` |
+| `external/` | one gateway per external dependency, the click command line `cli.py` (the entry point of every utility, and the composition root) and the CI agent's guard `agent_guard.py` |
 
 A command runs in this order:
 1. `__main__.py` puts the checkout on `sys.path`.
-2. A driver parses the arguments.
+2. The click command line (`cli.py`) parses the arguments and picks the command.
 3. The driver builds the gateways and presenters (`cli.py` is the composition root) and calls a use-case function with them.
 4. The driver prints the outcome.
 
@@ -75,6 +75,12 @@ The action (`action.sh`) runs four steps. The agent only proposes; deterministic
 - **Every function in `clean_eval/` is annotated** (ruff's `ANN`), and ty checks each call against the annotations.
   - Write `Optional[...]` and `Union[...]` from `typing`, as the domain models do.
   - Input that is validated before use (parsed JSON, a `mode="before"` validator's value) is `object`, not `Any`.
+- **Code style, everywhere (package, tests, scripts).** `TestCodeStyle` in `tests/test_architecture.py` enforces it.
+  - **No protected-level functions or methods.** There is no `def _name`. Give a helper a descriptive public name.
+    A gateway's helpers are module-level functions, since a gateway class exposes only its interface.
+  - **One parameter per line.** Every `def` with parameters ends its parameter list with a trailing comma, so ruff
+    format puts each parameter on its own line, `self` included.
+  - **Descriptive parameter names.** No single-character parameter, lambdas included (`lambda module: -module.loc`).
 - **Logic goes into `clean_eval`; the skills hold only instructions.** They invoke the package as
   `uv run --frozen --no-config --project ${CLEAN_EVAL_HOME:-.} python -I ${CLEAN_EVAL_HOME:-.}/clean_eval`.
 - **A repository's own tuning in `.clean-eval/` overrides the bundled defaults.**

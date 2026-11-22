@@ -20,4 +20,5 @@ merged-PR history and an eval's outcome, plus the constants and error types they
 - **Policy changes:** `policy.py` holds the risk model's defaults. A repository overrides them in
   `.clean-eval/risk-model.json`, so a new knob needs a default here and validation of its override. The contract is in
   `.claude/skills/risk-heat-map/references/rate.md`.
-- **Tests** go in `tests/domain/test_<module>.py`. Build models there with `tests/domain/builders.py`.
+- **Tests** go in `tests/domain/test_<module>.py`. They build the models they need with the fixtures of
+  `tests/conftest.py` (`facts`, `ratings`, `heatmap`, ...), customised through `request.param`.

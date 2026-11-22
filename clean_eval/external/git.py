@@ -10,28 +10,46 @@ from clean_eval.domain.errors import HeatmapError
 from clean_eval.use_cases.interfaces import Git
 
 
+def run_git(
+    root: str,
+    *args: str,
+    check: bool = True,
+) -> str:
+    """The output of `git <args>` in the repository at `root`; HeatmapError when it fails and `check` is on."""
+    completed = subprocess.run(
+        ["git", "-c", "core.quotePath=false", "-C", root, *args],
+        capture_output=True,
+        text=True,
+        errors="surrogateescape",
+    )
+    if check and completed.returncode != 0:
+        raise HeatmapError("git %s failed: %s" % (" ".join(args[:3]), completed.stderr.strip()[-300:]))
+    return completed.stdout
+
+
 class GitGateway(Git):
-    def __init__(self, root: str) -> None:
+    def __init__(
+        self,
+        root: str,
+    ) -> None:
         self.root = root
 
-    def _run(self, *args: str, check: bool = True) -> str:
-        r = subprocess.run(
-            ["git", "-c", "core.quotePath=false", "-C", self.root, *args],
-            capture_output=True,
-            text=True,
-            errors="surrogateescape",
-        )
-        if check and r.returncode != 0:
-            raise HeatmapError("git %s failed: %s" % (" ".join(args[:3]), r.stderr.strip()[-300:]))
-        return r.stdout
+    def toplevel(
+        self,
+    ) -> str:
+        return run_git(self.root, "rev-parse", "--show-toplevel").strip()
 
-    def toplevel(self) -> str:
-        return self._run("rev-parse", "--show-toplevel").strip()
+    def rev_parse(
+        self,
+        rev: str,
+        short: bool = False,
+    ) -> str:
+        return run_git(self.root, "rev-parse", *(["--short"] if short else []), "--verify", rev + "^{commit}").strip()
 
-    def rev_parse(self, rev: str, short: bool = False) -> str:
-        return self._run("rev-parse", *(["--short"] if short else []), "--verify", rev + "^{commit}").strip()
-
-    def has_commit(self, rev: str) -> bool:
+    def has_commit(
+        self,
+        rev: str,
+    ) -> bool:
         return (
             subprocess.run(
                 ["git", "-C", self.root, "cat-file", "-e", rev + "^{commit}"], capture_output=True
@@ -39,25 +57,38 @@ class GitGateway(Git):
             == 0
         )
 
-    def merge_base(self, a: str, b: str) -> str:
-        return self._run("merge-base", a, b).strip()
+    def merge_base(
+        self,
+        first_rev: str,
+        second_rev: str,
+    ) -> str:
+        return run_git(self.root, "merge-base", first_rev, second_rev).strip()
 
-    def branch(self) -> str:
-        name = self._run("rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
+    def branch(
+        self,
+    ) -> str:
+        name = run_git(self.root, "rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
         return name if name and name != "HEAD" else ""
 
-    def repo_name(self) -> str:
-        url = self._run("config", "--get", "remote.origin.url", check=False).strip()
+    def repo_name(
+        self,
+    ) -> str:
+        url = run_git(self.root, "config", "--get", "remote.origin.url", check=False).strip()
         name = re.sub(r"\.git$", "", url.rstrip("/")).split("/")[-1].split(":")[-1] if url else ""
         return name or self.toplevel().rstrip("/").rsplit("/", 1)[-1]
 
-    def ls_files(self) -> list[str]:
-        return [p for p in self._run("ls-files", "-z").split("\0") if p]
+    def ls_files(
+        self,
+    ) -> list[str]:
+        return [p for p in run_git(self.root, "ls-files", "-z").split("\0") if p]
 
-    def ls_tree(self, rev: str) -> list[tuple[str, str, int]]:
+    def ls_tree(
+        self,
+        rev: str,
+    ) -> list[tuple[str, str, int]]:
         """[(path, blob id, size)] of the files at `rev`."""
         out = []
-        for entry in self._run("ls-tree", "-r", "-z", "--long", rev).split("\0"):
+        for entry in run_git(self.root, "ls-tree", "-r", "-z", "--long", rev).split("\0"):
             if not entry:
                 continue
             meta, _, path = entry.partition("\t")
@@ -66,7 +97,10 @@ class GitGateway(Git):
                 out.append((path, blob, int(size)))
         return out
 
-    def read_blobs(self, blob_ids: list[str]) -> dict[str, str]:
+    def read_blobs(
+        self,
+        blob_ids: list[str],
+    ) -> dict[str, str]:
         """{blob id: text} for the given blobs, read through one `git cat-file --batch` process."""
         ids = list(dict.fromkeys(blob_ids))
         if not ids:
@@ -88,14 +122,22 @@ class GitGateway(Git):
             pos += size + 1
         return out
 
-    def diff_files(self, base: str, head: str) -> list[str]:
+    def diff_files(
+        self,
+        base: str,
+        head: str,
+    ) -> list[str]:
         """Paths changed between two revisions (raw, NUL-delimited)."""
-        return [p for p in self._run("diff", "--name-only", "-z", base, head).split("\0") if p]
+        return [p for p in run_git(self.root, "diff", "--name-only", "-z", base, head).split("\0") if p]
 
-    def show(self, rev: str, path: str) -> Optional[str]:
+    def show(
+        self,
+        rev: str,
+        path: str,
+    ) -> Optional[str]:
         """Text of the file `path` at `rev`, or None when `rev` has no such file. Any other git failure (a bad revision,
         a broken repository) raises, so a caller never mistakes an error for "not configured"."""
-        listing = self._run("--literal-pathspecs", "ls-tree", "-r", "-z", rev, "--", path)
+        listing = run_git(self.root, "--literal-pathspecs", "ls-tree", "-r", "-z", rev, "--", path)
         blob = None
         for entry in listing.split("\0"):
             meta, _, name = entry.partition("\t")
@@ -110,32 +152,69 @@ class GitGateway(Git):
             )
         return r.stdout.decode("utf-8", "replace")
 
-    def ensure_commit(self, sha: str, refspec: str) -> None:
+    def ensure_commit(
+        self,
+        sha: str,
+        refspec: str,
+    ) -> None:
         """Fetch `refspec` from origin when `sha` is not here yet."""
         if not self.has_commit(sha):
-            self._run("fetch", "--quiet", "origin", refspec, check=False)
+            run_git(self.root, "fetch", "--quiet", "origin", refspec, check=False)
         if not self.has_commit(sha):
             raise HeatmapError("commit %s is not available locally (checkout with fetch-depth: 0)" % sha)
 
-    def diff(self, base: str, head: str, path: Optional[str] = None) -> str:
+    def diff(
+        self,
+        base: str,
+        head: str,
+        path: Optional[str] = None,
+    ) -> str:
         """The patch base..head of one path (taken literally), or of every path with renames detected."""
         if path is None:
-            return self._run("diff", "-M", base, head)
-        return self._run("--literal-pathspecs", "diff", base, head, "--", path)
+            return run_git(self.root, "diff", "-M", base, head)
+        return run_git(self.root, "--literal-pathspecs", "diff", base, head, "--", path)
 
-    def file_log(self, rev: str, path: str, limit: int = 10) -> str:
-        return self._run(
-            "--literal-pathspecs", "log", "--format=%h %ad %an: %s", "--date=short", "-n", str(limit), rev, "--", path
+    def file_log(
+        self,
+        rev: str,
+        path: str,
+        limit: int = 10,
+    ) -> str:
+        return run_git(
+            self.root,
+            "--literal-pathspecs",
+            "log",
+            "--format=%h %ad %an: %s",
+            "--date=short",
+            "-n",
+            str(limit),
+            rev,
+            "--",
+            path,
         ).strip()
 
-    def commit_patch(self, sha: str, paths: list[str]) -> str:
-        return self._run(
-            "--literal-pathspecs", "show", "--stat", "-p", "--format=%H%n%an %ad%n%s%n%n%b", sha, "--", *paths
+    def commit_patch(
+        self,
+        sha: str,
+        paths: list[str],
+    ) -> str:
+        return run_git(
+            self.root,
+            "--literal-pathspecs",
+            "show",
+            "--stat",
+            "-p",
+            "--format=%H%n%an %ad%n%s%n%n%b",
+            sha,
+            "--",
+            *paths,
         )
 
-    def default_branch(self) -> str:
+    def default_branch(
+        self,
+    ) -> str:
         """origin/HEAD, else origin/main|master (CI checkouts don't set origin/HEAD), else HEAD."""
-        ref = self._run("symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False).strip()
+        ref = run_git(self.root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False).strip()
         if ref:
             return ref
         for ref in ("origin/main", "origin/master", "main", "master"):
@@ -143,10 +222,16 @@ class GitGateway(Git):
                 return ref
         return "HEAD"
 
-    def first_parent_log(self, branch: str, since: str, until: str) -> list[tuple[str, list[str], str, int, str]]:
+    def first_parent_log(
+        self,
+        branch: str,
+        since: str,
+        until: str,
+    ) -> list[tuple[str, list[str], str, int, str]]:
         """[(sha, [parent shas], author, unix time, subject)] of the first-parent commits of `branch` in the period."""
         out = []
-        for line in self._run(
+        for line in run_git(
+            self.root,
             "log",
             "--first-parent",
             branch,

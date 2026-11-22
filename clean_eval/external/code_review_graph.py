@@ -19,26 +19,43 @@ FLOWS = "select f.id, f.criticality, n.qualified_name from flows f join nodes n 
 FLOW_FILES = "select n.file_path from flow_memberships m join nodes n on n.id = m.node_id where m.flow_id = ?"
 
 
-def read_graph(con: sqlite3.Connection, root: str) -> Graph:
+def read_graph(
+    con: sqlite3.Connection,
+    root: str,
+) -> Graph:
     """The graph in an open code-review-graph database, Python only, with paths relative to `root`."""
     prefix = root.rstrip("/") + "/"
-    rel = lambda p: p[len(prefix) :] if p.startswith(prefix) else p  # noqa: E731
-    fof = lambda q: rel(q.split("::")[0])  # noqa: E731
-    rows = lambda query, params=(): con.execute(query, params).fetchall()  # noqa: E731
-    nodes = {q: (kind, rel(fp), bool(t)) for q, kind, fp, t in rows(NODES)}
+
+    def relative(
+        path: str,
+    ) -> str:
+        return path[len(prefix) :] if path.startswith(prefix) else path
+
+    def file_of(
+        qualified_name: str,
+    ) -> str:
+        return relative(qualified_name.split("::")[0])
+
+    def rows(
+        query: str,
+        params: tuple = (),
+    ) -> list:
+        return con.execute(query, params).fetchall()
+
+    nodes = {q: (kind, relative(fp), bool(t)) for q, kind, fp, t in rows(NODES)}
     links, tested = {}, {}
     for kind, s, t, tier, res in rows(EDGES):
         if tier == "UNRESOLVED" or res == "unresolved":
             continue
         if kind == "TESTED_BY":
             if s in nodes:
-                tested.setdefault(s, set()).add(fof(t))
-        elif fof(s) != fof(t):
-            links.setdefault(fof(s), set()).add(fof(t))
+                tested.setdefault(s, set()).add(file_of(t))
+        elif file_of(s) != file_of(t):
+            links.setdefault(file_of(s), set()).add(file_of(t))
     flows = []
     for fid, crit, entry in rows(FLOWS):
-        files = {rel(r[0]) for r in rows(FLOW_FILES, (fid,))}
-        flows.append((crit or 0.0, fof(entry), files))  # a flow without a criticality weighs nothing
+        files = {relative(r[0]) for r in rows(FLOW_FILES, (fid,))}
+        flows.append((crit or 0.0, file_of(entry), files))  # a flow without a criticality weighs nothing
     stats = {
         "source": "code-review-graph",
         "nodes": rows("select count(*) from nodes")[0][0],
@@ -49,10 +66,17 @@ def read_graph(con: sqlite3.Connection, root: str) -> Graph:
 
 
 class CodeReviewGraphGateway(KnowledgeGraph):
-    def __init__(self, executable: str) -> None:
+    def __init__(
+        self,
+        executable: str,
+    ) -> None:
         self.executable = executable  # resolved by the composition root (PATH, else ~/.local/bin)
 
-    def graph_of(self, repo_root: str, data_dir: str) -> Graph:
+    def graph_of(
+        self,
+        repo_root: str,
+        data_dir: str,
+    ) -> Graph:
         try:
             subprocess.run(
                 [self.executable, "build", "--repo", repo_root, "--data-dir", data_dir, "-q"],

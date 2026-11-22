@@ -1,79 +1,132 @@
-"""The rating models (domain/rating.py): the code read, the knowledge graph, rated modules and heat maps, a reviewer's
-judgement, and a change's risk."""
+"""The rating models (domain/rating.py): score ranges, assignments that are validated, facts that survive JSON, the
+records of a change's risk, and a reviewer's judgement, whose levels that don't validate are dropped, not raised."""
 
 import pytest
 from pydantic import ValidationError
 
-from clean_eval.domain.policy import BAND_NAMES, Band
-from clean_eval.domain.rating import Facts, Judgement, ModuleRecord, Scores
-from tests.domain.builders import facts, rating
+from clean_eval.domain.rating import Facts, ModuleRecord, Scores
 
-# The rating models (domain/rating.py): score ranges, facts that survive JSON, assignments that are validated.
-
-
-def test_scores_are_0_to_100_and_only_unverified_may_be_na():
-    Scores(biz=0, effects=100, entropy=5, unverified=None, overall=60)
-
-
-@pytest.mark.parametrize("bad", [{"biz": 101}, {"entropy": -1}, {"biz": None}, {"overall": "high"}], ids=repr)
-def test_out_of_range_or_missing_scores_are_refused(bad):
-    with pytest.raises(ValidationError):
-        Scores(**{"biz": 1, "effects": 1, "entropy": 1, "unverified": 1, "overall": 1, **bad})
-
-
-def test_assignments_are_validated():
-    m = rating()
-    with pytest.raises(ValidationError):
-        m.scores.biz = 140
-    with pytest.raises(ValidationError):
-        m.loc = -5
+# A reviewer's judgement: one valid level, among an unknown level, an unknown aspect, a level that isn't an int, a
+# module that isn't an object and a module name that isn't a string.
+UNTIDY_JUDGEMENT = {
+    "modules": {
+        "a": {
+            "business": {"level": 1, "reason": "core path " * 50},
+            "effects": {"level": 9},
+            "nope": {"level": 0},
+        },
+        "b": {"entropy": {"level": True}},
+        "c": "x",
+        7: {"business": {"level": 0}},
+    }
+}
 
 
-def test_facts_keep_their_counters_through_json():
-    f = facts()
-    back = Facts.model_validate_json(f.model_dump_json())
-    assert back == f
-    assert back.test_scales.most_common(1) == [("unit", 2)]
-    with pytest.raises(ValidationError):
-        facts(share=1.5)
+class TestScores:
+    """Scores are 0 to 100, and only Unverified may be N/A (None)."""
 
-
-def test_rated_means_scored():
-    ModuleRecord(module="m", band="Low", score=10, rated=True)
-    ModuleRecord(module="infra", band="Moderate", rated=False)
-
-
-@pytest.mark.parametrize(
-    "bad", [{"rated": True}, {"rated": False, "score": 30}], ids=["rated without a score", "unrated with a score"]
-)
-def test_a_record_is_scored_exactly_when_rated(bad):
-    with pytest.raises(ValidationError):
-        ModuleRecord(module="m", band="Low", **bad)
-
-
-def test_the_band_type_matches_the_bands():
-    assert Band.__args__ == BAND_NAMES
-
-
-# A reviewer's judgement (domain/rating.py): levels that don't validate are dropped, not raised.
-
-
-def test_invalid_entries_are_dropped_not_fatal():
-    j = Judgement.model_validate(
-        {
-            "modules": {
-                "a": {
-                    "business": {"level": 1, "reason": "core path " * 50},
-                    "effects": {"level": 9},
-                    "nope": {"level": 0},
-                },
-                "b": {"entropy": {"level": True}},
-                "c": "x",
-                7: {"business": {"level": 0}},
-            }
-        }
+    @pytest.mark.parametrize(
+        "scores",
+        [{"biz": 0, "effects": 100, "entropy": 5, "unverified": None, "overall": 60}],
+        indirect=True,
+        ids=["0, 100 and N/A"],
     )
-    assert list(j.modules) == ["a"]
-    assert list(j.modules["a"]) == ["business"]
-    assert len(j.modules["a"]["business"].reason) == 240
-    assert Judgement.model_validate("not an object").modules == {}
+    def test_scores_are_0_to_100_and_only_unverified_may_be_na(
+        self,
+        scores,
+    ):
+        assert Scores.model_validate(scores).unverified is None
+
+    @pytest.mark.parametrize(
+        "scores",
+        [{"biz": 101}, {"entropy": -1}, {"biz": None}, {"overall": "high"}],
+        indirect=True,
+        ids=repr,
+    )
+    def test_out_of_range_or_missing_scores_are_refused(
+        self,
+        scores,
+    ):
+        with pytest.raises(ValidationError):
+            Scores.model_validate(scores)
+
+
+class TestModuleRating:
+    """A rated module validates assignments too, so no rule can push a score or a count out of range."""
+
+    def test_assignments_are_validated(
+        self,
+        rating,
+    ):
+        with pytest.raises(ValidationError):
+            rating.scores.biz = 140
+        with pytest.raises(ValidationError):
+            rating.loc = -5
+
+
+class TestFacts:
+    """The facts behind a module's scores survive JSON, counters and all, and stay in range."""
+
+    def test_facts_keep_their_counters_through_json(
+        self,
+        facts,
+    ):
+        back = Facts.model_validate_json(facts.model_dump_json())
+        assert back == facts
+        assert back.test_scales.most_common(1) == [("unit", 2)]
+
+    def test_a_share_of_the_code_above_one_is_refused(
+        self,
+        facts,
+    ):
+        with pytest.raises(ValidationError):
+            Facts.model_validate({**facts.model_dump(), "share": 1.5})
+
+
+class TestModuleRecord:
+    """A module a change touched is scored exactly when it is rated."""
+
+    @pytest.mark.parametrize(
+        "module_record",
+        [{}, {"module": "infra", "band": "Moderate", "score": None, "rated": False}],
+        indirect=True,
+        ids=["rated with a score", "unrated without one"],
+    )
+    def test_rated_means_scored(
+        self,
+        module_record,
+    ):
+        ModuleRecord.model_validate(module_record)
+
+    @pytest.mark.parametrize(
+        "module_record",
+        [{"score": None}, {"rated": False, "score": 30}],
+        indirect=True,
+        ids=["rated without a score", "unrated with a score"],
+    )
+    def test_a_record_is_scored_exactly_when_rated(
+        self,
+        module_record,
+    ):
+        with pytest.raises(ValidationError):
+            ModuleRecord.model_validate(module_record)
+
+
+class TestJudgement:
+    """A reviewer's judgement is untrusted: an entry that doesn't validate is dropped rather than failing it all."""
+
+    @pytest.mark.parametrize("judgement", [UNTIDY_JUDGEMENT], indirect=True, ids=["untidy"])
+    def test_invalid_entries_are_dropped_not_fatal(
+        self,
+        judgement,
+    ):
+        assert list(judgement.modules) == ["a"]
+        assert list(judgement.modules["a"]) == ["business"]
+        assert len(judgement.modules["a"]["business"].reason) == 240
+
+    @pytest.mark.parametrize("judgement", ["not an object"], indirect=True)
+    def test_a_judgement_that_is_not_an_object_has_no_levels(
+        self,
+        judgement,
+    ):
+        assert judgement.modules == {}

@@ -30,7 +30,9 @@ from clean_eval.use_cases.rules.heatmap import band, band_floor, severity
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
-def split_patch(full: str) -> list[str]:
+def split_patch(
+    full: str,
+) -> list[str]:
     """Split a `git diff` into one chunk per file (each starts with 'diff --git ')."""
     chunks, cur = [], []
     for line in full.splitlines(keepends=True):
@@ -43,14 +45,19 @@ def split_patch(full: str) -> list[str]:
     return chunks
 
 
-def truncate(text: str, limit: int) -> tuple[str, bool]:
+def truncate(
+    text: str,
+    limit: int,
+) -> tuple[str, bool]:
     """(text cut to `limit` characters with a note saying how much is missing, whether it was cut)."""
     if len(text) <= limit:
         return text, False
     return text[:limit] + "\n\n[... truncated: %d more characters ...]\n" % (len(text) - limit), True
 
 
-def line_counts(patch: str) -> tuple[int, int]:
+def line_counts(
+    patch: str,
+) -> tuple[int, int]:
     """(lines added, lines removed) by a patch."""
     lines = patch.splitlines()
     return (
@@ -59,7 +66,9 @@ def line_counts(patch: str) -> tuple[int, int]:
     )
 
 
-def commentable_lines(patch: str) -> set[int]:
+def commentable_lines(
+    patch: str,
+) -> set[int]:
     """The new-side line numbers of one file's patch that GitHub accepts inline comments on: added and context lines."""
     lines, new = set(), None
     for line in patch.splitlines():
@@ -97,7 +106,9 @@ MARKER_RE = re.compile(r"<!--\s*clean-eval:[^>]*-->")
 MAX_REPORT_CHARS = 60_000  # GitHub caps review bodies at 65,536
 
 
-def secret_values(environ: Mapping[str, str]) -> tuple[str, ...]:
+def secret_values(
+    environ: Mapping[str, str],
+) -> tuple[str, ...]:
     """The values to redact, from an environment mapping: every secret-looking variable's value (8+ characters) and its
     base64 forms, e.g. the `AUTHORIZATION: basic <b64("x-access-token:<token>")>` actions/checkout persists in .git/config.
     Longest first, so a secret that contains another is replaced whole."""
@@ -106,7 +117,9 @@ def secret_values(environ: Mapping[str, str]) -> tuple[str, ...]:
     return tuple(sorted(values | encoded, key=len, reverse=True))
 
 
-def neutralize_comments(text: str) -> str:
+def neutralize_comments(
+    text: str,
+) -> str:
     """Agent text may not carry HTML comments: strip clean-eval markers until none reassemble from nested input, then
     defang every remaining `<!--`, so nothing hidden (or marker-like) reaches GitHub."""
     while True:
@@ -117,7 +130,10 @@ def neutralize_comments(text: str) -> str:
     return text.replace("<!--", "&lt;!--")
 
 
-def redact(text: str, secrets: Sequence[str] = ()) -> tuple[str, int]:
+def redact(
+    text: str,
+    secrets: Sequence[str] = (),
+) -> tuple[str, int]:
     """(text with secrets and well-known token formats replaced, number of replacements). `secrets` as secret_values
     gives them."""
     n = 0
@@ -132,7 +148,10 @@ def redact(text: str, secrets: Sequence[str] = ()) -> tuple[str, int]:
     return text, n + k
 
 
-def sanitize_report(text: str, secrets: Sequence[str] = ()) -> tuple[str, int]:
+def sanitize_report(
+    text: str,
+    secrets: Sequence[str] = (),
+) -> tuple[str, int]:
     """(report safe to post, redactions): no comments (the agent can't forge or duplicate the marker), no secrets, within
     GitHub's size limit."""
     text, n = redact(neutralize_comments(text or ""), secrets)
@@ -144,7 +163,10 @@ def sanitize_report(text: str, secrets: Sequence[str] = ()) -> tuple[str, int]:
 # The risk a change carries: each changed path takes the band of the module it belongs to, as rated at the change's base.
 
 
-def _unrated_key(path: str, names: Collection[str]) -> str:
+def unrated_module_name(
+    path: str,
+    names: Collection[str],
+) -> str:
     """Name for a path outside every rated module: the first folder level that leaves the rated tree (or the file)."""
     parts = path.split("/")
     for i in range(1, len(parts)):
@@ -154,7 +176,11 @@ def _unrated_key(path: str, names: Collection[str]) -> str:
     return path
 
 
-def change_risk(heatmap: Heatmap, paths: list[str], policy: Policy) -> ChangeRisk:
+def change_risk(
+    heatmap: Heatmap,
+    paths: list[str],
+    policy: Policy,
+) -> ChangeRisk:
     """The ChangeRisk of changing `paths`, from the heat map of the change's base."""
     by_name = {m.name: m for m in heatmap.modules}
     files, touched, skipped = {}, {}, []
@@ -180,9 +206,9 @@ def change_risk(heatmap: Heatmap, paths: list[str], policy: Policy) -> ChangeRis
                 ),
             )
         else:
-            key = _unrated_key(path, by_name)
+            key = unrated_module_name(path, by_name)
             touched.setdefault(key, ModuleRisk(module=key, band=policy.unrated_band, rated=False))
-    risks = sorted(touched.values(), key=lambda r: (-severity(r.band), -(r.score or 0), r.module))
+    risks = sorted(touched.values(), key=lambda risk: (-severity(risk.band), -(risk.score or 0), risk.module))
     scores = [r.score for r in risks if r.rated] + [band_floor(r.band) for r in risks if not r.rated]
     return ChangeRisk(
         files=files,
@@ -204,30 +230,43 @@ RULE_ROW = re.compile(
 REVIEW_MARKER = re.compile(r"<!--\s*clean-eval:pr-review\s+([^>]*)-->")
 
 
-def _rows(text: str) -> list[ReviewRule]:
+def rule_rows(
+    text: str,
+) -> list[ReviewRule]:
     return [
         ReviewRule.model_validate({"id": m.group(1), "severity": m.group(2), "min_tier": m.group(3)})
         for m in RULE_ROW.finditer(text)
     ]
 
 
-def parse_rules(text: str) -> RulesTable:
+def parse_rules(
+    text: str,
+) -> RulesTable:
     """The RulesTable of a rules file (rows of its Markdown tables)."""
-    return RulesTable(rules=_rows(text))
+    return RulesTable(rules=rule_rows(text))
 
 
-def check_rules(text: str) -> CheckedRules:
+def check_rules(
+    text: str,
+) -> CheckedRules:
     """The rules of a rules file an unattended eval may keep; a ValidationError when it has no rows or repeats an ID."""
-    return CheckedRules(rules=_rows(text))
+    return CheckedRules(rules=rule_rows(text))
 
 
-def rules_version(text: str) -> str:
+def rules_version(
+    text: str,
+) -> str:
     """Short id of a rules file: its git blob hash (as `git hash-object` gives it), 8 characters."""
     data = text.encode()
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()[:8]
 
 
-def finalize_review(agent: AgentReview, risk: RiskReport, rules: RulesTable, secrets: Sequence[str] = ()) -> Review:
+def finalize_review(
+    agent: AgentReview,
+    risk: RiskReport,
+    rules: RulesTable,
+    secrets: Sequence[str] = (),
+) -> Review:
     """The Review CI trusts, from the agent's validated AgentReview, the RiskReport of the change and the base's rules;
     finding text is redacted of `secrets`."""
     known, findings, redactions = rules.by_id, [], 0
@@ -258,7 +297,9 @@ def finalize_review(agent: AgentReview, risk: RiskReport, rules: RulesTable, sec
     )
 
 
-def review_outputs(review: Review) -> StepOutputs:
+def review_outputs(
+    review: Review,
+) -> StepOutputs:
     return StepOutputs(
         {
             "verdict": review.verdict,
@@ -269,7 +310,9 @@ def review_outputs(review: Review) -> StepOutputs:
     )
 
 
-def marker(review: Review) -> str:
+def marker(
+    review: Review,
+) -> str:
     rules = sorted({f.rule for f in review.findings} - {"NEW"})
     return "<!-- clean-eval:pr-review tier=%s score=%s rules=%s rules_version=%s -->" % (
         review.max_tier,
@@ -280,7 +323,9 @@ def marker(review: Review) -> str:
 
 
 def compose_review(
-    review: Review, report: str, on_diff: Optional[dict[str, set[int]]] = None
+    review: Review,
+    report: str,
+    on_diff: Optional[dict[str, set[int]]] = None,
 ) -> tuple[str, ReviewEvent, list[InlineComment]]:
     """(body, event, inline comments) of the review to post. Only findings on lines in the diff (`on_diff`: {path: lines},
     None when unknown) are attached inline, since GitHub rejects the whole review otherwise; the rest are listed in the
@@ -306,7 +351,10 @@ def compose_review(
     return body, event, comments
 
 
-def post_attempts(event: ReviewEvent, comments: list[InlineComment]) -> list[tuple[ReviewEvent, list[InlineComment]]]:
+def post_attempts(
+    event: ReviewEvent,
+    comments: list[InlineComment],
+) -> list[tuple[ReviewEvent, list[InlineComment]]]:
     """(event, comments) to try in turn: GitHub rejects inline comments on lines outside the diff (422), and a reviewer
     can't request changes on its own PR."""
     attempts = []
@@ -316,7 +364,11 @@ def post_attempts(event: ReviewEvent, comments: list[InlineComment]) -> list[tup
     return attempts
 
 
-def stale_reviews(reviews: list[HostReview], me: Optional[str], my_id: Optional[int]) -> list[int]:
+def stale_reviews(
+    reviews: list[HostReview],
+    me: Optional[str],
+    my_id: Optional[int],
+) -> list[int]:
     """IDs of this reviewer's earlier "changes requested" clean-eval reviews (HostReviews), which `my_id` supersedes."""
     if not me:
         return []

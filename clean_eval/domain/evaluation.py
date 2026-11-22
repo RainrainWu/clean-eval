@@ -22,18 +22,24 @@ class Period(BaseModel):
     window_days: Count = 30
 
     @model_validator(mode="after")
-    def _in_order(self) -> Self:
+    def check_in_order(
+        self,
+    ) -> Self:
         if self.since > self.until:
             raise ValueError("since (%s) is after until (%s)" % (self.since, self.until))
         return self
 
     @property
-    def until_ts(self) -> float:
+    def until_ts(
+        self,
+    ) -> float:
         """The end of `until` (23:59:59 UTC), unix time."""
         return dt.datetime.combine(self.until, dt.time(23, 59, 59), tzinfo=dt.timezone.utc).timestamp()
 
     @property
-    def lookahead_until(self) -> dt.date:
+    def lookahead_until(
+        self,
+    ) -> dt.date:
         """The last day a fix of a PR in the period is looked for."""
         return self.until + dt.timedelta(days=self.window_days)
 
@@ -93,7 +99,10 @@ class MergedPR(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _count_files(cls, data: object) -> object:
+    def add_file_count(
+        cls,
+        data: object,
+    ) -> object:
         if isinstance(data, dict) and "file_count" not in data:
             data = {**data, "file_count": len(data.get("files") or [])}
         return data
@@ -227,7 +236,9 @@ class PolicyEdit(BaseModel):
     orig: dict[str, Any] = {}
 
     @property
-    def changed_keys(self) -> set[str]:
+    def changed_keys(
+        self,
+    ) -> set[str]:
         return {
             k
             for k in set(self.new) | set(self.orig)
@@ -235,7 +246,9 @@ class PolicyEdit(BaseModel):
         }
 
     @model_validator(mode="after")
-    def _tunable_and_valid(self) -> Self:
+    def check_tunable_and_valid(
+        self,
+    ) -> Self:
         structural = self.changed_keys - TUNABLE - {"version"}
         if structural:
             raise ValueError("only tunable keys may change in CI; also changed: %s" % sorted(structural))
@@ -273,7 +286,10 @@ class Recommendation(BaseModel):
 
     @field_validator("target", "change", "evidence", mode="before")
     @classmethod
-    def _as_text(cls, value: object) -> str:
+    def as_text(
+        cls,
+        value: object,
+    ) -> str:
         return (value if isinstance(value, str) else str(value))[:MAX_TEXT]
 
 
@@ -284,7 +300,10 @@ class AgentEvalResult(BaseModel):
 
     @field_validator("recommendations", mode="before")
     @classmethod
-    def _objects_only(cls, recs: object) -> object:
+    def keep_objects_only(
+        cls,
+        recs: object,
+    ) -> object:
         if not recs:
             return []
         return [r for r in recs if isinstance(r, dict)][:MAX_RECOMMENDATIONS] if isinstance(recs, list) else recs
@@ -306,5 +325,7 @@ class EvalResult(BaseModel):
 
     @computed_field
     @property
-    def applied(self) -> bool:
+    def applied(
+        self,
+    ) -> bool:
         return any(c is not None and c.accepted for c in (self.model_change, self.rules_change))

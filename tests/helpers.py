@@ -1,6 +1,6 @@
-"""Test infrastructure for every layer's tests, and nothing from the package: throwaway git repositories, fake `gh` and
-`claude` executables, and file helpers. The fixtures that hand them out (`repo`, `fake_bin`) and the hermetic git config
-are in tests/conftest.py."""
+"""Test infrastructure for every layer's tests, and nothing from the package: dates relative to now, throwaway git
+repositories, and fake `gh` and `claude` executables. Classes only: the fixtures that hand them out (`repo`, `fake_bin`)
+and the hermetic git config are in tests/conftest.py, and files are read and written with pathlib."""
 
 import datetime as dt
 import json
@@ -9,52 +9,69 @@ import stat
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = str(Path(__file__).absolute().parent.parent)
 
 
-def days_ago(n):
-    return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=n)).replace(microsecond=0)
+class Dates:
+    """Times relative to now, for commits and periods that must fall in a window ending today."""
+
+    @staticmethod
+    def days_ago(
+        days,
+    ):
+        """Now minus `days` days, UTC, to the second."""
+        return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).replace(microsecond=0)
 
 
 class Repo:
     """A git repository at `path` (made if missing) with dated commits."""
 
-    def __init__(self, path):
+    def __init__(
+        self,
+        path,
+    ):
         self.path = str(path)
-        os.makedirs(self.path, exist_ok=True)
+        Path(self.path).mkdir(parents=True, exist_ok=True)
         self.git("init", "-q")
 
-    def git(self, *args, env=None):
-        r = subprocess.run(
+    def git(
+        self,
+        *args,
+        env=None,
+    ):
+        completed = subprocess.run(
             ["git", "-C", self.path, *args], capture_output=True, text=True, env={**os.environ, **(env or {})}
         )
-        if r.returncode != 0:
-            raise RuntimeError(f"git {args}: {r.stderr}")
-        return r.stdout.strip()
+        if completed.returncode != 0:
+            raise RuntimeError(f"git {args}: {completed.stderr}")
+        return completed.stdout.strip()
 
-    def write(self, rel, content):
-        full = os.path.join(self.path, rel)
-        os.makedirs(os.path.dirname(full) or self.path, exist_ok=True)
-        with open(full, "w") as f:
-            f.write(content)
+    def write(
+        self,
+        rel,
+        content,
+    ):
+        full = Path(self.path, rel)
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(content)
 
-    def commit(self, message, files=None, when=None):
-        """Write `files` ({path: content}), commit everything with `message` at `when` (datetime)."""
+    def commit(
+        self,
+        message,
+        files=None,
+        when=None,
+    ):
+        """Write `files` ({path: content}), commit everything with `message` at `when` (datetime; default a day ago)."""
         for rel, content in (files or {}).items():
             self.write(rel, content)
         self.git("add", "-A")
-        stamp = (when or days_ago(1)).isoformat()
+        stamp = (when or Dates.days_ago(1)).isoformat()
         self.git(
             "commit", "-q", "--allow-empty", "-m", message, env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}
         )
         return self.git("rev-parse", "HEAD")
-
-
-def make_executable(path, source):
-    with open(path, "w") as f:
-        f.write(f"#!{sys.executable}\n" + textwrap.dedent(source))
-    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
 FAKE_GH = r"""
@@ -124,59 +141,57 @@ sys.exit(plan.get("exit", 0))
 class FakeBin:
     """A bin folder `path` (made if missing) with fake `gh` and `claude`, configured through JSON files next to them."""
 
-    def __init__(self, path):
+    def __init__(
+        self,
+        path,
+    ):
         self.dir = str(path)
-        os.makedirs(self.dir, exist_ok=True)
-        make_executable(os.path.join(self.dir, "gh"), FAKE_GH)
-        make_executable(os.path.join(self.dir, "claude"), FAKE_CLAUDE)
+        Path(self.dir).mkdir(parents=True, exist_ok=True)
+        self.make_executable(Path(self.dir, "gh"), FAKE_GH)
+        self.make_executable(Path(self.dir, "claude"), FAKE_CLAUDE)
         self.gh({})
         self.claude({})
 
-    def gh(self, cfg):
-        _dump(os.path.join(self.dir, "gh.json"), cfg)
+    @staticmethod
+    def make_executable(
+        path,
+        source,
+    ):
+        """Write a Python script to `path` that runs with this interpreter, and make it executable."""
+        executable = Path(path)
+        executable.write_text(f"#!{sys.executable}\n" + textwrap.dedent(source))
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    def claude(self, plan):
-        _dump(os.path.join(self.dir, "claude.json"), plan)
+    def gh(
+        self,
+        cfg,
+    ):
+        """Configure the fake gh's replies (see FAKE_GH)."""
+        Path(self.dir, "gh.json").write_text(json.dumps(cfg))
 
-    def gh_calls(self):
-        p = os.path.join(self.dir, "gh-calls.jsonl")
-        if not os.path.exists(p):
-            return []
-        with open(p) as f:
-            return [json.loads(line) for line in f]
+    def claude(
+        self,
+        plan,
+    ):
+        """Configure what the fake claude writes, says and exits with (see FAKE_CLAUDE)."""
+        Path(self.dir, "claude.json").write_text(json.dumps(plan))
 
-    def claude_invocation(self):
-        p = os.path.join(self.dir, "claude-invocation.json")
-        return _load(p) if os.path.exists(p) else None
+    def gh_calls(
+        self,
+    ):
+        """The fake gh's calls so far: {"args", "stdin"} each, oldest first."""
+        calls = Path(self.dir, "gh-calls.jsonl")
+        return [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
 
-    def env(self):
+    def claude_invocation(
+        self,
+    ):
+        """How the fake claude was run ({"argv", "env", "stdin", "cwd"}), or None when it wasn't."""
+        invocation = Path(self.dir, "claude-invocation.json")
+        return json.loads(invocation.read_text()) if invocation.exists() else None
+
+    def env(
+        self,
+    ):
+        """The variables that put the fakes first on PATH."""
         return {"PATH": self.dir + os.pathsep + os.environ["PATH"], "FAKE_GH_DIR": self.dir}
-
-
-def _dump(path, obj):
-    with open(path, "w") as f:
-        json.dump(obj, f)
-
-
-def _load(path):
-    with open(path) as f:
-        return json.load(f)
-
-
-def read(path):
-    with open(path) as f:
-        return f.read()
-
-
-def read_json(path):
-    return json.loads(read(path))
-
-
-def write_json(path, obj, **kw):
-    write(path, json.dumps(obj, **kw))
-
-
-def write(path, text):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w") as f:
-        f.write(text)

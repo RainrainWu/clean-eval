@@ -4,21 +4,17 @@ invariants are validators, plus the constants and error types they use. The use_
 of every external utility the business logic uses (interfaces.py) and module-level functions that take implementations
 of them; the business rules are in use_cases/rules. Everything that reaches outside the process does so in the external
 layer, each dependency through its one gateway, which implements its interface. Every import is absolute. The tests are
-laid out like the package, follow the same dependency rule, and are written for pytest."""
+laid out like the package, follow the same dependency rule, and are written for pytest.
+
+The rules read the code through the `codebase` fixture (tests.architecture.Codebase)."""
 
 import ast
 import fnmatch
-import importlib
 import inspect
-import re
 from abc import ABC
-from pathlib import Path
 
 from pydantic import BaseModel
 
-from tests.helpers import ROOT
-
-PACKAGE = Path(ROOT) / "clean_eval"
 TOP = "clean_eval"
 LAYERS = {  # layer -> the layers it may import from
     "domain": {"domain"},
@@ -51,8 +47,6 @@ PURE_IMPORTS = {
     "pydantic_core",
 }
 PURE_SYS = {"stdlib_module_names"}  # all the inner layers may take from sys: a constant
-CLOCK_CALLS = {"now", "today", "utcnow"}  # datetime's clock reads (the time module isn't importable here at all)
-MODEL_METHOD_DECORATORS = {"field_validator", "model_validator", "computed_field", "property", "classmethod"}
 # Standard modules that reach outside the process (processes, files, databases, the network, the environment).
 REACHING_OUT = {
     "subprocess",
@@ -84,7 +78,7 @@ GATEWAYS = {
     "external/environment.py": ({"os", "datetime"}, {"EnvironmentGateway", "ClockGateway"}),  # variables, today's date
 }
 # The interfaces (use_cases/interfaces.py) and the one class implementing each: a gateway or a presenter.
-INTERFACES = PACKAGE / "use_cases" / "interfaces.py"
+INTERFACES = "use_cases/interfaces.py"
 IMPLEMENTATIONS = {
     "Git": "external/git.py",
     "CodeHost": "external/github.py",
@@ -97,198 +91,272 @@ IMPLEMENTATIONS = {
 }
 DRIVERS = {"external/cli.py", "external/agent_guard.py"}  # the console is theirs (they are driven by it)
 BOOTSTRAP = {"__main__.py"}  # puts the checkout on sys.path before any of the package can be imported
-TESTS = Path(ROOT) / "tests"
-TEST_SUPPORT = {"__init__.py", "conftest.py", "builders.py", "fakes.py"}  # a layer's test infrastructure, not tests
+# A layer's test infrastructure, not tests: a package's __init__.py and a conftest.py in any test folder, and fakes.py.
+TEST_SUPPORT = {"__init__.py", "conftest.py", "fakes.py"}
+# Each folder of the package, and the layer of the review rules that must cover it.
+# Code the convention and style rules must reject (see their able-to-fail checks).
+PLANTED_TEST_MODULE = """\"\"\"A test module.\"\"\"
+import pytest
+
+TABLE = [1]
+lowercase = 2
+pytestmark = pytest.mark.e2e
+
+def helper(
+    value,
+):
+    return value
 
 
-def imports(path):
-    """The module names a file imports (all absolute: relative imports are not allowed, see relative_imports)."""
-    found = []
-    for node in ast.walk(ast.parse(path.read_text())):
-        if isinstance(node, ast.Import):
-            found += [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom) and not node.level:
-            # `from clean_eval import external`: the layer is in the imported name
-            found += [node.module + "." + a.name for a in node.names] if node.module == TOP else [node.module]
-    return found
+@pytest.fixture
+def fixture_in_a_test_module(
+):
+    return 1
 
 
-def relative_imports(source):
-    """The lines of a module's source that import relative to its package (`from . import x`, `from ..a import b`)."""
-    return [node.lineno for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ImportFrom) and node.level]
+def test_outside_a_class(
+):
+    pass
 
 
-def layer_files(layer):
-    return sorted((PACKAGE / layer).rglob("*.py"))
+class Helper:
+    pass
 
 
-def clock_reads(path):
-    """Lines that read the clock: `today()`, `now()` or `utcnow()` called on `date` or `datetime` (the time module
-    isn't importable outside the gateways at all)."""
-    for node in ast.walk(ast.parse(path.read_text())):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in CLOCK_CALLS:
-            receiver = node.func.value
-            if (receiver.attr if isinstance(receiver, ast.Attribute) else getattr(receiver, "id", "")) in {
-                "date",
-                "datetime",
-            }:
-                yield node.lineno
+class TestThing:
+    \"\"\"Things.\"\"\"
+
+    def helper(
+        self,
+    ):
+        pass
+
+    @pytest.fixture
+    def test_that_is_a_fixture(
+        self,
+    ):
+        pass
+
+    def test_it(
+        self,
+    ):
+        pass
+"""
+PLANTED_CONFTEST = """import pytest
+
+CONSTANT = 1
 
 
-def sys_uses(path):
-    """(name, line) of everything a file takes from sys: `sys.x`, and `from sys import x`."""
-    for node in ast.walk(ast.parse(path.read_text())):
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "sys":
-            yield node.attr, node.lineno
-        elif isinstance(node, ast.ImportFrom) and node.module == "sys":
-            yield from ((a.name, node.lineno) for a in node.names)
+@pytest.fixture
+def thing(
+):
+    return 1
 
 
-def _decorator_name(d):
-    d = d.func if isinstance(d, ast.Call) else d
-    return d.attr if isinstance(d, ast.Attribute) else getattr(d, "id", "")
+def helper(
+):
+    return 2
 
 
-def data_model_violations(source):
-    """What, in a module's source, is not a data model: top-level functions, and model methods that are neither
-    validators, computed fields, properties nor constructors (an exception's dunder methods aside)."""
-    out = []
-    for node in ast.parse(source).body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            out.append("function %s" % node.name)
-        elif isinstance(node, ast.ClassDef):
-            for item in node.body:
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    named = {_decorator_name(d) for d in item.decorator_list}
-                    dunder = item.name.startswith("__") and item.name.endswith("__")
-                    if not (named & MODEL_METHOD_DECORATORS or dunder):
-                        out.append("method %s.%s" % (node.name, item.name))
-        elif not (
-            isinstance(node, (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign))
-            or isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-        ):  # a docstring
-            out.append("statement on line %d" % node.lineno)
-    return out
+class Support:
+    pass
+
+
+def pytest_configure(
+    config,
+):
+    pass
+"""
+PLANTED_SUPPORT = """import pytest
+
+
+def helper(
+):
+    pass
+
+
+class Support:
+    \"\"\"A support class.\"\"\"
+
+    @pytest.fixture
+    def fixture_in_support(
+        self,
+    ):
+        pass
+"""
+PLANTED_STYLE = """class Thing:
+    def _protected(self, x):
+        return x
+
+    def __init__(
+        self,
+    ):
+        def one_line(y, z): return z
+
+    @staticmethod
+    def __private(
+        value,
+    ):
+        return lambda m: m
+"""
+REVIEW_RULES_LAYERS = {
+    "domain": "domain",
+    "use_cases": "application",
+    "use_cases/rules": "application",
+    "adaptor": "interface",
+    "external": "infrastructure",
+}
 
 
 class TestDependencyRule:
-    def test_every_module_belongs_to_a_layer(self):
-        top = {p.name for p in PACKAGE.iterdir() if p.is_dir() and p.name != "__pycache__"}
-        assert top == set(LAYERS)
-        assert {p.name for p in PACKAGE.glob("*.py")} == {"__init__.py", "__main__.py"}
+    """Every module is in a layer, a layer imports only from itself and the inner ones, the inner two do no I/O and
+    never read the clock, and every import is absolute."""
 
-    def test_layers_only_import_inward(self):
+    def test_every_module_belongs_to_a_layer(
+        self,
+        codebase,
+    ):
+        top = {path.name for path in codebase.package.iterdir() if path.is_dir() and path.name != "__pycache__"}
+        assert top == set(LAYERS)
+        assert {path.name for path in codebase.package.glob("*.py")} == {"__init__.py", "__main__.py"}
+
+    def test_layers_only_import_inward(
+        self,
+        codebase,
+    ):
         for layer, allowed in LAYERS.items():
-            for path in layer_files(layer):
-                for name in imports(path):
+            for path in codebase.layer_files(layer):
+                for name in codebase.imports(path):
                     parts = name.split(".")
                     if parts[0] == TOP and len(parts) > 1 and parts[1] in LAYERS:
-                        assert parts[1] in allowed, "%s imports %s" % (path.relative_to(PACKAGE), name)
+                        assert parts[1] in allowed, "%s imports %s" % (path.relative_to(codebase.package), name)
 
-    def test_domain_and_use_cases_do_no_io(self):
+    def test_domain_and_use_cases_do_no_io(
+        self,
+        codebase,
+    ):
         for layer in PURE_ONLY:
-            for path in layer_files(layer):
-                for name in imports(path):
+            for path in codebase.layer_files(layer):
+                for name in codebase.imports(path):
                     top = name.split(".")[0]
                     if top != TOP:
-                        assert top in PURE_IMPORTS, "%s imports %s" % (path.relative_to(PACKAGE), name)
+                        assert top in PURE_IMPORTS, "%s imports %s" % (path.relative_to(codebase.package), name)
 
-    def test_domain_and_use_cases_take_only_constants_from_sys(self):
+    def test_domain_and_use_cases_take_only_constants_from_sys(
+        self,
+        codebase,
+    ):
         for layer in PURE_ONLY:
-            for path in layer_files(layer):
-                for name, line in sys_uses(path):
-                    assert name in PURE_SYS, "%s:%d" % (path.relative_to(PACKAGE), line)
+            for path in codebase.layer_files(layer):
+                for name, line in codebase.sys_uses(path):
+                    assert name in PURE_SYS, "%s:%d" % (path.relative_to(codebase.package), line)
 
-    def test_domain_and_use_cases_never_read_the_clock(self):
+    def test_domain_and_use_cases_never_read_the_clock(
+        self,
+        codebase,
+    ):
         for layer in PURE_ONLY:
-            for path in layer_files(layer):
-                assert list(clock_reads(path)) == [], path.relative_to(PACKAGE)
+            for path in codebase.layer_files(layer):
+                assert codebase.clock_reads(path) == [], path.relative_to(codebase.package)
 
-    def test_every_import_is_absolute(self):
-        scripts = sorted((Path(ROOT) / ".github" / "scripts").glob("*.py"))
-        for path in package_files() + all_test_files() + scripts:
-            assert relative_imports(path.read_text()) == [], path.relative_to(ROOT)
+    def test_every_import_is_absolute(
+        self,
+        codebase,
+    ):
+        scripts = sorted((codebase.root / ".github" / "scripts").glob("*.py"))
+        for path in codebase.package_files() + codebase.all_test_files() + scripts:
+            assert codebase.relative_imports(path) == [], path.relative_to(codebase.root)
 
-    def test_the_launcher_only_reaches_the_external_layer(self):
-        names = [n for n in imports(PACKAGE / "__main__.py") if n.startswith(TOP + ".")]
+    def test_the_launcher_only_reaches_the_external_layer(
+        self,
+        codebase,
+    ):
+        names = [name for name in codebase.imports(codebase.package / "__main__.py") if name.startswith(TOP + ".")]
         assert names == ["clean_eval.external.cli"]
 
-    def test_the_rule_is_able_to_fail(self):
-        assert "clean_eval.domain.policy" in imports(PACKAGE / "use_cases" / "rules" / "heatmap.py")
-        assert "clean_eval.use_cases.heatmap" in imports(PACKAGE / "external" / "cli.py")
-        assert relative_imports("from ..domain import x\nimport os\nfrom . import y\nfrom a import b\n") == [1, 3]
-        assert [n for n, _ in sys_uses(PACKAGE / "external" / "agent_guard.py")] == ["stdin", "stderr"]
-        assert any(n.startswith("clean_eval.adaptor") for n in imports(PACKAGE / "external" / "cli.py"))
-        assert "os" in [n.split(".")[0] for n in imports(PACKAGE / "external" / "filesystem.py")]
-        assert data_model_violations(
-            "def score(x):\n    return x\nclass M(BaseModel):\n    def rate(self):\n        pass\nprint(1)\n"
+    def test_the_rule_is_able_to_fail(
+        self,
+        codebase,
+    ):
+        package = codebase.package
+        assert "clean_eval.domain.policy" in codebase.imports(package / "use_cases" / "rules" / "heatmap.py")
+        assert "clean_eval.use_cases.heatmap" in codebase.imports(package / "external" / "cli.py")
+        relative = "from ..domain import x\nimport os\nfrom . import y\nfrom a import b\n"
+        assert codebase.relative_imports(relative) == [1, 3]
+        assert [name for name, _ in codebase.sys_uses(package / "external" / "agent_guard.py")] == ["stdin", "stderr"]
+        assert any(name.startswith("clean_eval.adaptor") for name in codebase.imports(package / "external" / "cli.py"))
+        assert "os" in [name.split(".")[0] for name in codebase.imports(package / "external" / "filesystem.py")]
+        assert codebase.data_model_violations(
+            "def score(value):\n    return value\nclass M(BaseModel):\n    def rate(self):\n        pass\nprint(1)\n"
         ) == ["function score", "method M.rate", "statement on line 6"]
 
 
-def package_files():
-    return sorted(p for p in PACKAGE.rglob("*.py") if "__pycache__" not in p.parts)
-
-
-def calls(path):
-    """(callee, line) of every call in a file: `open` for a bare name, `today` for `x.today()`."""
-    for node in ast.walk(ast.parse(path.read_text())):
-        if isinstance(node, ast.Call):
-            f = node.func
-            yield (f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")), node.lineno
-
-
 class TestExternalDependenciesStayInTheirGateways:
-    def test_only_a_gateway_imports_what_reaches_outside_the_process(self):
-        for path in package_files():
-            rel = path.relative_to(PACKAGE).as_posix()
+    """What reaches outside the process (processes, files, the environment, the clock, the console) is reached only by
+    the gateway of that dependency, or by the drivers for the console."""
+
+    def test_only_a_gateway_imports_what_reaches_outside_the_process(
+        self,
+        codebase,
+    ):
+        for path in codebase.package_files():
+            rel = path.relative_to(codebase.package).as_posix()
             if rel in BOOTSTRAP:
                 continue
-            reaching = {n.split(".")[0] for n in imports(path)} & (
+            reaching = {name.split(".")[0] for name in codebase.imports(path)} & (
                 REACHING_OUT | {"datetime"} if rel.startswith("external/") else REACHING_OUT
             )
             assert reaching <= GATEWAYS.get(rel, (set(), set()))[0], rel
 
-    def test_a_gateway_module_holds_just_its_gateway_classes(self):
+    def test_a_gateway_module_holds_just_its_gateway_classes(
+        self,
+        codebase,
+    ):
         for rel, (_, gateways) in GATEWAYS.items():
-            tree = ast.parse((PACKAGE / rel).read_text())
-            classes = {n.name for n in tree.body if isinstance(n, ast.ClassDef) and not n.name.startswith("_")}
+            tree = codebase.parse(codebase.package / rel)
+            classes = {
+                node.name for node in tree.body if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
+            }
             assert classes == gateways, rel
             assert all(name.endswith("Gateway") for name in classes), rel
 
-    def test_files_the_clock_and_the_environment_are_reached_only_through_their_gateways(self):
-        for path in package_files():
-            rel = path.relative_to(PACKAGE).as_posix()
-            for callee, line in calls(path):
+    def test_files_the_clock_and_the_environment_are_reached_only_through_their_gateways(
+        self,
+        codebase,
+    ):
+        for path in codebase.package_files():
+            rel = path.relative_to(codebase.package).as_posix()
+            for callee, line in codebase.calls(path):
                 if callee == "open":
                     assert rel == "external/filesystem.py", "%s:%d opens a file" % (rel, line)
             if rel != "external/environment.py":
-                assert list(clock_reads(path)) == [], "%s reads the clock" % rel
+                assert codebase.clock_reads(path) == [], "%s reads the clock" % rel
             if rel != "external/environment.py":
-                for node in ast.walk(ast.parse(path.read_text())):
-                    assert not (isinstance(node, ast.Attribute) and node.attr in {"environ", "getenv", "putenv"}), (
-                        "%s:%d" % (rel, getattr(node, "lineno", 0))
-                    )
+                for node in codebase.nodes(path, ast.Attribute):
+                    assert node.attr not in {"environ", "getenv", "putenv"}, "%s:%d" % (rel, node.lineno)
 
-    def test_only_the_drivers_use_the_console(self):
-        for path in package_files():
-            rel = path.relative_to(PACKAGE).as_posix()
+    def test_only_the_drivers_use_the_console(
+        self,
+        codebase,
+    ):
+        for path in codebase.package_files():
+            rel = path.relative_to(codebase.package).as_posix()
             if rel in DRIVERS:
                 continue
-            for callee, line in calls(path):
+            for callee, line in codebase.calls(path):
                 assert callee not in {"print", "input"}, "%s:%d" % (rel, line)
-            for node in ast.walk(ast.parse(path.read_text())):
-                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "sys":
+            for node in codebase.nodes(path, ast.Attribute):
+                if isinstance(node.value, ast.Name) and node.value.id == "sys":
                     assert node.attr not in {"stdin", "stdout", "stderr", "exit", "argv"}, "%s:%d" % (rel, node.lineno)
 
-    def test_the_rule_is_able_to_fail(self):
-        assert "subprocess" in {n.split(".")[0] for n in imports(PACKAGE / "external" / "git.py")}
-        assert list(clock_reads(PACKAGE / "external" / "environment.py"))  # the one clock read is found
-        assert "open" in {callee for callee, _ in calls(PACKAGE / "external" / "filesystem.py")}
-
-
-def public_methods(cls):
-    return {name for name, value in vars(cls).items() if callable(value) and not name.startswith("_")}
+    def test_the_rule_is_able_to_fail(
+        self,
+        codebase,
+    ):
+        package = codebase.package
+        assert "subprocess" in {name.split(".")[0] for name in codebase.imports(package / "external" / "git.py")}
+        assert codebase.clock_reads(package / "external" / "environment.py")  # the one clock read is found
+        assert "open" in {callee for callee, _ in codebase.calls(package / "external" / "filesystem.py")}
 
 
 class TestUseCasesHoldInterfacesAndFunctions:
@@ -296,136 +364,221 @@ class TestUseCasesHoldInterfacesAndFunctions:
     (interfaces.py), implemented by the outer layers, and module-level functions that take those implementations as
     parameters and call only the abstract methods."""
 
-    def interfaces(self):
-        module = importlib.import_module("clean_eval.use_cases.interfaces")
-        return {
-            name: cls for name, cls in inspect.getmembers(module, inspect.isclass) if cls.__module__ == module.__name__
-        }
-
-    def test_the_interfaces_are_abstract_classes_whose_methods_are_all_abstract(self):
-        tree = ast.parse(INTERFACES.read_text())
-        assert [n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))] == []
-        interfaces = self.interfaces()
+    def test_the_interfaces_are_abstract_classes_whose_methods_are_all_abstract(
+        self,
+        codebase,
+    ):
+        module = codebase.package / INTERFACES
+        functions = [
+            node.name
+            for node in codebase.parse(module).body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        assert functions == []
+        interfaces = codebase.classes(module)
         assert set(interfaces) == set(IMPLEMENTATIONS)
-        for name, cls in interfaces.items():
-            assert issubclass(cls, ABC), name
-            assert public_methods(cls) == set(cls.__abstractmethods__), name
+        for name, interface in interfaces.items():
+            assert issubclass(interface, ABC), name
+            assert codebase.public_methods(interface) == set(interface.__abstractmethods__), name
 
-    def test_the_rest_of_the_layer_is_module_level_functions(self):
-        for path in layer_files("use_cases"):
-            if path != INTERFACES:
-                classes = [n.name for n in ast.walk(ast.parse(path.read_text())) if isinstance(n, ast.ClassDef)]
-                assert classes == [], path.relative_to(PACKAGE)
+    def test_the_rest_of_the_layer_is_module_level_functions(
+        self,
+        codebase,
+    ):
+        for path in codebase.layer_files("use_cases"):
+            if path != codebase.package / INTERFACES:
+                classes = [node.name for node in codebase.nodes(path, ast.ClassDef)]
+                assert classes == [], path.relative_to(codebase.package)
 
-    def test_each_interface_has_one_implementation_with_nothing_more(self):
-        for name, interface in self.interfaces().items():
+    def test_each_interface_has_one_implementation_with_nothing_more(
+        self,
+        codebase,
+    ):
+        for name, interface in codebase.classes(codebase.package / INTERFACES).items():
             rel = IMPLEMENTATIONS[name]
-            module = importlib.import_module("clean_eval." + rel[: -len(".py")].replace("/", "."))
-            classes = [
-                cls
-                for _, cls in inspect.getmembers(module, inspect.isclass)
-                if cls.__module__ == module.__name__ and issubclass(cls, interface)
-            ]
+            classes = [cls for cls in codebase.classes(codebase.package / rel).values() if issubclass(cls, interface)]
             assert len(classes) == 1, rel
             assert not inspect.isabstract(classes[0]), rel  # every abstract method implemented
             # and nothing the interface doesn't declare: what the business logic can use is what it defined
-            assert public_methods(classes[0]) <= set(interface.__abstractmethods__), rel
+            assert codebase.public_methods(classes[0]) <= set(interface.__abstractmethods__), rel
 
-    def test_every_gateway_implements_an_interface(self):
+    def test_every_gateway_implements_an_interface(
+        self,
+    ):
         assert set(GATEWAYS) <= set(IMPLEMENTATIONS.values())
 
 
 class TestDomainHoldsDataModels:
-    def domain_modules(self):
-        for path in layer_files("domain"):
+    """The domain holds data models only: no functions, no methods but validators, computed fields, properties and
+    constructors, and no class that is neither a pydantic model nor an error."""
+
+    def test_no_functions_and_no_logic_methods(
+        self,
+        codebase,
+    ):
+        for path in codebase.layer_files("domain"):
             if path.name != "__init__.py":
-                yield path, importlib.import_module("clean_eval.domain." + path.stem)
+                assert codebase.data_model_violations(path) == [], path.name
 
-    def test_no_functions_and_no_logic_methods(self):
-        for path, _ in self.domain_modules():
-            assert data_model_violations(path.read_text()) == [], path.name
-
-    def test_every_class_is_a_pydantic_model_or_an_error(self):
+    def test_every_class_is_a_pydantic_model_or_an_error(
+        self,
+        codebase,
+    ):
         seen = 0
-        for path, module in self.domain_modules():
-            for name, cls in inspect.getmembers(module, inspect.isclass):
-                if cls.__module__ == module.__name__:
+        for path in codebase.layer_files("domain"):
+            if path.name != "__init__.py":
+                for name, cls in codebase.classes(path).items():
                     seen += 1
                     assert issubclass(cls, (BaseModel, Exception)), "%s.%s" % (path.name, name)
         assert seen > 30
 
 
-def all_test_files():  # not test_*: pytest would collect it
-    return sorted(p for p in TESTS.rglob("*.py") if "__pycache__" not in p.parts)
-
-
-def layer_tests():
-    """(layer, path) of every module under tests/<layer>/."""
-    return [(layer, path) for layer in LAYERS for path in all_test_files() if path.is_relative_to(TESTS / layer)]
-
-
-def module_under_test(path):
-    """The module tests/<layer>/.../test_<name>.py is about: clean_eval/<layer>/.../<name>.py."""
-    return PACKAGE / path.relative_to(TESTS).parent / path.name[len("test_") :]
-
-
 class TestsMirrorThePackage:
-    """tests/<layer>/ holds the tests of clean_eval/<layer>/, test_<module>.py for <module>.py (plus the layer's test
-    support: conftest.py, builders.py, fakes.py), and follows the dependency rule: a layer's tests import only that layer
-    and the inner ones, from the package and from the tests alike. Tests that span the layers sit at the top of tests/.
-    Every test is a pytest test: no unittest, not even unittest.mock (monkeypatch replaces it)."""
+    """tests/<layer>/ holds the tests of clean_eval/<layer>/, test_<module>.py for <module>.py (plus test support: a
+    conftest.py in any test folder, and fakes.py), and follows the dependency rule: a layer's tests import only that
+    layer and the inner ones, from the package and from the tests alike. Tests that span the layers sit at the top of
+    tests/. Every test is a pytest test: from unittest, only unittest.mock, whose MagicMocks the tests inject."""
 
-    def test_each_test_module_names_the_module_it_tests(self):
-        for _, path in layer_tests():
+    def test_each_test_module_names_the_module_it_tests(
+        self,
+        codebase,
+    ):
+        for _, path in codebase.layer_tests(LAYERS):
             if path.name not in TEST_SUPPORT:
-                where = path.relative_to(ROOT)
+                where = path.relative_to(codebase.root)
                 assert path.name.startswith("test_"), "%s is neither a test module nor test support" % where
-                assert module_under_test(path).is_file(), "%s names no module of the package" % where
+                assert codebase.module_under_test(path).is_file(), "%s names no module of the package" % where
 
-    def test_every_test_folder_is_a_package(self):  # the layers' test modules share names; tests import tests.*
-        for folder in {path.parent for path in all_test_files()}:
-            assert (folder / "__init__.py").is_file(), folder.relative_to(ROOT)
+    def test_every_test_folder_is_a_package(
+        self,
+        codebase,
+    ):  # the layers' test modules share names; tests import tests.*
+        for folder in {path.parent for path in codebase.all_test_files()}:
+            assert (folder / "__init__.py").is_file(), folder.relative_to(codebase.root)
 
-    def test_a_layers_tests_import_only_that_layer_and_inner_ones(self):
-        for layer, path in layer_tests():
-            for name in imports(path):
+    def test_a_layers_tests_import_only_that_layer_and_inner_ones(
+        self,
+        codebase,
+    ):
+        for layer, path in codebase.layer_tests(LAYERS):
+            for name in codebase.imports(path):
                 parts = name.split(".")
                 if parts[0] in (TOP, "tests") and len(parts) > 1 and parts[1] in LAYERS:
-                    assert parts[1] in LAYERS[layer], "%s imports %s" % (path.relative_to(ROOT), name)
+                    assert parts[1] in LAYERS[layer], "%s imports %s" % (path.relative_to(codebase.root), name)
 
-    def test_the_tests_use_pytest_not_unittest(self):
-        for path in all_test_files():
-            assert "unittest" not in {name.split(".")[0] for name in imports(path)}, path.relative_to(ROOT)
+    def test_the_tests_use_pytest_and_from_unittest_only_its_mock(
+        self,
+        codebase,
+    ):
+        for path in codebase.all_test_files():
+            assert codebase.unittest_beyond_mock(path) == [], path.relative_to(codebase.root)
 
-    def test_the_rule_is_able_to_fail(self, tmp_path):
-        (tmp_path / "test_old.py").write_text("from unittest import mock\n")
-        assert "unittest" in imports(tmp_path / "test_old.py")
-        assert not module_under_test(TESTS / "use_cases" / "test_nothing.py").is_file()
-        assert {"tests.use_cases.fakes", "clean_eval.external.git"} <= set(imports(TESTS / "external" / "test_git.py"))
-        assert ("external", TESTS / "external" / "test_git.py") in layer_tests()
+    def test_the_rule_is_able_to_fail(
+        self,
+        codebase,
+    ):
+        unittest_test = "import unittest\nfrom unittest import TestCase, mock\nfrom unittest.mock import MagicMock\n"
+        assert codebase.unittest_beyond_mock(unittest_test) == ["unittest", "unittest.TestCase"]
+        assert not codebase.module_under_test(codebase.tests / "use_cases" / "test_nothing.py").is_file()
+        gateway_test = "from clean_eval.external.git import GitGateway\nfrom tests.use_cases.fakes import MemoryGit\n"
+        assert {"tests.use_cases.fakes", "clean_eval.external.git"} <= set(codebase.imports(gateway_test))
+        assert ("external", codebase.tests / "external" / "test_git.py") in codebase.layer_tests(LAYERS)
+
+
+class TestsFollowTheConventions:
+    """The shape tests/AGENTS.md ("Writing tests") gives the tests: a test module holds constants and Test* classes of
+    test methods, every fixture lives in a conftest.py, and the tests' support holds classes and constants only."""
+
+    def test_test_modules_hold_constants_and_test_classes(
+        self,
+        codebase,
+    ):
+        for path in codebase.test_modules():
+            assert codebase.test_module_violations(path) == [], path.relative_to(codebase.root)
+
+    def test_a_conftest_holds_fixtures_hooks_and_constants(
+        self,
+        codebase,
+    ):
+        for path in codebase.conftests():
+            assert codebase.conftest_violations(path) == [], path.relative_to(codebase.root)
+
+    def test_support_holds_classes_and_constants(
+        self,
+        codebase,
+    ):
+        for path in codebase.support_modules():
+            assert codebase.support_violations(path) == [], path.relative_to(codebase.root)
+
+    def test_the_rules_are_able_to_fail(
+        self,
+        codebase,
+    ):
+        assert codebase.test_module_violations(PLANTED_TEST_MODULE) == [
+            "5 lowercase",
+            "8 helper",
+            "15 fixture_in_a_test_module",
+            "20 test_outside_a_class",
+            "25 Helper",
+            "32 TestThing.helper",
+            "38 TestThing.test_that_is_a_fixture",
+        ]
+        assert codebase.conftest_violations(PLANTED_CONFTEST) == ["12 helper", "17 Support"]
+        assert codebase.support_violations(PLANTED_SUPPORT) == ["4 helper", "13 fixture_in_support"]
+
+
+class TestCodeStyle:
+    """The code base's style (AGENTS.md, "Code style"), in the package, the tests and the scripts alike: no
+    protected-level functions or methods, each parameter on a line of its own, and no single-character parameter
+    names."""
+
+    def test_no_function_or_method_is_protected(
+        self,
+        codebase,
+    ):
+        for path in codebase.code_files():
+            assert codebase.protected_definitions(path) == [], path.relative_to(codebase.root)
+
+    def test_each_parameter_has_a_line_of_its_own(
+        self,
+        codebase,
+    ):
+        for path in codebase.code_files():
+            assert codebase.shared_parameter_lines(path) == [], path.relative_to(codebase.root)
+
+    def test_parameter_names_are_more_than_one_character(
+        self,
+        codebase,
+    ):
+        for path in codebase.code_files():
+            assert codebase.single_character_parameters(path) == [], path.relative_to(codebase.root)
+
+    def test_the_rules_are_able_to_fail(
+        self,
+        codebase,
+    ):
+        assert codebase.protected_definitions(PLANTED_STYLE) == ["2 _protected", "11 __private"]
+        assert codebase.shared_parameter_lines(PLANTED_STYLE) == ["2 _protected", "8 one_line"]
+        assert codebase.single_character_parameters(PLANTED_STYLE) == [
+            "2 _protected(x)",
+            "8 one_line(y)",
+            "8 one_line(z)",
+            "14 lambda(m)",
+        ]
 
 
 class TestReviewRulesCoverThisPackage:
     """The default review rules must place every clean_eval layer in the matching rules layer, so the dependency rules
     (CA-01, CA-02) apply to this repository's own code in reviews."""
 
-    EXPECTED = {
-        "domain": "domain",
-        "use_cases": "application",
-        "use_cases/rules": "application",
-        "adaptor": "interface",
-        "external": "infrastructure",
-    }
-
-    def rules_layers(self):
-        text = (Path(ROOT) / ".claude" / "skills" / "pr-review" / "review-rules.md").read_text()
-        section = text.split("## Layers", 1)[1].split("\n## ", 1)[0]
-        rows = [line for line in section.splitlines() if line.startswith("| ") and "`" in line]
-        return {row.split("|")[1].strip(): re.findall(r"`([^`]+)`", row.split("|")[2]) for row in rows}
-
-    def test_each_package_layer_maps_to_its_rules_layer(self):
-        layers = self.rules_layers()
-        for folder, expected in self.EXPECTED.items():
+    def test_each_package_layer_maps_to_its_rules_layer(
+        self,
+        codebase,
+    ):
+        layers = codebase.review_rules_layers()
+        for folder, expected in REVIEW_RULES_LAYERS.items():
             sample = "clean_eval/%s/x.py" % folder
-            matched = [name for name, globs in layers.items() if any(fnmatch.fnmatch(sample, g) for g in globs)]
+            matched = [
+                name for name, globs in layers.items() if any(fnmatch.fnmatch(sample, pattern) for pattern in globs)
+            ]
             assert matched == [expected], sample

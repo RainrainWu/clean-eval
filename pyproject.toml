@@ -5,6 +5,7 @@ description = "Flexible, scalable, and explainable verification framework for ag
 readme = "README.md"
 requires-python = ">=3.15"
 dependencies = [
+    "click>=8.5,<9",
     "pydantic>=2.14,<3",
 ]
 
