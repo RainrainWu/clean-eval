@@ -14,7 +14,7 @@ call out to, and the CI commands' arguments over real folders.
 A fixture reads its customisation from `request.param` and has a default without one. A test sets the param with
 `@pytest.mark.parametrize("<fixture>", [<value>], indirect=True)`, on the test or on its whole class. The fixtures built
 from it follow: `repo`, `git` and `shas` from `history`; `fs` from `files` and `links`; the CI commands' arguments from
-the data of their run (`tuning`, `eval_history`, `agent_files`, `context_files`, `agent_review`, `risk_report`, ...)."""
+the data of their run (`tuning`, `retro_history`, `agent_files`, `context_files`, `agent_review`, `risk_report`, ...)."""
 
 import base64
 import datetime as dt
@@ -47,13 +47,13 @@ from clean_eval.external import cli
 from clean_eval.external.claude_code import ClaudeCodeGateway
 from clean_eval.external.filesystem import FileSystemGateway
 from clean_eval.external.git import GitGateway
-from clean_eval.use_cases.evaluation import (
-    SNAPSHOT,
-    snapshot_tuning,
-)
 from clean_eval.use_cases.interfaces import (
     CodeHost,
     Environment,
+)
+from clean_eval.use_cases.retro import (
+    SNAPSHOT,
+    snapshot_tuning,
 )
 from clean_eval.use_cases.rules.review import (
     finalize_review,
@@ -613,7 +613,7 @@ def context_files(
 ):
     """More files in the CI run's context folder: {path in it: content} from `request.param` (a str is written as is,
     anything else as JSON), written after the ones `prepare` writes, so one can replace them
-    (`{"eval-history.json": "{broken"}`); none when not parametrized."""
+    (`{"retro-history.json": "{broken"}`); none when not parametrized."""
     return dict(getattr(request, "param", {}))
 
 
@@ -837,15 +837,15 @@ def refused_every_time():
     )
 
 
-# The data of an eval: the merged-PR history, and the repository's tuning files before and after the agent ran.
+# The data of a retro: the merged-PR history, and the repository's tuning files before and after the agent ran.
 
 
 @pytest.fixture
-def eval_history_prs(
+def retro_history_prs(
     request,
     facts,
 ):
-    """The merged PRs of `eval_history`, as `history` collects them (dicts): `hot` defective PRs on widely depended-on
+    """The merged PRs of `retro_history`, as `history` collects them (dicts): `hot` defective PRs on widely depended-on
     modules hot0, hot1, ... and `cold` clean PRs on leaf modules cold0, ..., each module with `facts`; (hot, cold) from
     `request.param`, (6, 16) by default. Under the default policy every hot PR outscores every cold one."""
     hot, cold = getattr(request, "param", (6, 16))
@@ -888,14 +888,14 @@ def eval_history_prs(
 
 
 @pytest.fixture
-def eval_history(
-    eval_history_prs,
+def retro_history(
+    retro_history_prs,
 ):
-    """An eval-history.json as `history` collects it (a dict), of `eval_history_prs`: AUC 1.0 with both hot and cold
+    """An retro-history.json as `history` collects it (a dict), of `retro_history_prs`: AUC 1.0 with both hot and cold
     PRs, and undefined without both kinds."""
-    hot = sum(1 for pr in eval_history_prs if pr["defects"])
-    cold = len(eval_history_prs) - hot
-    prs = eval_history_prs
+    hot = sum(1 for pr in retro_history_prs if pr["defects"])
+    cold = len(retro_history_prs) - hot
+    prs = retro_history_prs
     return {
         "period": {
             "since": "2026-01-01",
@@ -914,7 +914,7 @@ def eval_history(
 def tuning(
     request,
 ):
-    """The repository's .clean-eval/ before the CI agent ran (what `prepare eval` snapshots): {path in it: content}
+    """The repository's .clean-eval/ before the CI agent ran (what `prepare retro` snapshots): {path in it: content}
     from `request.param` (a str is written as is, anything else as JSON); an empty folder when not parametrized."""
     return dict(getattr(request, "param", {}))
 
@@ -928,13 +928,13 @@ def tuning_edits(
     return dict(getattr(request, "param", {}))
 
 
-# What the CI agent writes for an eval, which `finalize --skill eval` judges (test_cli.py): risk-model.json contents
+# What the CI agent writes for a retro, which `finalize --skill retro` judges (test_cli.py): risk-model.json contents
 # (its edits, and one that was there before) and a recommendation.
 
 
 @pytest.fixture
 def valid_model_edit():
-    """A risk-model.json the CI agent may write (a dict): it validates, and keeps the AUC of `eval_history`."""
+    """A risk-model.json the CI agent may write (a dict): it validates, and keeps the AUC of `retro_history`."""
     return {"business_weights": {"dependents": 0.4}}
 
 
@@ -946,7 +946,7 @@ def structural_model_edit():
 
 @pytest.fixture
 def flat_model_edit():
-    """A risk-model.json that drops the only terms telling the hot modules of `eval_history` from the cold ones, so
+    """A risk-model.json that drops the only terms telling the hot modules of `retro_history` from the cold ones, so
     every PR scores the same (AUC 0.5 < 1.0)."""
     return {"business_weights": {"dependents": 0}, "effects_mix": {"dependents": 0}}
 
@@ -959,7 +959,7 @@ def earlier_model():
 
 @pytest.fixture
 def recommendation():
-    """A recommendation as the eval agent lists it in result.json: a change of risk-model.json, with its evidence."""
+    """A recommendation as the retro agent lists it in result.json: a change of risk-model.json, with its evidence."""
     return {"target": "risk-model.json", "change": "c", "evidence": "e"}
 
 
@@ -967,19 +967,19 @@ def recommendation():
 
 
 @pytest.fixture
-def finalize_eval_args(
+def finalize_retro_args(
     request,
     ci_folders,
     tuning,
     tuning_edits,
-    eval_history,
+    retro_history,
     context_files,
     agent_files,
     write_files,
 ):
-    """The arguments of `finalize --skill eval` over `ci_folders`, as `prepare eval` and the agent leave them: the
+    """The arguments of `finalize --skill retro` over `ci_folders`, as `prepare retro` and the agent leave them: the
     workspace's .clean-eval/ held `tuning` when it was snapshotted into the context, then the agent made `tuning_edits`
-    and wrote `agent_files`; the context holds `eval_history` and `context_files`. `request.param` is the options after
+    and wrote `agent_files`; the context holds `retro_history` and `context_files`. `request.param` is the options after
     the folders: ["--apply"] by default ([] for a run without it)."""
     tuning_dir = Path(
         ci_folders.ws,
@@ -998,12 +998,12 @@ def finalize_eval_args(
         ),
     )
     write_files(tuning_dir, tuning_edits)
-    write_files(ci_folders.ctx, {"eval-history.json": eval_history, **context_files})
+    write_files(ci_folders.ctx, {"retro-history.json": retro_history, **context_files})
     write_files(ci_folders.agent, agent_files)
     return [
         "finalize",
         "--skill",
-        "eval",
+        "retro",
         "--ctx",
         ci_folders.ctx,
         "--agent",

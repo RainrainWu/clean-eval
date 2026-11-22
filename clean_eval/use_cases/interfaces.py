@@ -14,8 +14,8 @@ from abc import (
 )
 from typing import Optional
 
-from clean_eval.domain.evaluation import ReviewThreads
 from clean_eval.domain.rating import Heatmap
+from clean_eval.domain.retro import ReviewThreads
 from clean_eval.domain.review import (
     AgentRun,
     AgentTask,

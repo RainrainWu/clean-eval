@@ -30,18 +30,18 @@ from clean_eval.domain.errors import (
     InvalidOutput,
     InvalidRequest,
 )
-from clean_eval.domain.evaluation import (
-    EvalHistory,
-    Period,
-    Replay,
-    SensitivityRow,
-)
 from clean_eval.domain.policy import Policy
 from clean_eval.domain.rating import (
     Heatmap,
     Judgement,
     RatingCache,
     ReadmeAction,
+)
+from clean_eval.domain.retro import (
+    Period,
+    Replay,
+    RetroHistory,
+    SensitivityRow,
 )
 from clean_eval.domain.review import (
     RunFolders,
@@ -64,12 +64,6 @@ from clean_eval.settings import (
     Settings,
 )
 from clean_eval.use_cases.ci import start_run
-from clean_eval.use_cases.evaluation import (
-    collect_history,
-    finalize_eval,
-    prepare_eval,
-    run_eval_action,
-)
 from clean_eval.use_cases.heatmap import (
     finalize_heatmap_report,
     rate_revision,
@@ -88,6 +82,12 @@ from clean_eval.use_cases.interfaces import (
     RunLog,
     Runner,
 )
+from clean_eval.use_cases.retro import (
+    collect_history,
+    finalize_retro,
+    prepare_retro,
+    run_retro_action,
+)
 from clean_eval.use_cases.review import (
     assess_change,
     finalize_pr_review,
@@ -95,7 +95,7 @@ from clean_eval.use_cases.review import (
     prepare_review,
     run_review_action,
 )
-from clean_eval.use_cases.rules.evaluation import (
+from clean_eval.use_cases.rules.retro import (
     replay,
     rules_warning,
     sensitivity,
@@ -121,7 +121,7 @@ review changes by that risk.
 The commands marked CI are the ones the GitHub Action runs (`action` runs the others around its agent, which only
 proposes): they
 decide and act."""
-ACTION_HELP = """CI: run SKILL (risk-heat-map, pr-review or eval) on a checkout, as the GitHub Action does. A run that fails
+ACTION_HELP = """CI: run SKILL (risk-heat-map, pr-review or retro) on a checkout, as the GitHub Action does. A run that fails
 reports an ::error:: and exits with status 1.
 
 Its inputs are environment variables, which the run reads once into its settings (clean_eval/settings.py): action.yml
@@ -267,7 +267,7 @@ def rescored_history(
             "--replay/--sensitivity need --from-history",
         )
     try:
-        collected = EvalHistory.model_validate(read_json(FS, from_history))
+        collected = RetroHistory.model_validate(read_json(FS, from_history))
     except ValidationError as e:
         raise HeatmapError.from_validation(e, "%s is not a collected history" % from_history)
     if replay_overrides:
@@ -276,7 +276,7 @@ def rescored_history(
 
 
 def print_or_write(
-    result: Union[EvalHistory, Replay, list[SensitivityRow]],
+    result: Union[RetroHistory, Replay, list[SensitivityRow]],
     out: Optional[str],
 ) -> None:
     """Print `result` as JSON, or write it to `out` and say what a collected history holds."""
@@ -285,7 +285,7 @@ def print_or_write(
         print(text)
         return
     FS.write_text(out, text)
-    if isinstance(result, EvalHistory):
+    if isinstance(result, RetroHistory):
         print(
             "wrote %s: %d PRs, %d with escaped defects" % (out, result.totals.prs, result.totals.defective_prs),
             file=sys.stderr,
@@ -339,15 +339,15 @@ def run_pr_review(
     )
 
 
-def run_eval(
+def run_retro(
     settings: Settings,
     folders: RunFolders,
     agent: Agent,
     runner: Runner,
     log: RunLog,
 ) -> None:
-    """The eval's CI run in `folders`, with the gateways it takes."""
-    run_eval_action(
+    """The retro's CI run in `folders`, with the gateways it takes."""
+    run_retro_action(
         git(repository_root(folders.workspace)),
         FS,
         CLOCK,
@@ -376,7 +376,7 @@ def run_skill(
     elif skill == Skill.PR_REVIEW:
         run_pr_review(settings, folders, agent, runner, log)
     else:
-        run_eval(settings, folders, agent, runner, log)
+        run_retro(settings, folders, agent, runner, log)
 
 
 # The command line.
@@ -621,7 +621,7 @@ def assess(
 
 @clean_eval.command(
     short_help="Merged PRs of a period, with escaped defects.",
-    help="Merged PRs of a period, each rated at its base, with escaped defects (for the eval). --replay and "
+    help="Merged PRs of a period, each rated at its base, with escaped defects (for the retro). --replay and "
     "--sensitivity re-score a collected history under candidate policies.",
 )
 @repository_options
@@ -713,14 +713,16 @@ def prepare_pr_review(
     print(context.model_dump_json())
 
 
-@prepare.command("eval", help="The context of an eval: the period's history, its escaped defects and the tuning files.")
+@prepare.command(
+    "retro", help="The context of a retro: the period's history, its escaped defects and the tuning files."
+)
 @click.option("--repo", default=".", help="repository root (default: current folder)")
 @click.option("--ctx", "context_dir", required=True, help="folder for the context")
 @click.option("--since", required=True, help="YYYY-MM-DD")
 @click.option("--until", required=True, help="YYYY-MM-DD")
 @click.option("--with-gh", is_flag=True, help="fetch review comments with gh")
 @click.option("--branch", help="default: origin/HEAD, origin/main|master, or HEAD")
-def prepare_eval_context(
+def prepare_retro_context(
     repo: str,
     context_dir: str,
     since: str,
@@ -731,7 +733,7 @@ def prepare_eval_context(
     root = repository_root(repo)
     FS.make_dirs(context_dir)
     policy, source = load_policy(FS, root)
-    context = prepare_eval(
+    context = prepare_retro(
         git(root),
         FS,
         CLOCK,
@@ -763,7 +765,7 @@ def prepare_eval_context(
 @click.option("--agent", required=True)
 @click.option("--out", required=True)
 @click.option("--workspace", default=".")
-@click.option("--apply", "apply_edits", is_flag=True, help="eval: keep the edits of .clean-eval/ that pass validation")
+@click.option("--apply", "apply_edits", is_flag=True, help="retro: keep the edits of .clean-eval/ that pass validation")
 @click.option("--gh-output", required=True, help="the step-outputs file ($GITHUB_OUTPUT)")
 @click.pass_context
 def finalize(
@@ -779,8 +781,8 @@ def finalize(
     try:
         if skill == Skill.PR_REVIEW:
             result, outputs = finalize_pr_review(FS, ENV, context_dir, agent, out)
-        elif skill == Skill.EVAL:
-            result, outputs = finalize_eval(FS, ENV, context_dir, agent, out, apply_edits, workspace)
+        elif skill == Skill.RETRO:
+            result, outputs = finalize_retro(FS, ENV, context_dir, agent, out, apply_edits, workspace)
         else:
             result, outputs = finalize_heatmap_report(FS, ENV, out)
     except InvalidOutput as e:

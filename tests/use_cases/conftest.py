@@ -11,7 +11,7 @@ use cases take; and the static assets the tests feed the use cases or check agai
   `coverage` answer from data (`today`, `environ`, their param); `request.param` configures the rest, as
   `configure_mock`'s keywords (`{"post_review.return_value": ..., "require_auth.side_effect": HeatmapError("...")}`).
 - The data fixtures `graph`, `rating_cache` and `period` add the models the use cases take to the cross-layer ones of
-  tests/conftest.py. `collected` is the merged-PR history an eval collects, built once per class.
+  tests/conftest.py. `collected` is the merged-PR history a retro collects, built once per class.
 - The static assets (a CI run's folders and files, the sources and histories a rating reads, the changes a review
   assesses, a run's files, ...) take no param; each sits under a section comment naming what it serves. A test names
   one in its decorators with pytest-lazy-fixtures' `lf`, as a whole param or inside one
@@ -31,22 +31,21 @@ from unittest.mock import (
 
 import pytest
 
-from clean_eval.domain.evaluation import (
-    Period,
-    ReviewThreads,
-)
 from clean_eval.domain.policy import Policy
 from clean_eval.domain.rating import (
     Graph,
     RatingCache,
     Snapshot,
 )
+from clean_eval.domain.retro import (
+    Period,
+    ReviewThreads,
+)
 from clean_eval.domain.review import (
     AgentRun,
     RunFolders,
     Secrets,
 )
-from clean_eval.use_cases.evaluation import collect_history
 from clean_eval.use_cases.heatmap import MAX_FILE_BYTES
 from clean_eval.use_cases.interfaces import (
     Agent,
@@ -61,6 +60,7 @@ from clean_eval.use_cases.interfaces import (
     RunLog,
     Runner,
 )
+from clean_eval.use_cases.retro import collect_history
 from clean_eval.use_cases.rules.heatmap import MARKERS
 from tests.use_cases.fakes import (
     MemoryFileSystem,
@@ -69,7 +69,7 @@ from tests.use_cases.fakes import (
 )
 
 EMPTY_GRAPH: frozendict[str, Any] = frozendict({"nodes": {}, "links": {}, "tested": {}, "stats": {}})
-# The period an eval looks back over: six weeks, with fixes looked for in the 30 days after it.
+# The period a retro looks back over: six weeks, with fixes looked for in the 30 days after it.
 PERIOD: frozendict[str, Any] = frozendict({"since": "2026-01-15", "until": "2026-02-28"})
 COLLECTED_ON = "2026-03-01"  # the day `collected` rates the PRs' bases on
 
@@ -265,12 +265,12 @@ def rating_cache(
 def period(
     request,
 ):
-    """The Period an eval looks back over: PERIOD (2026-01-15 to 2026-02-28, with fixes looked for in the 30 days
+    """The Period a retro looks back over: PERIOD (2026-01-15 to 2026-02-28, with fixes looked for in the 30 days
     after it), with the fields in `request.param` replaced."""
     return Period.model_validate({**PERIOD, **getattr(request, "param", {})})
 
 
-# The merged-PR history an eval collects: rating every PR's base is the slow part, so it is built once per class.
+# The merged-PR history a retro collects: rating every PR's base is the slow part, so it is built once per class.
 
 
 @pytest.fixture(scope="class")
@@ -309,7 +309,7 @@ def collected(
     request,
     fix_and_revert_history,
 ):
-    """The EvalHistory that collect_history gathers, without the reviews, from the run in `request.param`: `history`,
+    """The RetroHistory that collect_history gathers, without the reviews, from the run in `request.param`: `history`,
     the repository's commits (as the `history` fixture takes them), by default `fix_and_revert_history`; `period`, the
     Period's fields, by default PERIOD; and `policy`, risk-model.json overrides, by default none.
 
@@ -341,7 +341,7 @@ def collected(
 def collected_json(
     collected,
 ):
-    """`collected` as eval-history.json holds it, which is what the eval agent reads."""
+    """`collected` as retro-history.json holds it, which is what the retro agent reads."""
     return collected.model_dump(mode="json")
 
 
@@ -384,7 +384,7 @@ def run_log():
     return create_autospec(RunLog, instance=True)
 
 
-# A CI run (use_cases/ci.py, and the actions' runs of the heat map, the review and the eval): its folders, what the
+# A CI run (use_cases/ci.py, and the actions' runs of the heat map, the review and the retro): its folders, what the
 # runner holds before it, its environment, and the secret nothing the agent leaves may keep.
 
 
@@ -722,7 +722,7 @@ def policy_file():
     return ".clean-eval/risk-model.json"
 
 
-# The eval (use_cases/evaluation.py), besides `collected`: a history of two PRs, and a PR's review threads on the code
+# The retro (use_cases/retro.py), besides `collected`: a history of two PRs, and a PR's review threads on the code
 # host.
 
 

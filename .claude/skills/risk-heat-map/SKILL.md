@@ -17,7 +17,7 @@ Rate every sub-module of **this** repository and refresh the README's heat map: 
    the repository's code.
 2. **Heuristics, not a verdict.** Say so in chat. Never hand-edit scores; the only judgement input is `judgement.json`.
 3. **Python only.** Other files are not rated (a change to them is *unrated* for the PR review). Don't edit
-   `.clean-eval/risk-model.json` here: tuning the policy is `/eval`'s job, backed by evidence.
+   `.clean-eval/risk-model.json` here: tuning the policy is `/retro`'s job, backed by evidence.
 
 ## Step 1 - Rate
 

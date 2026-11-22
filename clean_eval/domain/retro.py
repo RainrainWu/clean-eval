@@ -1,4 +1,4 @@
-"""The eval: the merged-PR history of a period, with its escaped defects and review signal, and the tuning the
+"""The retro: the merged-PR history of a period, with its escaped defects and review signal, and the tuning the
 agent proposes from it, with its outcome."""
 
 import datetime as dt
@@ -246,8 +246,8 @@ class HistoryPeriod(BaseModel):
     policy_version: int
 
 
-class EvalHistory(BaseModel):
-    """eval-history.json: what a replay re-scores and what the eval agent reads."""
+class RetroHistory(BaseModel):
+    """retro-history.json: what a replay re-scores and what the retro agent reads."""
 
     period: HistoryPeriod
     totals: Totals
@@ -258,7 +258,7 @@ class EvalHistory(BaseModel):
 
 
 class DefectPatch(BaseModel):
-    """One defect link whose PR and fix patches were written for the eval agent to verify (defects/index.json)."""
+    """One defect link whose PR and fix patches were written for the retro agent to verify (defects/index.json)."""
 
     file_stem: str
     pr: Optional[int]
@@ -271,8 +271,8 @@ class DefectPatch(BaseModel):
     overlap_files: list[str]
 
 
-class EvalContext(BaseModel):
-    """context.json of an eval."""
+class RetroContext(BaseModel):
+    """context.json of a retro."""
 
     since: dt.date
     until: dt.date
@@ -288,7 +288,7 @@ class EvalContext(BaseModel):
     defect_links: Count
 
 
-# An eval's outcome: the recommendations the eval agent proposes (untrusted), the edits of the tuning files it may make,
+# A retro's outcome: the recommendations the retro agent proposes (untrusted), the edits of the tuning files it may make,
 # and what was kept. Which edits are kept is decided by the validators here (shape) and the use case (evidence).
 
 MAX_RECOMMENDATIONS = 30
@@ -364,8 +364,8 @@ class Recommendation(BaseModel):
         return (value if isinstance(value, str) else str(value))[:MAX_TEXT]
 
 
-class AgentEvalResult(BaseModel):
-    """The eval agent's result.json: its recommendations (as text, cut to size); counts and AUC in it are ignored."""
+class AgentRetroResult(BaseModel):
+    """The retro agent's result.json: its recommendations (as text, cut to size); counts and AUC in it are ignored."""
 
     recommendations: list[Recommendation] = []
 
@@ -380,8 +380,8 @@ class AgentEvalResult(BaseModel):
         return [r for r in recs if isinstance(r, dict)][:MAX_RECOMMENDATIONS] if isinstance(recs, list) else recs
 
 
-class EvalResult(BaseModel):
-    """The eval CI trusts: counts and AUC from the collected history, the recommendations, and which edits were kept."""
+class RetroResult(BaseModel):
+    """The retro CI trusts: counts and AUC from the collected history, the recommendations, and which edits were kept."""
 
     since: dt.date
     until: dt.date

@@ -17,7 +17,6 @@ from clean_eval.domain.errors import (
     HeatmapError,
     InvalidOutput,
 )
-from clean_eval.domain.evaluation import EvalResult
 from clean_eval.domain.policy import (
     REPO_POLICY,
     Policy,
@@ -26,6 +25,7 @@ from clean_eval.domain.rating import (
     Heatmap,
     Judgement,
 )
+from clean_eval.domain.retro import RetroResult
 from clean_eval.domain.review import (
     Review,
     Secrets,
@@ -131,7 +131,7 @@ def write_run_output(
     fs: FileSystem,
     out: str,
     report_path: str,
-    result: Optional[Union[Review, EvalResult]],
+    result: Optional[Union[Review, RetroResult]],
     secrets: Secrets,
 ) -> None:
     """report.md (`report_path` redacted, or a note that there is none) and, when there is a result, result.json into

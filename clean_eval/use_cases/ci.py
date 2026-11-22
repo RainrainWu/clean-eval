@@ -1,4 +1,4 @@
-"""The steps every skill's CI run shares (heatmap.py, review.py and evaluation.py hold the runs): its folders, made
+"""The steps every skill's CI run shares (heatmap.py, review.py and retro.py hold the runs): its folders, made
 afresh; the agent's run on its task, with its transcript redacted; and the run's report to its runner. Through the Git,
 FileSystem, Environment, Agent, Runner and RunLog interfaces, with the run's Settings."""
 

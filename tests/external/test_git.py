@@ -57,7 +57,7 @@ class TestShowAndDiff:
 
 @pytest.mark.parametrize("history", [lf("merged_pr_history")], indirect=True)
 class TestHistoryReads:
-    """The history the eval reads: the first-parent log of a period, the default branch, commits that are or aren't
+    """The history the retro reads: the first-parent log of a period, the default branch, commits that are or aren't
     here, and the log and patch of a file."""
 
     def test_the_first_parent_log_of_a_period(

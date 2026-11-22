@@ -9,10 +9,10 @@ Claude Code skills in `.claude/skills/` form a feedback loop:
 |---|---|---|
 | `/risk-heat-map` | Rates every module on four aspects (Business Impact, Side Effects & Reversibility, Entropy, Unverified) from static analysis plus a levelling read-through, and draws the treemap in the section below. | code → README + `docs/risk-heatmap.svg` |
 | `/pr-review [PR#\|branch]` | Reviews a change against `pr-review/review-rules.md`, with depth scaled by the most severe band it touches in the heat map of its base. Every finding cites a rule ID. | heat map + rules → review |
-| `/eval [period]` | Replays merged PRs in a period, links later fixes/reverts to the PRs that caused them, measures how well risk scores and rules predicted them, and recommends changes to weights, thresholds and rules. | history → advice for model + rules |
+| `/retro [period]` | Looks back on the PRs merged in a period: links later fixes/reverts to the PRs that caused them, measures how well risk scores and rules predicted them, and recommends refinements to weights, thresholds and rules, with the cases behind them. | history → advice for model + rules |
 
 Requires [uv](https://docs.astral.sh/uv/), which provides Python 3.15 and the locked dependencies, and git; an
-authenticated `gh` for reviews by PR number, posting, and rule metrics in `/eval`.
+authenticated `gh` for reviews by PR number, posting, and rule metrics in `/retro`.
 
 ### Code layout
 
@@ -43,7 +43,7 @@ The GitHub Action runs `clean_eval action <skill>`, which runs the CI steps in-p
 
 ### Per-repo configuration
 
-A repository's own tuning in `.clean-eval/` takes precedence over the bundled defaults, and `/eval` writes the
+A repository's own tuning in `.clean-eval/` takes precedence over the bundled defaults, and `/retro` writes the
 recommendations it applies there:
 
 - `.clean-eval/risk-model.json`: overrides of the risk policy (weights, saturations, standards, module splitting); its
@@ -63,7 +63,7 @@ Use the skills from any repository's workflow through the composite action in th
     persist-credentials: false     # recommended: keep the token out of .git/config
 - uses: RainrainWu/clean-eval@v1
   with:
-    skill: pr-review               # risk-heat-map | pr-review | eval
+    skill: pr-review               # risk-heat-map | pr-review | retro
     anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
@@ -71,7 +71,7 @@ Use the skills from any repository's workflow through the composite action in th
 |---|---|---|---|
 | `risk-heat-map` | no (static scores; `use-claude: true` adds the levelling read-through) | `readme`, `diagram` | `readme-changed`, `result` |
 | `pr-review` | yes | `pr` (defaults to the triggering PR), `post`, `fail-on: never\|request_changes\|blocker` | `verdict`, `max-tier`, `blockers`, `result` |
-| `eval` | yes | `since`, `until`, `apply` | `auc`, `result` |
+| `retro` | yes | `since`, `until`, `apply` | `auc`, `result` |
 
 Common inputs: `model`, `max-turns`, `claude-code-version`, `extra-prompt`, `working-directory`, `github-token`. Every
 run writes `report.md`, `result.json` and `claude.log` to `outputs.output-dir`, and adds its report to the job summary.
@@ -124,7 +124,7 @@ as narrow as the job allows:
 | Rule for | `subject_prefix` | Who can sign in |
 |---|---|---|
 | PR reviews | `repo:OWNER/REPO:pull_request` | a run for any PR from a branch of the repository |
-| Scheduled runs (`eval`; `risk-heat-map` with `use-claude`) | `repo:OWNER/REPO:ref:refs/heads/main` | only the workflows on the default branch |
+| Scheduled runs (`retro`; `risk-heat-map` with `use-claude`) | `repo:OWNER/REPO:ref:refs/heads/main` | only the workflows on the default branch |
 | A job in a GitHub environment | `repo:OWNER/REPO:environment:NAME` | only the runs the environment's protection rules admit |
 
 - **Exact subjects.** A `subject_prefix` matches exactly unless it ends in `*`; `repo:OWNER/REPO:*` admits every
@@ -148,7 +148,7 @@ The agent reads untrusted text (PR diffs and descriptions, commit messages, comm
 deterministic code decides and acts:
 
 1. **Precompute** (`clean_eval prepare`): the PR's diff, per-file history and risk (from the heat map of its base
-   commit), and the `.clean-eval/` config **from the base commit**; for `eval`, the history (every PR rated at its
+   commit), and the `.clean-eval/` config **from the base commit**; for `retro`, the history (every PR rated at its
    base), the defect patches and one-knob sensitivity replays.
 2. **Sandboxed agent** (`clean_eval/external/claude_code.py`): `claude --restricted --strict-mcp-config` (no shell,
    web or MCP, and no settings or hooks from the checkout), with a scrubbed environment (no `GH_TOKEN`, runner tokens
@@ -157,7 +157,7 @@ deterministic code decides and acts:
    which a PR could edit to steer its own review. Restricted mode skips them (verified with Claude Code 2.1.328), and
    the agent's settings exclude them explicitly too (`CLAUDE_CODE_DISABLE_CLAUDE_MDS`, `claudeMdExcludes`, the
    AGENTS.md setting, and a deny rule for the Skill tool). File tools may read the checkout and the context, and write
-   only to the agent's output folder (and `.clean-eval/` for `eval` with `apply: true`). Claude Code enforces this,
+   only to the agent's output folder (and `.clean-eval/` for `retro` with `apply: true`). Claude Code enforces this,
    and so, independently, does a PreToolUse hook (`clean_eval guard`) that resolves real paths, so symlinks and
    `.git/` are off-limits; a hook that fails for any reason denies. clean-eval itself is installed from its own
    `uv.lock` (hash-checked, `--no-config`, outside every checkout), and every Python call runs isolated (`python -I`),
@@ -165,7 +165,7 @@ deterministic code decides and acts:
 3. **Finalize** (`clean_eval finalize`): validates the agent's output, turns unknown rule IDs into `NEW`, raises each
    finding to at least its rule's severity, and derives the verdict, blocker count and tier itself. Secrets (the
    values of secret-looking variables, and well-known token formats) are redacted from everything that leaves the
-   runner, and step outputs carry only enums and numbers. `eval` edits to `.clean-eval/` are kept only if they touch
+   runner, and step outputs carry only enums and numbers. `retro` edits to `.clean-eval/` are kept only if they touch
    tunable keys and don't lower AUC on replay; anything else under `.clean-eval/` is restored.
 4. **Post** (`clean_eval post`): one review, with inline comments only on lines of the diff, posted with less when
    GitHub refuses it; the action's earlier "changes requested" reviews are dismissed, so a fixed PR isn't left blocked.

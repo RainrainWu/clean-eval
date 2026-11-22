@@ -1,5 +1,5 @@
 """clean-eval's settings: every value a run takes from its environment, in groups of what belongs together (the run's
-folders, a review's inputs, an eval's, the heat map's, the agent's, what GitHub sets, Claude's credentials, keyless
+folders, a review's inputs, a retro's, the heat map's, the agent's, what GitHub sets, Claude's credentials, keyless
 federation). The GitHub Action passes its inputs as CE_* variables beside what the runner sets, and the command line
 reads them once into `Settings`, then hands that on: the use cases and the Claude Code gateway take it as it is, and no
 other code reads a variable by name. Every layer but the domain may import this module; only the drivers
@@ -39,7 +39,7 @@ from pydantic_settings import (
 
 CLAUDE_CODE_VERSION = "2.1.328"  # the Claude Code the action installs (action.yml's claude-code-version default)
 MAX_TURNS = 60
-LOOKBACK_DAYS = 90  # how far back an eval reads when no first day is given
+LOOKBACK_DAYS = 90  # how far back a retro reads when no first day is given
 DIAGRAM_PATH = "docs/risk-heatmap.svg"  # where the README's heat-map diagram goes, relative to the repository
 
 
@@ -111,25 +111,25 @@ class ReviewSettings(BaseModel):
     )
 
 
-class EvaluationSettings(BaseModel):
-    """An eval's inputs: its period, and whether the agent may edit the repository's tuning."""
+class RetroSettings(BaseModel):
+    """A retro's inputs: its period, and whether the agent may edit the repository's tuning."""
 
     model_config = GROUP
 
     since: Optional[dt.date] = Field(
         None,
         alias="CE_SINCE",
-        description="eval: the first day (default: %d days ago)" % LOOKBACK_DAYS,
+        description="retro: the first day (default: %d days ago)" % LOOKBACK_DAYS,
     )
     until: Optional[dt.date] = Field(
         None,
         alias="CE_UNTIL",
-        description="eval: the last day (default: today)",
+        description="retro: the last day (default: today)",
     )
     apply: bool = Field(
         False,
         alias="CE_APPLY",
-        description="eval: let the agent edit .clean-eval/ (an edit is kept if it validates)",
+        description="retro: let the agent edit .clean-eval/ (an edit is kept if it validates)",
     )
 
 
@@ -316,7 +316,7 @@ class Settings(BaseSettings):
 
     run: RunSettings = RunSettings()
     review: ReviewSettings = ReviewSettings()
-    evaluation: EvaluationSettings = EvaluationSettings()
+    retro: RetroSettings = RetroSettings()
     heatmap: HeatmapSettings = HeatmapSettings()
     agent: AgentSettings = AgentSettings()
     github: GitHubSettings = GitHubSettings()

@@ -1,9 +1,9 @@
 ---
-name: eval
-description: Evaluate historical merged PRs over a period (e.g. "last 90 days", "since 2026-08-01") to measure how well the risk heat map predicted escaped defects and how useful each review rule was, then advise concrete changes to risk-model.json weights/thresholds and review-rules.md. Use when asked to evaluate, calibrate, or tune the risk model or review rules.
+name: retro
+description: Look back on the PRs merged over a period (e.g. "last 90 days", "since 2026-08-01"), link later fixes and reverts to the PRs that caused them, measure how well the risk heat map and each review rule did, and propose concrete refinements to risk-model.json weights/thresholds and review-rules.md, with the cases behind them. Use when asked for a retrospective of the reviews, or to evaluate, calibrate or tune the risk model or review rules.
 ---
 
-# Eval — calibrate risk model and review rules
+# Retro — look back on the reviews, refine the rules
 
 Looks back over merged PRs in a period, links later fix/revert commits to the PRs that likely caused
 them ("escaped defects"), and checks whether the risk score and review rules would have caught them.
@@ -25,7 +25,7 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
 2. **Collect.** Use `--with-gh` when `gh` is authenticated (adds review comments and rule citations):
    ```bash
    uv run --frozen --no-config --project ${CLEAN_EVAL_HOME:-.} python -I ${CLEAN_EVAL_HOME:-.}/clean_eval history --since <YYYY-MM-DD> --until <YYYY-MM-DD> \
-     [--with-gh] --out <tmp or output dir>/eval-history.json
+     [--with-gh] --out <tmp or output dir>/retro-history.json
    ```
    Read `totals`, `calibration`, `modules`, `rules` first; dip into `prs` for detail. Under ~20 PRs or ~5
    defective PRs, say the sample is too small for weight changes and limit advice to qualitative findings.
@@ -43,7 +43,7 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
      flag any inversion.
    - `aspect_auc` (Business Impact `biz`, `effects`, `entropy`, `unverified`): an aspect near/below 0.5 isn't
      predictive here → lower the weights inside it, or its share of `overall` via `overall_peak_share`; the strongest →
-     raise. Keep changes ≤ ±0.15 per weight per eval to avoid overfitting.
+     raise. Keep changes ≤ ±0.15 per weight per retro to avoid overfitting.
    - `band_mix`: if >60% of PRs land in one band, the saturations (`business_saturation`, `entropy_saturation`, ...)
      or standards (`long_func_lines`, ...) are too loose or too tight — propose moving them.
    - Modules with high `escape_rate` but low `mean_score` → which aspect under-rates them (read their facts in `prs`)?
@@ -68,7 +68,7 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
 
 6. **Report**:
    ```
-   ## Eval <since> → <until>  (N PRs, D with escaped defects, rate X%)
+   ## Retro <since> → <until>  (N PRs, D with escaped defects, rate X%)
    ### Risk model — AUC 0.55 (weak)
    | Band | PRs | Defective | Escape rate |
    Findings … (with PR/commit evidence)
@@ -76,7 +76,7 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
    Findings …
    ### Recommended changes
    1. risk-model.json: business_weights.dependents 0.30 → 0.40 — biz AUC 0.67 (best); replay AUC 0.64 → 0.66
-   2. review-rules.md: add Q-05 "…" (major, Moderate) — would have caught #478 → #502, #511 → #530
+   2. review-rules.md: add Q-13 "…" (major, Moderate) — would have caught #478 → #502, #511 → #530
    ### Caveats (sample size, heuristic links, incomplete look-ahead)
    ```
    Every recommendation cites its evidence. Interactive: ask which to apply. When applying: edit the
@@ -91,7 +91,7 @@ named in the prompt:
 | File | Contents |
 |---|---|
 | `context.json` | period, PR and defect counts, baseline AUC, whether rule metrics are reliable |
-| `eval-history.json` | the step-2 output |
+| `retro-history.json` | the step-2 output |
 | `sensitivity.json` | replays of every one-knob change (`overall_peak_share` ±0.1; every weight in `business_weights`, `effects_mix`, `entropy_weights`, `unverified_mix` ±0.1 and → 0): AUC, band escape rates and band mix — use these instead of running replays |
 | `defects/index.json` + `defects/NN-prX-{pr,fix}.patch` | the PR and fix diffs (overlapping files) for up to 30 defect links, highest-risk first — use these for step 3 |
 | `risk-model.orig.json`, `review-rules.orig.md` | the repository's current overrides (`{}` when none) and rules |

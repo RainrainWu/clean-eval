@@ -1,4 +1,4 @@
-"""The eval's use cases (use_cases/evaluation.py), with their dependencies mocked: collecting the merged-PR history of a
+"""The retro's use cases (use_cases/retro.py), with their dependencies mocked: collecting the merged-PR history of a
 period, with every PR rated at its base and its escaped defects attributed, and each PR's review signal from the code
 host."""
 
@@ -13,21 +13,21 @@ from clean_eval.domain.errors import (
     RemoteFailure,
     RunFailed,
 )
-from clean_eval.domain.evaluation import (
+from clean_eval.domain.policy import Band
+from clean_eval.domain.retro import (
     FetchFailure,
     ReviewSignal,
 )
-from clean_eval.domain.policy import Band
-from clean_eval.use_cases.evaluation import (
+from clean_eval.use_cases.retro import (
     collect_history,
     review_of,
-    run_eval_action,
+    run_retro_action,
 )
-from clean_eval.use_cases.rules import evaluation
+from clean_eval.use_cases.rules import retro
 
 
 class TestCollectHistory:
-    """The history of a period, as eval-history.json holds it (`collected`, over `fix_and_revert_history`: a period
+    """The history of a period, as retro-history.json holds it (`collected`, over `fix_and_revert_history`: a period
     with a fix, a revert and a docs-only PR): every merged PR rated at its base, with the later fixes and reverts that
     touched its files attributed to it."""
 
@@ -85,7 +85,7 @@ class TestCollectHistory:
         collected,
         policy,
     ):
-        same = evaluation.replay(collected, policy)
+        same = retro.replay(collected, policy)
         assert set(same.model_dump()) == {"auc_max_score", "by_band", "band_mix"}
         assert same.by_band == collected.calibration.by_band  # facts are stored exactly
 
@@ -94,7 +94,7 @@ class TestCollectHistory:
         collected,
         policy,
     ):
-        rows = evaluation.sensitivity(collected, policy)
+        rows = retro.sensitivity(collected, policy)
         assert rows[0].change == "baseline"
         changes = [row.change for row in rows]
         assert len(changes) == len(set(changes))
@@ -133,7 +133,7 @@ class TestCollectHistoryWithTheReviews:
         assert sorted(rules.prs_fetch_failed) == [1, 2]
         assert not rules.reliable
         assert rules.prs_reviewed == 0
-        assert evaluation.rules_warning(rules) == "review fetch failed for 2/2 PRs (100%) - rule metrics unreliable"
+        assert retro.rules_warning(rules) == "review fetch failed for 2/2 PRs (100%) - rule metrics unreliable"
         assert host.review_threads.call_args_list == [call(1), call(2)]
 
     @pytest.mark.parametrize(
@@ -209,7 +209,7 @@ class TestReviewOf:
 
 
 class TestRunEvalAction:
-    """The eval's CI run refuses what it can't run on before it asks the code host or runs the agent. (The settings
+    """The retro's CI run refuses what it can't run on before it asks the code host or runs the agent. (The settings
     refuse a date that isn't one: tests/test_settings.py.)"""
 
     @pytest.mark.parametrize("environ", [{"CE_SINCE": "2026-02-01", "CE_UNTIL": "2026-01-01"}], indirect=True)
@@ -226,8 +226,8 @@ class TestRunEvalAction:
         settings,
         run_folders,
     ):
-        with pytest.raises(RunFailed, match=r"the eval's period: since \(2026-02-01\) is after until"):
-            run_eval_action(git, fs, clock, env, host, agent, runner, run_log, run_folders, settings, "")
+        with pytest.raises(RunFailed, match=r"the retro's period: since \(2026-02-01\) is after until"):
+            run_retro_action(git, fs, clock, env, host, agent, runner, run_log, run_folders, settings, "")
         host.require_auth.assert_not_called()
 
     @pytest.mark.parametrize("environ", [{"CE_APPLY": "true"}], indirect=True)
@@ -246,5 +246,5 @@ class TestRunEvalAction:
         run_folders,
     ):
         with pytest.raises(RunFailed, match="symlink"):
-            run_eval_action(git, fs, clock, env, host, agent, runner, run_log, run_folders, settings, "")
+            run_retro_action(git, fs, clock, env, host, agent, runner, run_log, run_folders, settings, "")
         agent.run.assert_not_called()
