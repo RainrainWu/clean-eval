@@ -1,9 +1,12 @@
-"""The environment gateway (external/environment.py): variables, path lists, and copies rather than the live
-environment."""
+"""The environment and clock gateways (external/environment.py)."""
 
+import datetime as dt
 import os
 
-from clean_eval.external.environment import EnvironmentGateway
+from clean_eval.external.environment import ClockGateway, EnvironmentGateway
+
+# The environment gateway (external/environment.py): variables, path lists, and copies rather than the live
+# environment.
 
 
 def test_environment(monkeypatch):
@@ -17,3 +20,10 @@ def test_environment(monkeypatch):
     snapshot = env.variables()
     snapshot["CE_X"] = "changed"
     assert os.environ["CE_X"] == "1"  # a copy, not the live environment
+
+
+# The clock gateway (external/environment.py).
+
+
+def test_today():
+    assert ClockGateway().today() == dt.date.today().isoformat()

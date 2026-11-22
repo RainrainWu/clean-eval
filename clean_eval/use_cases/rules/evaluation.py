@@ -1,0 +1,378 @@
+"""The eval's rules: reading the merged-PR history (PR numbers, escaped defects, review signal, rule stats),
+calibrating the risk model against it, and judging the tuning the agent proposes."""
+
+import json
+import re
+from collections import defaultdict
+
+from pydantic import ValidationError
+
+from clean_eval.domain.errors import InvalidOutput
+from clean_eval.domain.evaluation import (
+    AgentEvalResult,
+    AspectMeans,
+    BandStats,
+    Calibration,
+    DefectLink,
+    EvalResult,
+    FetchFailure,
+    ModelChange,
+    ModuleStats,
+    PolicyEdit,
+    Replay,
+    ReviewSignal,
+    RulesChange,
+    RuleStats,
+    RuleUse,
+    SensitivityRow,
+)
+from clean_eval.domain.policy import BAND_NAMES, SCORE_KEYS, WEIGHT_GROUPS, Policy
+from clean_eval.domain.review import StepOutputs
+from clean_eval.use_cases.rules.analysis import ignored
+from clean_eval.use_cases.rules.heatmap import band, band_floor, severity
+from clean_eval.use_cases.rules.heatmap import rescore as rescore_module
+from clean_eval.use_cases.rules.review import REVIEW_MARKER, check_rules, redact
+
+# Merged-PR history: which PR a commit merged, which later fixes and reverts point back at it ("escaped defects"), and
+# what its clean-eval review cited. Each first-parent commit of the main branch is one merged PR (merge or squash). The
+# fix-to-PR links are heuristics (shared files plus fix/revert wording) that the eval skill verifies from the diffs.
+
+RULE_ID = re.compile(r"\[([A-Z]{1,4}-\d{2,3}|NEW)\]")  # pr-review tags findings as [CA-01] / [NEW]
+MERGE_PR = re.compile(r"Merge pull request #(\d+)")
+SQUASH_PR = re.compile(r"\(#(\d+)\)")  # GitHub squash subjects end with "(#123)"; take the last one
+FIX = re.compile(r"(?i)\b(fix(es|ed)?|bug|hotfix|regression|patch|revert)\b")
+REVERT = re.compile(r"(?i)^revert\b")
+GH_ERROR_RATE_LIMIT = 0.2  # above this share of failed fetches, rule metrics are flagged unreliable
+DAY = 86400
+
+
+def pr_number(subject):
+    """The PR a first-parent commit merged, from its subject; None for a direct push."""
+    m = MERGE_PR.search(subject)
+    if m:
+        return int(m.group(1))
+    found = SQUASH_PR.findall(subject)
+    return int(found[-1]) if found else None
+
+
+def in_period(units, period):
+    return [u for u in units if u.ts <= period.until_ts]
+
+
+def attribute_defects(units, prs, period, policy):
+    """Attach to each of `prs` the later fixes and reverts (from `units`, the period plus its look-ahead) that most likely
+    repaired it: a fix or revert merged within the window that shares files with the PR. Of several such PRs one the fix
+    names (its short sha, or the reverted subject) wins, else the most recent; `confidence` says which."""
+    window = period.window_days * DAY
+    for u in prs:
+        u.defects = []
+    for fix in units:
+        is_revert = bool(REVERT.search(fix.subject))
+        if not (is_revert or FIX.search(fix.subject)):
+            continue
+        fset = {f for f in fix.files if not ignored(f, policy)}
+        candidates = [u for u in prs if u.sha != fix.sha and 0 < fix.ts - u.ts <= window and fset & set(u.files)]
+        if not candidates:
+            continue
+        strong = [u for u in candidates if u.sha[:7] in fix.subject or (is_revert and u.subject in fix.subject)]
+        target = (strong or candidates)[-1]
+        target.defects.append(
+            DefectLink(
+                fix_sha=fix.sha,
+                fix_pr=fix.pr,
+                subject=fix.subject,
+                kind="revert" if is_revert else "fix",
+                confidence="high" if strong else "heuristic",
+                days_after=round((fix.ts - target.ts) / DAY, 1),
+                overlap_files=sorted(fset & set(target.files))[:20],
+            )
+        )
+    return prs
+
+
+def is_reviewer(login, reviewer_logins=None):
+    """Whose clean-eval markers count: the given logins, else any GitHub App bot (`name[bot]` logins can't be registered
+    by users, so a commenter can't forge one)."""
+    if not login:
+        return False
+    return login in reviewer_logins if reviewer_logins else login.endswith("[bot]")
+
+
+def review_signal(view, inline, reviewer_logins=None):
+    """What one PR's reviews said. `view` holds the reviews, comments, labels and size of the PR (as the code host gives
+    them); `inline` its inline review comments."""
+    posts = [((r.get("author") or {}).get("login"), r.get("body") or "") for r in view.get("reviews", [])]
+    posts += [((c.get("author") or {}).get("login"), c.get("body") or "") for c in view.get("comments", [])]
+    posts += [((c.get("user") or {}).get("login"), c.get("body") or "") for c in inline]
+    marker, marker_authors, ignored_markers = {}, set(), 0
+    for login, body in posts:
+        for m in REVIEW_MARKER.finditer(body):
+            if not is_reviewer(login, reviewer_logins):
+                ignored_markers += 1  # a marker from anyone else is not trusted
+                continue
+            marker_authors.add(login)
+            for kv in m.group(1).split():
+                k, _, v = kv.partition("=")
+                marker[k] = v
+    # When a clean-eval review exists, measure rules by what *it* cited, not by third-party comments.
+    cited_text = "\n".join(b for login, b in posts if not marker_authors or login in marker_authors)
+    tags = RULE_ID.findall(cited_text)
+    return ReviewSignal(
+        url=view.get("url"),
+        labels=[label.get("name") for label in view.get("labels", [])],
+        size=(view.get("additions") or 0) + (view.get("deletions") or 0),
+        review_comment_count=len([b for _, b in posts if b.strip()]),
+        rules_cited=sorted(set(tags) - {"NEW"}),
+        new_findings=tags.count("NEW"),
+        clean_eval_marker=marker or None,
+        untrusted_markers_ignored=ignored_markers,
+    )
+
+
+def rule_stats(prs):
+    """How the review rules did on the PRs whose reviews were fetched; unreliable when too many fetches failed."""
+    fetched = [u for u in prs if isinstance(u.review, ReviewSignal)]
+    failed = [u.pr for u in prs if isinstance(u.review, FetchFailure) and u.review.error == "error"]
+    not_found = [u.pr for u in prs if isinstance(u.review, FetchFailure) and u.review.error == "not_found"]
+    attempted = len(fetched) + len(failed)
+    error_rate = round(len(failed) / attempted, 3) if attempted else 0.0
+    per_rule = defaultdict(RuleUse)
+    for u in fetched:
+        for r in u.review.rules_cited:
+            per_rule[r].prs_cited += 1
+            per_rule[r].cited_in_defective_prs += bool(u.defects)
+    return RuleStats(
+        per_rule=dict(per_rule),
+        prs_reviewed=len(fetched),
+        prs_fetch_failed=failed,
+        prs_not_found=not_found,
+        gh_error_rate=error_rate,
+        reliable=error_rate <= GH_ERROR_RATE_LIMIT,
+        prs_with_clean_eval_review=sum(1 for u in fetched if u.review.clean_eval_marker),
+        new_findings=sum(u.review.new_findings for u in fetched),
+        defective_prs_with_no_rule_cited=[u.pr for u in fetched if u.defects and not u.review.rules_cited],
+    )
+
+
+def rules_warning(rules):
+    """A warning when some review fetches failed, or None."""
+    failed = len(rules.prs_fetch_failed)
+    if not failed:
+        return None
+    return "gh review fetch failed for %d/%d PRs (%d%%)%s" % (
+        failed,
+        rules.prs_reviewed + failed,
+        round(rules.gh_error_rate * 100),
+        "" if rules.reliable else " - rule metrics unreliable",
+    )
+
+
+def module_stats(prs):
+    """Per module, most escaped defects first: PRs that touched it, how many had defects, mean score, bands seen."""
+    by_module = defaultdict(lambda: {"prs": 0, "defective_prs": 0, "scores": [], "bands": defaultdict(int)})
+    for u in prs:
+        for m in u.modules:
+            bm = by_module[m.module]
+            bm["prs"] += 1
+            bm["defective_prs"] += bool(u.defects)
+            if m.score is not None:
+                bm["scores"].append(m.score)
+            bm["bands"][m.band] += 1
+    return {
+        name: ModuleStats(
+            prs=bm["prs"],
+            defective_prs=bm["defective_prs"],
+            escape_rate=round(bm["defective_prs"] / bm["prs"], 3),
+            mean_score=round(sum(bm["scores"]) / len(bm["scores"]), 1) if bm["scores"] else None,
+            bands_seen=dict(bm["bands"]),
+        )
+        for name, bm in sorted(by_module.items(), key=lambda kv: -kv[1]["defective_prs"])
+    }
+
+
+# How well the risk scores predicted escaped defects (AUC, escape rate per band, per aspect), and replays of a candidate
+# policy on an already-collected history: every rated module is re-scored from its stored facts, so a change of weights,
+# mixes or thresholds is evaluated in milliseconds without touching git. Module shape (depth, paths) needs a re-collect.
+
+
+def auc(pos, neg):
+    """P(score of a defective PR > score of a clean PR); ties count half. None if undefined."""
+    if not pos or not neg:
+        return None
+    wins = sum((p > n) + 0.5 * (p == n) for p in pos for n in neg)
+    return round(wins / (len(pos) * len(neg)), 3)
+
+
+def _aspect(u, key):
+    """Highest score of one aspect among the rated modules a PR touched (0 when none)."""
+    return max([getattr(m.scores, key) or 0 for m in u.modules if m.rated and m.scores] or [0])
+
+
+def calibration(prs):
+    by_band = defaultdict(BandStats)
+    for u in prs:
+        by_band[u.max_tier].prs += 1
+        by_band[u.max_tier].defective_prs += bool(u.defects)
+    for b in by_band.values():
+        b.escape_rate = round(b.defective_prs / b.prs, 3) if b.prs else None
+    bad, good = [u for u in prs if u.defects], [u for u in prs if not u.defects]
+    aspect_auc, aspect_means = {}, {}
+    for key in SCORE_KEYS:
+        sp, sn = [_aspect(u, key) for u in bad], [_aspect(u, key) for u in good]
+        aspect_auc[key] = auc(sp, sn)
+        aspect_means[key] = AspectMeans(
+            defective=round(sum(sp) / len(sp), 1) if sp else None, clean=round(sum(sn) / len(sn), 1) if sn else None
+        )
+    bands = [b for b in BAND_NAMES if b in by_band]
+    return Calibration(
+        auc_max_score=auc([u.max_score for u in bad], [u.max_score for u in good]),
+        by_band={b: by_band[b] for b in bands},
+        band_mix={b: round(by_band[b].prs / len(prs), 3) for b in bands} if prs else {},
+        aspect_auc=aspect_auc,
+        aspect_means=aspect_means,
+    )
+
+
+def summarise(u, mods):
+    """Copy of PR `u` touching `mods`: its band is the most severe one, its score the highest (an unrated module counts
+    at the floor of its band)."""
+    scores = [m.score for m in mods if m.score is not None] + [band_floor(m.band) for m in mods if m.score is None]
+    return u.model_copy(
+        update={
+            "modules": mods,
+            "max_tier": max([m.band for m in mods] or ["Low"], key=severity),
+            "max_score": max(scores, default=0),
+        }
+    )
+
+
+def rescore(prs, policy):
+    """Copy of `prs` with every rated module re-scored from its facts under `policy`."""
+    out = []
+    for u in prs:
+        mods = []
+        for m in u.modules:
+            if m.rated and m.facts is not None:
+                s = rescore_module(m.facts, policy)
+                mods.append(m.model_copy(update={"scores": s, "score": s.overall, "band": band(s.overall)}))
+            elif m.rated:
+                mods.append(m)  # stored without facts: nothing to re-score, its rating stands
+            else:
+                mods.append(m.model_copy(update={"band": policy.unrated_band}))
+        out.append(summarise(u, mods))
+    return out
+
+
+def replay(history, policy):
+    """Calibration of `policy` on an already-collected EvalHistory (weights, mixes and thresholds; not module shape)."""
+    cal = calibration(rescore(history.prs, policy))
+    return Replay(auc_max_score=cal.auc_max_score, by_band=cal.by_band, band_mix=cal.band_mix)
+
+
+def sensitivity(history, policy, step=0.1):
+    """One-knob-at-a-time replays: the overall peak share and every weight of the four aspects, each ±step and -> 0."""
+    rows = [SensitivityRow(change="baseline", **replay(history, policy).model_dump())]
+    for nv in (policy.overall_peak_share + step, policy.overall_peak_share - step):
+        if 0 <= nv <= 1:
+            variant = policy.model_copy(update={"overall_peak_share": round(nv, 3)})
+            rows.append(
+                SensitivityRow(
+                    change="overall_peak_share %g→%g" % (policy.overall_peak_share, round(nv, 3)),
+                    **replay(history, variant).model_dump(),
+                )
+            )
+    for group in WEIGHT_GROUPS:
+        weights = getattr(policy, group)
+        for key, w in weights.items():
+            seen = {round(w, 3)}
+            for label, nw in (("+%g" % step, w + step), ("-%g" % step, max(0.0, w - step)), ("=0", 0.0)):
+                nw = round(nw, 3)
+                if nw in seen or sum(weights.values()) - w + nw <= 0:
+                    continue
+                seen.add(nw)
+                variant = policy.model_copy(update={group: {**weights, key: nw}})
+                rows.append(
+                    SensitivityRow(
+                        change="%s.%s %g→%g (%s)" % (group, key, w, nw, label), **replay(history, variant).model_dump()
+                    )
+                )
+    return rows
+
+
+# Which edits of the tuning files (`.clean-eval/risk-model.json` and `review-rules.md`) an unattended eval may keep.
+#
+# The domain models check the shape of an edit (a valid policy changing only tunable knobs; rules that parse into unique
+# rows). The evidence is judged here: enough PRs in the period, and a replay AUC no lower than the current model's.
+
+MODEL_FILE, RULES_FILE = "risk-model.json", "review-rules.md"  # in .clean-eval/
+TUNING_FILES = frozenset({MODEL_FILE, RULES_FILE})
+MIN_PRS, MIN_DEFECTIVE = 20, 5  # below this, a model edit has no evidence behind it
+
+
+def judge_model_edit(new_text, orig_text, history):
+    """The accepted change of the risk-model overrides (None text: no file, i.e. the defaults), judged on the collected
+    EvalHistory; InvalidOutput (or a parse error) when it has to be restored."""
+    try:
+        edit = PolicyEdit(
+            new=json.loads(new_text) if new_text is not None else {},
+            orig=json.loads(orig_text) if orig_text is not None else {},
+        )
+    except ValidationError as e:
+        raise InvalidOutput.from_validation(e, MODEL_FILE)
+    prs, defective = history.totals.prs, history.totals.defective_prs
+    if prs < MIN_PRS or defective < MIN_DEFECTIVE:
+        raise InvalidOutput(
+            "sample too small for a model change (%d PRs, %d defective; need at least %d and %d)"
+            % (prs, defective, MIN_PRS, MIN_DEFECTIVE)
+        )
+    # compare replay with replay: stored signals are rounded, so a replay of the unchanged model can differ slightly
+    # from the collected AUC
+    before = replay(history, Policy.from_overrides(edit.orig)).auc_max_score
+    after = replay(history, Policy.from_overrides(edit.new)).auc_max_score
+    if before is None or after is None:
+        raise InvalidOutput("AUC is undefined for this period (no defective or no clean PRs): no evidence for a change")
+    if after < before:
+        raise InvalidOutput("replay AUC %s is below the current model's %s" % (after, before))
+    return ModelChange(changed_keys=sorted(edit.changed_keys), auc_before=before, auc_after=after)
+
+
+def judge_rules_edit(new_text):
+    """The accepted change of the review rules; InvalidOutput when they are removed or don't parse into unique rows."""
+    if new_text is None:
+        raise InvalidOutput("review-rules.md may not be removed")
+    try:
+        check_rules(new_text)
+    except ValidationError as e:
+        raise InvalidOutput.from_validation(e)
+    return RulesChange()
+
+
+def eval_recommendations(raw, secrets=()):
+    """The recommendations of the agent's result.json, validated and redacted of `secrets`."""
+    try:
+        recs = AgentEvalResult.model_validate(raw).recommendations
+    except ValidationError as e:
+        raise InvalidOutput.from_validation(e, "result.json")
+    return [
+        r.model_copy(update={k: redact(getattr(r, k), secrets)[0] for k in ("target", "change", "evidence")})
+        for r in recs
+    ]
+
+
+def eval_result(history, recommendations, model_change, rules_change, other_reverted):
+    """(EvalResult, step outputs). Counts and AUC come from the collected history, never from agent text."""
+    baseline = history.calibration.auc_max_score
+    res = EvalResult(
+        since=history.period.since,
+        until=history.period.until,
+        prs=history.totals.prs,
+        defective_prs=history.totals.defective_prs,
+        auc=baseline,
+        recommendations=recommendations,
+        model_change=model_change,
+        rules_change=rules_change,
+        other_files_reverted=other_reverted,
+    )
+    return res, StepOutputs(
+        {"auc": "" if baseline is None else "%.3f" % baseline, "applied": "true" if res.applied else "false"}
+    )

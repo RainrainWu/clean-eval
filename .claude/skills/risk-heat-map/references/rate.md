@@ -1,7 +1,7 @@
 # Rate
 
 Four aspect scores per sub-module, 0-100, higher is riskier. Standards, weights and thresholds: `clean_eval/domain/policy.py`;
-formulas: `aspects.py`, `scoring.py` (same folder). `overall = 0.5 * sqrt(impact * weakness) + 0.5 * worst`: `impact` is the
+formulas: `clean_eval/use_cases/rules/heatmap.py`. `overall = 0.5 * sqrt(impact * weakness) + 0.5 * worst`: `impact` is the
 larger of Business Impact and Side Effects, `weakness` the mean of Entropy and Unverified, `worst` the highest; N/A is left
 out (the 0.5 is `overall_peak_share`).
 

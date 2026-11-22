@@ -74,14 +74,14 @@ REACHING_OUT = {
     "ctypes",
     "webbrowser",
 }
-# Each external dependency has one gateway, the only module allowed what reaches it.
+# Each external dependency has one gateway class; a gateway module is the only module allowed what reaches the
+# dependencies of its gateways. module -> (what it may import that reaches outside, its gateway classes)
 GATEWAYS = {
-    "external/git.py": {"subprocess"},  # the git CLI
-    "external/github.py": {"subprocess"},  # the gh CLI
-    "external/code_review_graph.py": {"subprocess", "sqlite3"},  # the code-review-graph CLI and its database
-    "external/filesystem.py": {"os", "shutil", "filecmp", "pathlib"},  # files and folders
-    "external/environment.py": {"os"},  # environment variables
-    "external/clock.py": {"datetime"},  # today's date
+    "external/git.py": ({"subprocess"}, {"GitGateway"}),  # the git CLI
+    "external/github.py": ({"subprocess"}, {"GitHubGateway"}),  # the gh CLI
+    "external/code_review_graph.py": ({"subprocess", "sqlite3"}, {"CodeReviewGraphGateway"}),  # its CLI and database
+    "external/filesystem.py": ({"os", "shutil", "filecmp", "pathlib"}, {"FileSystemGateway"}),  # files and folders
+    "external/environment.py": ({"os", "datetime"}, {"EnvironmentGateway", "ClockGateway"}),  # variables, today's date
 }
 # The interfaces (use_cases/interfaces.py) and the one class implementing each: a gateway or a presenter.
 INTERFACES = PACKAGE / "use_cases" / "interfaces.py"
@@ -91,15 +91,11 @@ IMPLEMENTATIONS = {
     "FileSystem": "external/filesystem.py",
     "KnowledgeGraph": "external/code_review_graph.py",
     "Environment": "external/environment.py",
-    "Clock": "external/clock.py",
-    "DiagramPresenter": "adaptor/presenters/diagram.py",
-    "ReportPresenter": "adaptor/presenters/markdown_report.py",
+    "Clock": "external/environment.py",
+    "DiagramPresenter": "adaptor/presenters.py",
+    "ReportPresenter": "adaptor/presenters.py",
 }
-DRIVERS = {
-    "external/cli.py",
-    "external/ci.py",
-    "external/agent_guard.py",
-}  # the console is theirs (they are driven by it)
+DRIVERS = {"external/cli.py", "external/agent_guard.py"}  # the console is theirs (they are driven by it)
 BOOTSTRAP = {"__main__.py"}  # puts the checkout on sys.path before any of the package can be imported
 TESTS = Path(ROOT) / "tests"
 TEST_SUPPORT = {"__init__.py", "conftest.py", "builders.py", "fakes.py"}  # a layer's test infrastructure, not tests
@@ -219,8 +215,8 @@ class TestDependencyRule:
         assert names == ["clean_eval.external.cli"]
 
     def test_the_rule_is_able_to_fail(self):
-        assert "clean_eval.domain.values" in imports(PACKAGE / "use_cases" / "rules" / "scoring.py")
-        assert "clean_eval.use_cases.rate_repository" in imports(PACKAGE / "external" / "cli.py")
+        assert "clean_eval.domain.policy" in imports(PACKAGE / "use_cases" / "rules" / "heatmap.py")
+        assert "clean_eval.use_cases.heatmap" in imports(PACKAGE / "external" / "cli.py")
         assert relative_imports("from ..domain import x\nimport os\nfrom . import y\nfrom a import b\n") == [1, 3]
         assert [n for n, _ in sys_uses(PACKAGE / "external" / "agent_guard.py")] == ["stdin", "stderr"]
         assert any(n.startswith("clean_eval.adaptor") for n in imports(PACKAGE / "external" / "cli.py"))
@@ -251,14 +247,14 @@ class TestExternalDependenciesStayInTheirGateways:
             reaching = {n.split(".")[0] for n in imports(path)} & (
                 REACHING_OUT | {"datetime"} if rel.startswith("external/") else REACHING_OUT
             )
-            assert reaching <= GATEWAYS.get(rel, set()), rel
+            assert reaching <= GATEWAYS.get(rel, (set(), set()))[0], rel
 
-    def test_each_gateway_is_one_gateway_class(self):
-        for rel in GATEWAYS:
+    def test_a_gateway_module_holds_just_its_gateway_classes(self):
+        for rel, (_, gateways) in GATEWAYS.items():
             tree = ast.parse((PACKAGE / rel).read_text())
-            classes = [n.name for n in tree.body if isinstance(n, ast.ClassDef) and not n.name.startswith("_")]
-            assert len(classes) == 1, rel
-            assert classes[0].endswith("Gateway"), rel
+            classes = {n.name for n in tree.body if isinstance(n, ast.ClassDef) and not n.name.startswith("_")}
+            assert classes == gateways, rel
+            assert all(name.endswith("Gateway") for name in classes), rel
 
     def test_files_the_clock_and_the_environment_are_reached_only_through_their_gateways(self):
         for path in package_files():
@@ -266,7 +262,7 @@ class TestExternalDependenciesStayInTheirGateways:
             for callee, line in calls(path):
                 if callee == "open":
                     assert rel == "external/filesystem.py", "%s:%d opens a file" % (rel, line)
-            if rel != "external/clock.py":
+            if rel != "external/environment.py":
                 assert list(clock_reads(path)) == [], "%s reads the clock" % rel
             if rel != "external/environment.py":
                 for node in ast.walk(ast.parse(path.read_text())):
@@ -287,7 +283,7 @@ class TestExternalDependenciesStayInTheirGateways:
 
     def test_the_rule_is_able_to_fail(self):
         assert "subprocess" in {n.split(".")[0] for n in imports(PACKAGE / "external" / "git.py")}
-        assert list(clock_reads(PACKAGE / "external" / "clock.py"))  # the one clock read is found
+        assert list(clock_reads(PACKAGE / "external" / "environment.py"))  # the one clock read is found
         assert "open" in {callee for callee, _ in calls(PACKAGE / "external" / "filesystem.py")}
 
 

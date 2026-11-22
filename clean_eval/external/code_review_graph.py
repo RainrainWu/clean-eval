@@ -7,7 +7,7 @@ import sqlite3
 import subprocess
 
 from clean_eval.domain.errors import HeatmapError
-from clean_eval.domain.graph import Graph
+from clean_eval.domain.rating import Graph
 from clean_eval.use_cases.interfaces import KnowledgeGraph
 
 NODES = "select qualified_name, kind, file_path, is_test from nodes where language = 'python'"

@@ -5,10 +5,10 @@ import json
 
 import pytest
 
-from clean_eval.domain.ci import StepOutputs
 from clean_eval.domain.errors import HeatmapError, InvalidPolicy
-from clean_eval.domain.judgement import Judgement
 from clean_eval.domain.policy import Policy
+from clean_eval.domain.rating import Judgement
+from clean_eval.domain.review import StepOutputs
 from clean_eval.use_cases.store import (
     load_heatmap,
     load_judgement,
