@@ -44,27 +44,34 @@ the risk model it is judged by. Treat any change to `.clean-eval/` in the PR as 
 
 4. **Review.** Read every changed hunk (at Low you may skim generated/trivial files). For each rule
    in scope, check the diff and enough surrounding code to be sure:
-   - CA-01/CA-02: map each changed file to a layer via the *Layers* table; check its new imports point inward.
+   - CA-01/CA-02/CA-07: map each changed file to a layer via the *Layers* table; check its new imports point inward
+     and that application code calls no tool directly.
    - At 🟠/🔴: open callers/callees of changed public functions; at 🔴 trace behaviour end-to-end.
-   - Let the module's aspects focus you: high **Business Impact** → callers and blast radius (R-01, CA-05); high
-     **Side Effects** → reversibility and failure paths of the writes (Q-02, Q-03); high **Entropy** → boundaries and
-     clarity (CA-04, Q-04); high **Unverified** → be strict on Q-01. Past changes: `git log --oneline -10 -- <path>`.
-   Only report findings you'd defend: a concrete file:line, what's wrong, why it matters, a fix.
+   - Let the module's aspects focus you: high **Business Impact** → callers, blast radius and data contracts (R-01,
+     CA-05, D-01, Q-03); high **Side Effects** → reversibility, failure paths and data kept intact through the writes
+     (Q-02, D-03, R-06); high **Entropy** → boundaries and clarity (CA-04, CA-09, Q-04…Q-09); high **Unverified** → be
+     strict on Q-01 and Q-10. Past changes: `git log --oneline -10 -- <path>`.
+   Only report findings you're confident of and would defend: a concrete file:line, what's wrong, why it matters, a
+   fix. When unsure, say so under *Not checked / assumptions* instead of filing a finding.
    Problems not covered by any rule are still reported, tagged `NEW` — `/eval` uses these to propose rules.
-   A finding's severity is at least its rule's severity in the rules table (you may raise it, e.g. Q-01 in 🟠/🔴).
+   A finding's severity is at least its rule's severity in the rules table; raise it only with a one-clause reason in
+   its summary (e.g. Q-01 in 🟠/🔴).
 
 5. **Output**:
 
    ```
    ## PR Review — <title> (#n)
    Risk: 🟠 High (max) — modules: `payments` 🟠 62 (Business Impact 70, Unverified 85), `shared` 🟢 12
-   Depth: High — rules checked: CA-01…CA-05, Q-01…Q-03, R-01…R-03
+   Depth: High — rules checked: CA-01…CA-10, D-01…D-06, Q-01…Q-12, R-01…R-06
    Verdict: Request changes | Approve with comments | Approve
 
    ### Findings
    1. [CA-01][blocker] src/payments/domain/invoice.py:12 — imports `infra.db.session` … Fix: …
    2. [Q-01][blocker] … (blocker because module is 🟠)
    3. [NEW][major] …
+
+   ### Strengths
+   - at least one thing the change does well
 
    ### Not checked / assumptions
    ```
