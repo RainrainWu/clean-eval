@@ -1,0 +1,77 @@
+# Publish a release when a semver tag is pushed: vX.Y.Z, or vX.Y.Z-alpha.N / -beta.N / -rc.N for a pre-release.
+# `check` verifies the tag (semver, on master, equal to pyproject.toml's version, newer than every release tag) and runs
+# the tests at it, with read-only access. `publish` then creates the GitHub Release with generated notes and, for a
+# stable release, moves the major tag (v1) that `uses: RainrainWu/clean-eval@v1` follows; it runs no repository code.
+# How to cut a release: README.md, "Releasing".
+name: release
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      sha: ${{ steps.tag.outputs.sha }}
+      major: ${{ steps.tag.outputs.major }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0               # master's history and every tag, for the checks
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          version: "0.13.7"
+          enable-cache: false
+      - run: uv sync --locked          # fails too when uv.lock's version isn't pyproject.toml's
+      - id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: uv run --frozen python -I .github/scripts/check_release.py "$TAG" >> "$GITHUB_OUTPUT"
+      - run: uv run --frozen python -m unittest discover -s tests -v
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      SHA: ${{ needs.check.outputs.sha }}
+      MAJOR: ${{ needs.check.outputs.major }}
+      PRERELEASE: ${{ needs.check.outputs.prerelease }}
+    steps:
+      - name: Publish the GitHub Release
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG is released already"
+          elif [ "$PRERELEASE" = true ]; then
+            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" --prerelease --latest=false
+          else
+            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" --latest
+          fi
+      - name: Move the major tag
+        if: needs.check.outputs.prerelease == 'false'
+        run: |
+          if ! gh api "repos/$GH_REPO/git/ref/tags/$MAJOR" >/dev/null 2>&1; then
+            gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$MAJOR" -f sha="$SHA" >/dev/null
+          elif ! gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$MAJOR" -f sha="$SHA" -F force=true >/dev/null; then
+            # GitHub can refuse to move a tag with this token across workflow-file changes; re-creating it is allowed.
+            gh api --method DELETE "repos/$GH_REPO/git/refs/tags/$MAJOR"
+            gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$MAJOR" -f sha="$SHA" >/dev/null
+          fi
+          echo "$MAJOR -> $SHA"

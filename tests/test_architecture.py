@@ -154,7 +154,8 @@ class DependencyRule(unittest.TestCase):
                 self.assertEqual(list(clock_reads(path)), [], path.relative_to(PACKAGE))
 
     def test_every_import_is_absolute(self):
-        for path in package_files() + sorted((Path(ROOT) / "tests").glob("*.py")):
+        others = [Path(ROOT) / "tests", Path(ROOT) / ".github" / "scripts"]
+        for path in package_files() + sorted(p for folder in others for p in folder.glob("*.py")):
             self.assertEqual(relative_imports(path.read_text()), [], path.relative_to(ROOT))
 
     def test_the_launcher_only_reaches_the_external_layer(self):
