@@ -3,7 +3,8 @@ Inner layers know nothing of outer ones and do no I/O. The domain holds data mod
 invariants are validators, plus the constants and error types they use. The use_cases layer holds the abstract classes
 of every external utility the business logic uses (interfaces.py) and module-level functions that take implementations
 of them; the business rules are in use_cases/rules. Everything that reaches outside the process does so in the external
-layer, each dependency through its one gateway, which implements its interface. Every import is absolute."""
+layer, each dependency through its one gateway, which implements its interface. Every import is absolute. The tests are
+laid out like the package and follow the same dependency rule."""
 import ast
 import fnmatch
 import importlib
@@ -15,7 +16,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from helpers import ROOT
+from tests.helpers import ROOT
 
 PACKAGE = Path(ROOT) / "clean_eval"
 TOP = "clean_eval"
@@ -53,6 +54,8 @@ IMPLEMENTATIONS = {
 }
 DRIVERS = {"external/cli.py", "external/ci.py", "external/agent_guard.py"}  # the console is theirs (they are driven by it)
 BOOTSTRAP = {"__main__.py"}  # puts the checkout on sys.path before any of the package can be imported
+TESTS = Path(ROOT) / "tests"
+TEST_SUPPORT = {"__init__.py", "builders.py", "fakes.py"}  # a layer's test infrastructure, not tests
 
 
 def imports(path):
@@ -154,8 +157,8 @@ class DependencyRule(unittest.TestCase):
                 self.assertEqual(list(clock_reads(path)), [], path.relative_to(PACKAGE))
 
     def test_every_import_is_absolute(self):
-        others = [Path(ROOT) / "tests", Path(ROOT) / ".github" / "scripts"]
-        for path in package_files() + sorted(p for folder in others for p in folder.glob("*.py")):
+        scripts = sorted((Path(ROOT) / ".github" / "scripts").glob("*.py"))
+        for path in package_files() + test_files() + scripts:
             self.assertEqual(relative_imports(path.read_text()), [], path.relative_to(ROOT))
 
     def test_the_launcher_only_reaches_the_external_layer(self):
@@ -294,6 +297,49 @@ class DomainHoldsDataModels(unittest.TestCase):
                     seen += 1
                     self.assertTrue(issubclass(cls, (BaseModel, Exception)), "%s.%s" % (path.name, name))
         self.assertGreater(seen, 30)
+
+
+def test_files():
+    return sorted(p for p in TESTS.rglob("*.py") if "__pycache__" not in p.parts)
+
+
+def layer_tests():
+    """(layer, path) of every module under tests/<layer>/."""
+    return [(layer, path) for layer in LAYERS for path in test_files() if path.is_relative_to(TESTS / layer)]
+
+
+def tested_module(path):
+    """The module tests/<layer>/.../test_<name>.py is about: clean_eval/<layer>/.../<name>.py."""
+    return PACKAGE / path.relative_to(TESTS).parent / path.name[len("test_"):]
+
+
+class TestsMirrorThePackage(unittest.TestCase):
+    """tests/<layer>/ holds the tests of clean_eval/<layer>/, test_<module>.py for <module>.py (plus the layer's test
+    support: builders.py, fakes.py), and follows the dependency rule: a layer's tests import only that layer and the inner
+    ones, from the package and from the tests alike. Tests that span the layers sit at the top of tests/."""
+
+    def test_each_test_module_names_the_module_it_tests(self):
+        for _, path in layer_tests():
+            if path.name not in TEST_SUPPORT:
+                self.assertTrue(path.name.startswith("test_") and tested_module(path).is_file(),
+                                "%s names no module of the package" % path.relative_to(ROOT))
+
+    def test_every_test_folder_is_a_package(self):  # unittest discovers tests in packages only
+        for folder in {path.parent for path in test_files()}:
+            self.assertTrue((folder / "__init__.py").is_file(), folder.relative_to(ROOT))
+
+    def test_a_layers_tests_import_only_that_layer_and_inner_ones(self):
+        for layer, path in layer_tests():
+            for name in imports(path):
+                parts = name.split(".")
+                if parts[0] in (TOP, "tests") and len(parts) > 1 and parts[1] in LAYERS:
+                    self.assertIn(parts[1], LAYERS[layer], "%s imports %s" % (path.relative_to(ROOT), name))
+
+    def test_the_rule_is_able_to_fail(self):
+        self.assertFalse(tested_module(TESTS / "use_cases" / "test_nothing.py").is_file())
+        self.assertLessEqual({"tests.use_cases.fakes", "clean_eval.external.git"},
+                             set(imports(TESTS / "external" / "test_git.py")))
+        self.assertIn(("external", TESTS / "external" / "test_git.py"), layer_tests())
 
 
 class ReviewRulesCoverThisPackage(unittest.TestCase):

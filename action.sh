@@ -22,6 +22,10 @@
 #   * `clean_eval prepare` precomputes everything it needs into $CTX (diff, history, risk, base-commit config);
 #   * the agent runs `claude --restricted --strict-mcp-config` (no shell, no web, no repo/user settings,
 #     hooks or MCP servers), with a scrubbed environment (no GH_TOKEN) and stdin from /dev/null;
+#   * it takes no instructions from the checkout: no CLAUDE.md, AGENTS.md or .claude/rules, and no skills. Restricted
+#     mode already skips them (Claude Code 2.1.328, verified with a canary checkout), but the docs don't promise it, so
+#     CLAUDE_CODE_DISABLE_CLAUDE_MDS and the settings below (claudeMdExcludes, the AGENTS.md setting, a Skill deny rule)
+#     exclude them explicitly. Re-check with a canary checkout when bumping the Claude Code version;
 #   * file tools are confined to the checkout + $CTX (read) and $AGENT (write) — by restricted mode,
 #     by Edit() permission rules, and independently by the `clean_eval guard` PreToolUse hook (real paths);
 #   * `clean_eval finalize` validates what the agent proposed, derives verdict/blockers/tier itself, redacts
@@ -97,14 +101,19 @@ run_claude() {  # $1 = prompt; $2.. = extra writable dirs. Transcript → $OUT/c
   "$PY" -I - "$CTX/claude-settings.json" "$CE" "$PY" <<'PY'
 import json, shlex, sys
 hook = {"type": "command", "command": "%s -I %s guard || exit 2" % (shlex.quote(sys.argv[3]), shlex.quote(sys.argv[2]))}
+settings = {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]},
+            # no instructions from the checkout under review: memory files, AGENTS.md, rules or skills
+            "claudeMdExcludes": ["**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md", "**/.claude/rules/**"],
+            "pluginConfigs": {"cc-plugin-agents-md@builtin": {"options": {"instructionFiles": "claude-md"}}},
+            "permissions": {"deny": ["Skill"]}}
 with open(sys.argv[1], "w") as f:
-    json.dump({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}}, f)
+    json.dump(settings, f)
 PY
   local env_kept=() name
   while IFS= read -r name; do
     if [[ "$name" =~ $AGENT_ENV_RE ]] && [ -n "${!name:-}" ]; then env_kept+=("$name=${!name}"); fi
   done < <(compgen -e)
-  env_kept+=("CE_GUARD_READ_ROOTS=$read_roots" "CE_GUARD_WRITE_ROOTS=$write_roots")
+  env_kept+=("CE_GUARD_READ_ROOTS=$read_roots" "CE_GUARD_WRITE_ROOTS=$write_roots" "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1")
 
   local ci_context="You are running non-interactively in CI (GitHub Actions) via the clean-eval action. \
 There is no human: never ask questions; make reasonable assumptions and list them in the report. \

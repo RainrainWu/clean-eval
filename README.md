@@ -94,7 +94,11 @@ The agent reads untrusted text (PR diffs and descriptions, commit messages, comm
    for `eval`, the history (every PR rated against its base), defect patches and one-knob sensitivity replays.
 2. **Sandboxed agent** (`action.sh`): `claude --restricted --strict-mcp-config` — no shell, no web, no MCP, and
    no user/project settings or hooks from the checkout — with a scrubbed environment (no `GH_TOKEN` or runner
-   tokens) and stdin from `/dev/null`. File tools are confined to the checkout and the precomputed context
+   tokens) and stdin from `/dev/null`. It takes no instructions from the checkout either: no `CLAUDE.md`,
+   `AGENTS.md` or `.claude/rules/`, and no skills, which a PR could otherwise edit to steer its own review.
+   Restricted mode skips them (verified with Claude Code 2.1.328), and the agent's settings exclude them explicitly
+   (`CLAUDE_CODE_DISABLE_CLAUDE_MDS`, `claudeMdExcludes`, the AGENTS.md setting, and a deny rule for the Skill tool,
+   which the guard denies too). File tools are confined to the checkout and the precomputed context
    (read) and the agent's output folder (write; plus `.clean-eval/` for `eval` with `apply: true`), enforced
    both by Claude Code and independently by a PreToolUse hook (`clean_eval guard`) that resolves real paths, so
    symlinks and `.git/` are off-limits; a hook that fails for any reason denies. The checkout is untrusted too:
@@ -113,10 +117,19 @@ The agent reads untrusted text (PR diffs and descriptions, commit messages, comm
 
 ```bash
 uv sync                                                # Python 3.15 and the locked dependencies, in .venv
-uv run python -m unittest discover -s tests            # fake gh/claude, no network
+uv run python -m unittest discover -s tests -t .       # every test: fake gh/claude, no network
+uv run python -m unittest tests.use_cases.test_sources # one module
 ```
 
-The `tests` workflow runs the same suite on every push to a pull request and to `master`.
+The tests are laid out like the package: `tests/<layer>/` holds the tests of `clean_eval/<layer>/` (`test_<module>.py`
+for `<module>.py`) and follows the same dependency rule, so the use cases are tested against in-memory fakes of their
+interfaces (`tests/use_cases/fakes.py`) and the real dependencies only in `tests/external/`, where each fake runs
+through the same checks as the gateway it stands in for. The tests at the top of `tests/` span the layers: the
+architecture rules, `action.sh` end to end, and the release check. The `tests` workflow runs the suite on every push to
+a pull request and to `master`.
+
+Coding agents: `AGENTS.md` at the root and in each layer folder (and `tests/`) holds the commands and the rules that
+apply there; each folder's `CLAUDE.md` imports its `AGENTS.md` for Claude Code.
 
 ### Releasing
 

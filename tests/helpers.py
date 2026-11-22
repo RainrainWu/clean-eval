@@ -1,4 +1,5 @@
-"""Shared test helpers: hermetic git, synthetic repos, and fake `gh` / `claude` executables."""
+"""Test infrastructure for every layer's tests, and nothing from the package: throwaway git repositories, fake `gh` and
+`claude` executables, and file helpers. (The tests' git ignores the developer's config: see tests/__init__.py.)"""
 import datetime as dt
 import json
 import os
@@ -10,23 +11,6 @@ import tempfile
 import textwrap
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
-_GITCONFIG_DIR = tempfile.mkdtemp(prefix="clean-eval-gitconfig-")
-_GITCONFIG = os.path.join(_GITCONFIG_DIR, "gitconfig")
-with open(_GITCONFIG, "w") as f:
-    f.write("[user]\n\tname = Test\n\temail = test@example.com\n[commit]\n\tgpgsign = false\n"
-            "[tag]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n")
-from collections import Counter  # noqa: E402
-
-from clean_eval.domain.rating import AspectScores, Evidence, Facts, Heatmap, ModuleRating, ModuleTests, Scores  # noqa: E402
-from clean_eval.domain.source import SourceFile  # noqa: E402
-from clean_eval.use_cases.rules.scoring import overall  # noqa: E402
-
-# Every git call in the tests (and in the code under test) ignores the developer's git config.
-os.environ["GIT_CONFIG_GLOBAL"] = _GITCONFIG
-os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
 
 
 def days_ago(n):
@@ -198,47 +182,3 @@ def write(path, text):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
         f.write(text)
-
-
-# ---------------------------------------------------------------- fakes of the use cases' interfaces
-
-def fake(interface, **members):
-    """An implementation of one of the interfaces in use_cases/interfaces.py, in one line: `members` are its methods (as
-    plain functions, without `self`) and attributes. Calling any other abstract method fails the test, so a fake also
-    shows which methods a use case needs."""
-    def unexpected(name):
-        def method(self, *args, **kwargs):
-            raise AssertionError("unexpected call: %s.%s" % (interface.__name__, name))
-        return method
-
-    body = {name: unexpected(name) for name in interface.__abstractmethods__}
-    body.update({name: staticmethod(m) if callable(m) else m for name, m in members.items()})
-    return type("Fake" + interface.__name__, (interface,), body)()
-
-
-# ---------------------------------------------------------------- builders of domain models
-
-def facts(**kw):
-    base = dict(name="src/x", loc=1000, files=5, share=0.1, funcs=[(10, 2)] * 20, typed_share=1.0, broad=0, swallow=0, todo=0,
-                big_files=0, fan_in=0, fan_out=0, effect_counts=Counter(), effect_examples={}, migrations=0, entry_flows=[],
-                flow_touch=0.0, keyword=False, tooling=False, graph_functions=20, linked_functions=20, linked_test_files=3,
-                linked_test_loc=1000.0, test_scales=Counter(unit=2, integration=1), line_rate=None)
-    base.update(kw)
-    return Facts(**base)
-
-
-def sf(path, loc, text="", test=False, blob=""):
-    return SourceFile(path=path, text=text, loc=loc, is_test=test, blob=blob)
-
-
-def rating(name="m", loc=100, biz=40, effects=10, entropy=20, unverified=30, fact=None):
-    aspect = AspectScores(biz=biz, effects=effects, entropy=entropy, unverified=unverified)
-    return ModuleRating(name=name, loc=loc, files=1, scores=Scores(**aspect.model_dump(), overall=overall(aspect)),
-                        baseline=aspect, evidence=Evidence(biz=["e"], effects=["e"], entropy=["e"], unverified=["e"]),
-                        tests=ModuleTests(functions=0, tested=0, coverage=None, files=0, loc=0, ratio=0), facts=fact)
-
-
-def heatmap(*modules):
-    mods = list(modules) or [rating()]
-    return Heatmap(repo="demo", ref="main", sha="abc1234", generated_at="2026-11-16", loc_total=sum(m.loc for m in mods),
-                   modules=mods)

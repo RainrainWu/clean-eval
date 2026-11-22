@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-from helpers import FakeBin, ROOT, Repo, days_ago, read, read_json, write
+from tests.helpers import ROOT, FakeBin, Repo, days_ago, read, read_json, write
 
 ACTION_SH = os.path.join(ROOT, "action.sh")
 FAKE_KEY = "sk-ant-api03-" + "k" * 40
@@ -193,6 +193,13 @@ class ActionShTest(unittest.TestCase):
             self.assertEqual(os.path.realpath(inv["cwd"]), os.path.realpath(r.path))
             settings = read_json(os.path.join(self.out, "context", "claude-settings.json"))
             self.assert_hook_guards(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"], r.path)
+            # ...and it takes no instructions from the checkout: no memory files, AGENTS.md, rules or skills
+            self.assertIn("CLAUDE_CODE_DISABLE_CLAUDE_MDS", inv["env"])
+            self.assertLessEqual({"**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md", "**/.claude/rules/**"},
+                                 set(settings["claudeMdExcludes"]))
+            agents_md = settings["pluginConfigs"]["cc-plugin-agents-md@builtin"]["options"]
+            self.assertEqual(agents_md["instructionFiles"], "claude-md")
+            self.assertEqual(settings["permissions"]["deny"], ["Skill"])
 
             # precomputed context: risk at base, diff, rules from base
             ctx = read_json(os.path.join(self.out, "context", "context.json"))

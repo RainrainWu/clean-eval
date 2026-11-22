@@ -6,8 +6,11 @@ the agent at /proc/self/environ or ~/.ssh) and allows only:
 
   Read / Grep / Glob / LS        real path under a read root (or a write root), never inside .git
   Write / Edit / MultiEdit       real path under a write root
-  Skill / TodoWrite / ToolSearch no file access
-  everything else (Bash, WebFetch, Task, NotebookEdit, MCP tools, ...)   denied
+  TodoWrite / ToolSearch         no file access
+  everything else (Bash, WebFetch, Task, NotebookEdit, Skill, MCP tools, ...)   denied
+
+Skill is denied because a skill is instructions, and the checkout's skills are as untrusted as the rest of it (the
+agent reads clean-eval's own skills from the precomputed context, with Read).
 
 Roots come from the environment action.sh gives the agent (read through the environment gateway; paths are resolved
 through the file-system gateway):
@@ -25,7 +28,7 @@ from clean_eval.external.filesystem import FileSystemGateway
 
 READ_TOOLS = {"Read": "file_path", "Grep": "path", "Glob": "path", "LS": "path"}
 WRITE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path"}
-SAFE_TOOLS = {"Skill", "TodoWrite", "ToolSearch"}
+SAFE_TOOLS = {"TodoWrite", "ToolSearch"}
 ALLOW, DENY = 0, 2
 FS, ENV = FileSystemGateway(), EnvironmentGateway()
 
