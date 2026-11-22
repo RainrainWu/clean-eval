@@ -41,7 +41,7 @@ testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
 filterwarnings = ["error"]  # a deprecation fails the suite instead of scrolling past
 xfail_strict = true
-markers = ["e2e: runs the command line or action.sh end to end in subprocesses (the slow tests: -m 'not e2e' skips them)"]
+markers = ["e2e: runs the command line or the GitHub Action end to end in subprocesses (the slow tests: -m 'not e2e' skips them)"]
 
 [tool.ty.src]
 include = ["clean_eval", "tests", ".github/scripts"]  # the type check: `uv run ty check`, run by CI's lint job

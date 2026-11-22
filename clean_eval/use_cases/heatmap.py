@@ -1,7 +1,8 @@
 """Use cases of the risk heat map: rate a working tree or a revision (read through Git and the FileSystem, with the
-built-in graph or a KnowledgeGraph), apply a reviewer's levels, summarize it, and put it into the README."""
+built-in graph), apply a reviewer's levels, summarize it, and put it into the README."""
 
 import hashlib
+import json
 import re
 from collections import Counter
 from typing import Optional
@@ -20,15 +21,17 @@ from clean_eval.domain.rating import (
     SourceFile,
     TopFile,
 )
-from clean_eval.domain.review import StepOutputs
+from clean_eval.domain.review import RunFolders, StepOutputs
+from clean_eval.use_cases.ci import report_run, run_agent
 from clean_eval.use_cases.interfaces import (
+    Agent,
     Clock,
     DiagramPresenter,
     Environment,
     FileSystem,
     Git,
-    KnowledgeGraph,
     ReportPresenter,
+    RunLog,
 )
 from clean_eval.use_cases.rules import analysis
 from clean_eval.use_cases.rules.analysis import (
@@ -48,8 +51,8 @@ from clean_eval.use_cases.rules.heatmap import (
     rate_module,
     refresh_overall,
 )
-from clean_eval.use_cases.rules.review import secret_values
-from clean_eval.use_cases.store import write_run_output
+from clean_eval.use_cases.rules.review import redact, secret_values
+from clean_eval.use_cases.store import load_policy, save_heatmap, write_run_output, write_step_outputs
 
 # The sources to rate, through the Git and FileSystem interfaces: the Python files of a working tree, or of any revision
 # read straight from git objects. Files are only read as text; nothing from the repository is imported or run.
@@ -154,8 +157,7 @@ def coverage_line_rates(
 
 
 # Use cases: rate every sub-module of a repository on the four aspects. The working tree is read through the Git and
-# FileSystem interfaces, with the built-in graph or a KnowledgeGraph (code-review-graph); a revision is read straight
-# from git objects. The rating date comes from the Clock.
+# FileSystem interfaces, with the built-in graph; a revision is read straight from git objects. The rating date comes from the Clock.
 
 
 def rated_sources(
@@ -190,20 +192,14 @@ def rate(
         raise no_python_error(snapshot)
     notes.insert(
         0,
-        "Knowledge graph (%s): %d nodes, %d edges, %d flows"
-        % (
-            graph.stats.get("source", "graph"),
-            graph.stats.get("nodes", 0),
-            graph.stats.get("edges", 0),
-            graph.stats.get("flows", 0),
-        ),
+        "Knowledge graph (%s): %d nodes, %d edges"
+        % (graph.stats.get("source", "graph"), graph.stats.get("nodes", 0), graph.stats.get("edges", 0)),
     )
     line_rates = coverage or {}
     file_mod = {f.path: m for m, fl in mods.items() for f in fl}
     fan_in, fan_out = dependents(graph, file_mod)
     funcs_of, test_mods = functions_by_module(graph, file_mod), test_files_to_modules(graph, file_mod)
     test_loc = {f.path: f.loc for f in files if f.is_test}
-    total_crit = sum(c for c, _, _ in graph.flows) or 1
     total_loc = sum(f.loc for f in src) or 1
     signals = {f.path: file_signals(f, signals_cache) for fl in mods.values() for f in fl}
 
@@ -239,9 +235,6 @@ def rate(
             effect_counts=counts,
             effect_examples=examples,
             migrations=sum(1 for f in mod_files if analysis.is_migration(f.path, policy)),
-            entry_flows=[crit for crit, entry, _ in graph.flows if file_mod.get(entry) == name],
-            flow_touch=sum(crit for crit, _, fs in graph.flows if any(file_mod.get(x) == name for x in fs))
-            / total_crit,
             keyword=analysis.has_core_keyword(name, policy),
             tooling=analysis.looks_like_tooling(name, mod_files[0].path, policy),
             graph_functions=len(functions),
@@ -251,7 +244,6 @@ def rate(
             test_scales=Counter(analysis.classify_scale(t) for t in sorted(test_files)),
             line_rate=sum(r * w for r, w in rates) / max(sum(w for _, w in rates), 1) if rates else None,
             na_reason=analysis.not_applicable(name, policy),
-            flows_available=graph.has_flows,
         )
 
     def top_files(
@@ -287,26 +279,17 @@ def rate_working_tree(
     fs: FileSystem,
     clock: Clock,
     policy: Policy,
-    knowledge_graph: Optional[KnowledgeGraph] = None,
-    graph_dir: Optional[str] = None,
     depth: Optional[int] = None,
     max_modules: Optional[int] = None,
 ) -> Heatmap:
-    """The Heatmap of the working tree as it is on disk. With a KnowledgeGraph, its graph (built into `graph_dir`, by
-    default under .git) replaces the built-in one."""
+    """The Heatmap of the working tree as it is on disk."""
     snapshot, files = read_working_tree(git, fs, policy)
     if not rated_sources(files, policy):
         raise no_python_error(snapshot)
-    if knowledge_graph is None:
-        graph = builtin_graph(files)
-    else:
-        data_dir = graph_dir or fs.join(snapshot.root, ".git", "clean-eval-graph")
-        fs.make_dirs(data_dir)
-        graph = knowledge_graph.graph_of(snapshot.root, data_dir)
     return rate(
         snapshot,
         files,
-        graph,
+        builtin_graph(files),
         policy,
         clock.today(),
         coverage_line_rates(fs, snapshot.root),
@@ -406,3 +389,94 @@ def finalize_heatmap_report(
     levels), written to `out`/report.md. No result and no step outputs."""
     write_run_output(fs, out, fs.join(out, "heatmap.md"), None, secret_values(env.variables()))
     return None, StepOutputs({})
+
+
+# Use case: the risk heat map's CI run (the action's risk-heat-map skill): rate every module, let the agent level the
+# four aspects when asked to, publish the heat map into the README and its diagram, and report. Through the Git,
+# FileSystem, Clock, Environment, Agent and RunLog interfaces and the two presenters.
+
+LEVEL_PROMPT = (
+    "Level the four risk aspects of every module in the heat map. Read %(context)s/skills/risk-heat-map/SKILL.md and "
+    "follow its 'CI mode' section; the level standards are in %(context)s/skills/risk-heat-map/references/rate.md. "
+    "Input: %(context)s/heatmap/data.json; the repository is checked out in the current directory. Write "
+    "%(agent)s/judgement.json. %(extra)s"
+)
+
+
+def agent_judgement(
+    fs: FileSystem,
+    env: Environment,
+    log: RunLog,
+    folders: RunFolders,
+) -> Optional[Judgement]:
+    """The levels the agent wrote (judgement.json in its folder), redacted of the environment's secrets first. None,
+    with a warning, when it wrote none or wrote something other than a JSON object: the heat map then keeps its static
+    levels. The Judgement drops any entry that doesn't validate."""
+    path = fs.join(folders.agent, "judgement.json")
+    if not fs.is_file(path):
+        log.warning("the agent wrote no judgement.json; publishing the static levels")
+        return None
+    text, _ = redact(fs.read_text(path), secret_values(env.variables()))
+    fs.write_text(path, text)
+    try:
+        levels = json.loads(text)
+    except ValueError:
+        levels = None
+    if not isinstance(levels, dict):
+        log.warning("the agent's judgement.json is not a JSON object; publishing the static levels")
+        return None
+    return Judgement.model_validate(levels)
+
+
+def run_heatmap_action(
+    git: Git,
+    fs: FileSystem,
+    clock: Clock,
+    env: Environment,
+    agent: Agent,
+    diagram: DiagramPresenter,
+    report: ReportPresenter,
+    log: RunLog,
+    folders: RunFolders,
+    readme_path: str,
+    svg_path: str,
+    use_agent: bool,
+    extra_prompt: str,
+    gh_output: str,
+    summary: str,
+) -> None:
+    """The risk heat map's CI run on `folders.workspace`: rate every module; with `use_agent`, let the agent level the
+    four aspects; put the heat map into the README (`readme_path`) and its diagram (`svg_path`), both relative to the
+    workspace; and report: the summary as the run's report, the finalized heat map as its result, `readme-changed` as a
+    step output, and the report in the job summary `summary`."""
+    log.step("Rate every module")
+    policy, source = load_policy(fs, folders.workspace)
+    heatmap = rate_working_tree(git, fs, clock, policy)
+    heatmap.notes.append("Policy: %s" % source)
+    save_heatmap(fs, heatmap, fs.join(folders.context, "heatmap", "data.json"))
+    judgement = None
+    if use_agent:
+        agent.require()
+        prompt = LEVEL_PROMPT % {"context": folders.context, "agent": folders.agent, "extra": extra_prompt}
+        run_agent(agent, fs, env, log, folders, prompt.strip())
+        judgement = agent_judgement(fs, env, log, folders)
+    log.step("Publish the heat map")
+    # each takes its own copy: finalizing a heat map applies the levels to it in place
+    update = update_readme(
+        fs,
+        diagram,
+        fs.join(folders.workspace, readme_path),
+        fs.join(folders.workspace, svg_path),
+        heatmap.model_copy(deep=True),
+        judgement,
+        policy,
+    )
+    final, text = summarize_heatmap(report, heatmap.model_copy(deep=True), judgement, policy)
+    log.show(
+        "%s: %s (fingerprint %s)" % (readme_path, "updated" if update.changed else "unchanged", update.fingerprint)
+    )
+    fs.write_text(fs.join(folders.out, "heatmap.md"), text)
+    save_heatmap(fs, final, fs.join(folders.out, "result.json"))
+    finalize_heatmap_report(fs, env, folders.out)
+    write_step_outputs(fs, gh_output, StepOutputs({"readme-changed": "true" if update.changed else "false"}))
+    report_run(fs, summary, "Risk Heat Map", folders)

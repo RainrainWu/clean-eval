@@ -13,32 +13,32 @@ Claude Code skills in `.claude/skills/` form a feedback loop:
 
 Requires [uv](https://docs.astral.sh/uv/) (it provides Python 3.15 and the locked dependencies, pydantic and click among them) and
 git; `gh` (authenticated) for PR-number reviews, posting, and rule metrics in `/eval`.
-Optional: the `code-review-graph` CLI, for call and execution-flow data in the heat map (`--graph code-review-graph`).
 
 ### Code layout
 
 The skills hold only instructions; the logic is the `clean_eval/` package, in Clean Architecture layers whose
-dependencies point inward. The GitHub Action is the same package behind one entry script, `action.sh`:
+dependencies point inward. The GitHub Action is the same package: `action.yml` runs its `action` command:
 
 | Layer | Holds | May import |
 |---|---|---|
 | `clean_eval/domain/` | data models only: pydantic models of the policy, the source read, the ratings and heat map, a change's risk, reviews, merged-PR history and an eval's outcome. Every invariant is a validator: score ranges, the policy's knobs, an agent finding's rule, severity and line, commit ids, step outputs | pure stdlib modules and pydantic |
-| `clean_eval/use_cases/` | two things. `interfaces.py`: the abstract classes of every external utility the business logic uses (`Git`, `CodeHost`, `FileSystem`, `KnowledgeGraph`, `Environment`, `Clock`, `DiagramPresenter`, `ReportPresenter`). Everything else: module-level functions that take implementations of those interfaces as parameters and call only their abstract methods. These are the use cases (rate a repository, assess a change, refresh the README section, collect history; for CI: prepare the agent's context, finalize its output, post the review), what they share (sources, run files, the `.clean-eval/` snapshot), and `rules/`: the business rules as pure functions over the models (the four aspects, scoring, judgement, review, redaction, calibration, tuning, the built-in knowledge graph) | `domain`, the same |
+| `clean_eval/use_cases/` | two things. `interfaces.py`: the abstract classes of every external utility the business logic uses (`Git`, `CodeHost`, `FileSystem`, `Agent`, `Environment`, `Clock`, `DiagramPresenter`, `ReportPresenter`, `RunLog`). Everything else: module-level functions that take implementations of those interfaces as parameters and call only their abstract methods. These are the use cases (rate a repository, assess a change, refresh the README section, collect history; for CI: run a skill, prepare the agent's context, finalize its output, post the review), what they share (sources, run files, the `.clean-eval/` snapshot), and `rules/`: the business rules as pure functions over the models (the four aspects, scoring, judgement, review, redaction, calibration, tuning, the built-in knowledge graph) | `domain`, the same |
 | `clean_eval/adaptor/` | the presenters (SVG treemap, Markdown summary), implementing `DiagramPresenter` and `ReportPresenter`; rendering only, never I/O | `domain`, `use_cases` |
-| `clean_eval/external/` | everything that touches the outside world: one gateway class per external dependency, each implementing its interface (`GitGateway`, `GitHubGateway`, `CodeReviewGraphGateway`, `FileSystemGateway`, `EnvironmentGateway`, `ClockGateway`), the command line (with the CI commands and the agent's guard hook) and the composition root that hands the gateways and presenters to the use cases | everything |
+| `clean_eval/external/` | everything that touches the outside world: one gateway class per external dependency, each implementing its interface (`GitGateway`, `GitHubGateway`, `ClaudeCodeGateway`, `FileSystemGateway`, `EnvironmentGateway`, `ClockGateway`), the command line (with the CI commands and the agent's guard hook) and the composition root that hands the gateways and presenters to the use cases | everything |
 
 `tests/test_architecture.py` enforces the layering (every import absolute, never relative), the purity of the two inner
 layers (no I/O, no clock), that the domain holds only data models (no functions; model methods are validators, computed
 fields, properties or constructors), that the use cases hold only the interfaces (abstract classes whose methods are all
 abstract) and module-level functions, that each interface has one implementation exposing nothing beyond it, and that
-each external dependency is reached only through its gateway (no other module may import `subprocess`, `sqlite3`, `os`,
+each external dependency is reached only through its gateway (no other module may import `subprocess`, `os`,
 `shutil`, `filecmp` or `pathlib`, open a file, read the clock or the environment; the console belongs to the command
 line).
 
 Run it as `uv run python -I clean_eval <rate|readme|report|assess|history> ...` from this checkout; from another
 repository, `uv run --frozen --no-config --project <clean-eval> python -I <clean-eval>/clean_eval ...`. `-I` keeps the
 rated repository off `sys.path`, so none of its code can be imported, and `--no-config` keeps its uv settings out.
-`action.sh` also runs `prepare`, `finalize`, `post`, `redact` and `guard`.
+The GitHub Action runs `clean_eval action <skill>`, which runs the CI steps (`prepare`, the agent, `finalize`, `post`)
+in-process; `redact` and `guard` are commands too, and the agent's hook runs `guard`.
 
 ### Per-repo configuration
 
@@ -78,11 +78,66 @@ The action never commits — pair it with a create-PR step. Ready-to-copy workfl
 features arrive without breaking changes. To change versions only on purpose, pin a release (`@v1.2.0`) or, safest,
 its commit SHA (`@<sha> # v1.2.0`).
 
-- **Credentials:** `anthropic-api-key` or `claude-code-oauth-token`; for Bedrock/Vertex set
-  `CLAUDE_CODE_USE_BEDROCK=1` / `CLAUDE_CODE_USE_VERTEX=1` and cloud credentials in the step's `env`.
-- **Permissions:** `pull-requests: write` to post reviews; `contents: read` otherwise.
+- **Credentials:** [keyless](#keyless-credentials) workload identity federation, `anthropic-api-key` or
+  `claude-code-oauth-token`; for Bedrock/Vertex set `CLAUDE_CODE_USE_BEDROCK=1` / `CLAUDE_CODE_USE_VERTEX=1` and
+  cloud credentials in the step's `env`.
+- **Permissions:** `pull-requests: write` to post reviews; `contents: read` otherwise; `id-token: write` to sign in
+  keyless.
 - **Forks:** trigger reviews on `pull_request`, never `pull_request_target`, and skip fork/Dependabot PRs
-  (they get no secrets) — see the example workflow.
+  (they get no secrets and no OIDC token) — see the example workflow.
+
+### Keyless credentials
+
+Workload identity federation signs the agent in without a stored key. The job's GitHub OIDC token, which names the
+repository, the event and the branch, is traded for a short-lived credential of an Anthropic service account, under a
+federation rule that decides which jobs may. Register GitHub as an issuer
+(`https://token.actions.githubusercontent.com`) and add a service account and a rule in the Claude Console
+([Anthropic's guide](https://platform.claude.com/docs/en/manage-claude/wif-providers/github-actions)). Then give the job
+`id-token: write`, and give the action the IDs, which aren't secret:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write                  # lets the job request its OIDC token
+steps:
+  - uses: RainrainWu/clean-eval@v1
+    with:
+      skill: pr-review
+      anthropic-federation-rule-id: ${{ vars.ANTHROPIC_PR_FEDERATION_RULE_ID }}
+      anthropic-organization-id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+      anthropic-service-account-id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+```
+
+The action requests the job's token outside the agent's sandbox. While the agent runs, it writes a new one every four
+minutes, since GitHub's tokens last five minutes and each serves one trade. The token goes to a file the agent can't
+read, and the agent never gets the runner's means to request more. Don't set an API key or OAuth token as well: Claude
+Code would sign in with it instead, so the action refuses the mix.
+
+**Scoping the rules.** A rule matches the token's subject (`sub`) and claims. Give each kind of job a rule of its own,
+as narrow as the job allows:
+
+| Rule for | `subject_prefix` | Who can sign in |
+|---|---|---|
+| PR reviews | `repo:OWNER/REPO:pull_request` | a run for any PR from a branch of the repository |
+| Scheduled runs (`eval`; `risk-heat-map` with `use-claude`) | `repo:OWNER/REPO:ref:refs/heads/main` | only the workflows on the default branch |
+| A job in a GitHub environment | `repo:OWNER/REPO:environment:NAME` | only the runs the environment's protection rules admit |
+
+- **Exact subjects.** A `subject_prefix` matches exactly unless it ends in `*`. `repo:OWNER/REPO:*` admits every
+  branch, event and environment of the repository.
+- **Immutable IDs.** Add `claims` such as `{"repository_id": "…", "repository_owner_id": "…"}`, so that a repository
+  renamed, or deleted and re-created under the same name, doesn't inherit the rule. Repositories created after
+  July 15, 2026 use GitHub's immutable `sub` format (`repo:OWNER@ID/REPO@ID:…`) by default. Copy the subject from a
+  token of your own ([actions-oidc-debugger](https://github.com/github/actions-oidc-debugger) prints one) rather than
+  writing it from memory.
+- **Who a PR rule trusts.** A `pull_request` run uses the workflow file as the PR's branch has it, so the rule trusts
+  everyone who can push a branch. A repository secret gets the same trust, but here there is no long-lived key to
+  leak. Fork PRs get no OIDC token under `pull_request`, unless the repository sends write tokens to fork workflows.
+  To trust fewer people, run the review in an environment with required reviewers, and scope its rule to that
+  environment.
+- **A workspace of its own.** Point the rules at a service account and a workspace kept for clean-eval, with a spend
+  limit, so that a misused credential can't reach other work. A rule for one workspace needs no
+  `anthropic-workspace-id`; a rule for all workspaces needs it.
 
 ### Trust model
 
@@ -92,10 +147,11 @@ The agent reads untrusted text (PR diffs and descriptions, commit messages, comm
 1. **Precompute** (`clean_eval prepare`): the PR diff, per-file history, the change's risk from the heat map of its
    base commit, and the `.clean-eval/` config **from the base commit** (a PR can't relax the rules it's judged by);
    for `eval`, the history (every PR rated against its base), defect patches and one-knob sensitivity replays.
-2. **Sandboxed agent** (`action.sh`): `claude --restricted --strict-mcp-config` — no shell, no web, no MCP, and
-   no user/project settings or hooks from the checkout — with a scrubbed environment (no `GH_TOKEN` or runner
-   tokens) and stdin from `/dev/null`. It takes no instructions from the checkout either: no `CLAUDE.md`,
-   `AGENTS.md` or `.claude/rules/`, and no skills, which a PR could otherwise edit to steer its own review.
+2. **Sandboxed agent** (the Claude Code gateway, `clean_eval/external/claude_code.py`): `claude --restricted --strict-mcp-config` — no shell, no web, no MCP, and
+   no user/project settings or hooks from the checkout — with a scrubbed environment (no `GH_TOKEN`, runner
+   tokens or the runner's means to request an OIDC token) and stdin from `/dev/null`. It takes no instructions from
+   the checkout either: no `CLAUDE.md`, `AGENTS.md` or `.claude/rules/`, and no skills, which a PR could otherwise edit
+   to steer its own review.
    Restricted mode skips them (verified with Claude Code 2.1.328), and the agent's settings exclude them explicitly
    (`CLAUDE_CODE_DISABLE_CLAUDE_MDS`, `claudeMdExcludes`, the AGENTS.md setting, and a deny rule for the Skill tool,
    which the guard denies too). File tools are confined to the checkout and the precomputed context
@@ -131,7 +187,7 @@ classes. Their fixtures live in the `conftest.py` at the level of the tests that
 fixture through `request.param` (indirect parametrization). External dependencies are MagicMocks injected into the code
 under test; the use cases' git and file system answer through in-memory fakes that run through the same contract
 checks as the real gateways. The tests at the top of `tests/` span the layers: the architecture and code-style rules,
-`action.sh` end to end, and the release check. The `tests` workflow runs the suite, both ruff checks and ty's type check
+the GitHub Action's command end to end, and the release check. The `tests` workflow runs the suite, both ruff checks and ty's type check
 on every push to a pull request and to `master`.
 
 Coding agents: `AGENTS.md` at the root and in each layer folder (and `tests/`) holds the commands and the rules that

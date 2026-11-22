@@ -39,6 +39,11 @@ class GitGateway(Git):
     ) -> str:
         return run_git(self.root, "rev-parse", "--show-toplevel").strip()
 
+    def is_shallow(
+        self,
+    ) -> bool:
+        return run_git(self.root, "rev-parse", "--is-shallow-repository").strip() == "true"
+
     def rev_parse(
         self,
         rev: str,

@@ -12,13 +12,13 @@ the agent at /proc/self/environ or ~/.ssh) and allows only:
 Skill is denied because a skill is instructions, and the checkout's skills are as untrusted as the rest of it (the
 agent reads clean-eval's own skills from the precomputed context, with Read).
 
-Roots come from the environment action.sh gives the agent (read through the environment gateway; paths are resolved
+Roots come from the environment the Claude Code gateway gives the agent (read through the environment gateway; paths are resolved
 through the file-system gateway):
   CE_GUARD_READ_ROOTS   os.pathsep-separated absolute directories
   CE_GUARD_WRITE_ROOTS  os.pathsep-separated absolute directories
 
 Protocol: the tool call as JSON on stdin; exit 0 = allow, exit 2 = deny (stderr is shown to the agent). Anything
-unexpected denies; action.sh also turns any other exit status of the hook command into a denial.
+unexpected denies; the hook command the gateway sets also turns any other exit status into a denial (`|| exit 2`).
 """
 
 import sys

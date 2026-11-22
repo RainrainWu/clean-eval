@@ -60,16 +60,14 @@ class FileSyntax(BaseModel):
     refs: frozenset[str] = frozenset()  # identifiers, attribute names and imported names used
 
 
-# The knowledge graph as the business rules see it: relationships between files, functions, tests and flows.
+# The knowledge graph as the business rules see it: relationships between files, functions and tests.
 
 
 class Graph(BaseModel):
     nodes: dict[str, tuple[str, str, bool]]  # qualified name -> (kind, repo-relative file, is_test), Python only
     links: dict[str, set[str]]  # file -> files it imports or calls into (resolved edges only)
     tested: dict[str, set[str]]  # function qualified name -> test files linked to it
-    flows: list[tuple[float, str, set[str]]]  # (criticality, entry file, files on the flow)
     stats: dict[str, Any]
-    has_flows: bool = True  # False when the graph source cannot see execution flows
 
 
 # A rating: the facts the four aspect rules read about one module, the scores they give, and the heat map of a repository.
@@ -94,8 +92,6 @@ class Facts(BaseModel):
     effect_counts: Counter[str]
     effect_examples: dict[str, str]
     migrations: Count
-    entry_flows: list[float]  # criticality of each flow that starts here
-    flow_touch: float  # share of total flow criticality passing through it
     keyword: bool
     tooling: bool
     graph_functions: Count
@@ -105,7 +101,6 @@ class Facts(BaseModel):
     test_scales: Counter[str]
     line_rate: Optional[float]  # from a coverage report when the repo has one
     na_reason: Optional[str] = None  # set when the module is not rated for Unverified
-    flows_available: bool = True  # False when the graph has no execution flows
 
     @property
     def kloc(

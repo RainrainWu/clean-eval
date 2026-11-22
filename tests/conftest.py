@@ -1,6 +1,6 @@
 """Fixtures for every layer's tests: the hermetic git config, throwaway repositories, fake `gh` / `claude`, and the
 domain models the tests feed the code under test; and at the end, those of the top-level tests: the codebase the
-architecture rules read, action.sh run end to end, and the release check.
+architecture rules read, the GitHub Action's command run end to end, and the release check.
 
 A fixture that builds data reads `request.param` for its customisation and has a default without one. A test sets the
 param with `@pytest.mark.parametrize("<fixture>", [<value>], indirect=True)`, on the test or on its whole class; the
@@ -62,8 +62,6 @@ FACTS: dict[str, Any] = {
     "effect_counts": {},
     "effect_examples": {},
     "migrations": 0,
-    "entry_flows": [],
-    "flow_touch": 0.0,
     "keyword": False,
     "tooling": False,
     "graph_functions": 20,
@@ -86,7 +84,7 @@ RATING: dict[str, Any] = {
     "overall": None,
     "facts": None,
 }
-# The repository action.sh runs on, by default: one commit of one module.
+# The repository the action runs on, by default: one commit of one module.
 WORKSPACE: list[dict[str, Any]] = [{"message": "init", "files": {"src/a/x.py": "1\n"}}]
 # The pull request the fake `gh` shows, by default: #7, from branch feature into main.
 PULL_REQUEST: dict[str, Any] = {
@@ -313,13 +311,13 @@ def pull_request(
     request,
 ):
     """A pull request as the code host describes it (`gh pr view --json`): PULL_REQUEST (#7 by dev, from feature onto
-    main, commits "b" * 40 onto "a" * 40) with the fields in `request.param` replaced. action.sh's runs replace its
+    main, commits "b" * 40 onto "a" * 40) with the fields in `request.param` replaced. The action's runs replace its
     commits with the workspace's main and HEAD."""
     return copy.deepcopy({**PULL_REQUEST, **getattr(request, "param", {})})
 
 
-# The top-level tests: the codebase the architecture rules read (test_architecture.py), action.sh run end to end with
-# fake `gh` and `claude` (test_action_sh.py), and the release check run on throwaway repositories (test_release.py).
+# The top-level tests: the codebase the architecture rules read (test_architecture.py), the GitHub Action's command run
+# end to end with fake `gh` and `claude` (test_action.py), and the release check run on throwaway repositories (test_release.py).
 
 
 @pytest.fixture
@@ -328,7 +326,7 @@ def codebase():
     return Codebase(ROOT)
 
 
-# action.sh: the workspace it runs on, what the fakes do, and its runs.
+# The action: the workspace it runs on, what the fakes do, and its runs.
 
 
 @pytest.fixture
@@ -346,7 +344,7 @@ def workspace(
     repo,
     workspace_links,
 ):
-    """The repository action.sh runs on: `repo` with the commits in `request.param` (by default WORKSPACE), oldest
+    """The repository the action runs on: `repo` with the commits in `request.param` (by default WORKSPACE), oldest
     first, each a dict of `message` and `files` ({path: text}), and optionally `days_ago` (its date; 1 when left out)
     and `branch` (a new branch to commit it on, from the current one); then `workspace_links`."""
     for commit in getattr(request, "param", WORKSPACE):
@@ -386,7 +384,7 @@ def action(
     claude_plan,
     pull_request,
 ):
-    """action.sh, ready to run on `workspace` as a GitHub runner runs it (tests.action.Action), with its output folder,
+    """The action's command, ready to run on `workspace` as a GitHub runner runs it (tests.action.Action), with its output folder,
     step outputs and step summary in the temporary folder. Each run first gives the fake `claude` its `claude_plan`, and
     the fake `gh` its `gh_replies` and the `pull_request`."""
     return Action(tmp_path, fake_bin, workspace, gh_replies, claude_plan, pull_request)
@@ -397,7 +395,7 @@ def action_run(
     request,
     action,
 ):
-    """The run of action.sh by `action` (a subprocess.CompletedProcess) with the inputs in `request.param`: {input:
+    """The run of the action by `action` (a subprocess.CompletedProcess) with the inputs in `request.param`: {input:
     value}, so {"skill": "pr-review", "pr": "7"} sets CE_SKILL and CE_PR. The risk heat map when not parametrized. A
     test that runs it again, or after changing the workspace, calls `action.run`."""
     return action.run(**getattr(request, "param", {"skill": "risk-heat-map"}))
@@ -415,19 +413,6 @@ def shallow_clone(
     depth = str(getattr(request, "param", 1))
     subprocess.run(["git", "clone", "-q", "--depth", depth, "file://" + workspace.path, str(clone)], check=True)
     return clone
-
-
-@pytest.fixture
-def fake_python(
-    request,
-    tmp_path,
-):
-    """An executable to give action.sh as its Python: the script in `request.param`, its #! line included; by default a
-    shell script that exits 1, as an interpreter that can't import pydantic does on `-c 'import pydantic'`."""
-    path = tmp_path / "python-without-pydantic"
-    path.write_text(getattr(request, "param", "#!/bin/sh\nexit 1\n"))
-    path.chmod(0o755)
-    return path
 
 
 @pytest.fixture

@@ -5,7 +5,7 @@ from collections import Counter
 
 import pytest
 
-from clean_eval.domain.policy import ASPECTS
+from clean_eval.domain.policy import ASPECTS, Policy
 from clean_eval.domain.rating import Facts
 from clean_eval.use_cases.rules.heatmap import (
     MARKERS,
@@ -143,16 +143,25 @@ class TestBusiness:
         assert evidence[0].startswith("Tooling path")
 
     @pytest.mark.parametrize("facts", [{"fan_in": 6, "keyword": True, "share": 0.25}], indirect=True)
-    def test_without_flow_data_the_other_terms_carry_the_score(
+    def test_its_terms_at_full_strength_score_100(
         self,
         facts,
         policy,
     ):
-        with_flows, _ = business(facts, policy)
-        no_flows, evidence = business(facts.model_copy(update={"flows_available": False}), policy)
-        assert with_flows == pytest.approx(55.0)  # dependents, keyword and size at full strength; no flows
-        assert no_flows == pytest.approx(100.0)  # the same terms carry the whole weight
-        assert any("no execution-flow data" in line for line in evidence)
+        score, evidence = business(facts, policy)
+        assert score == pytest.approx(100.0)  # the weighted mean of three terms, each at full strength
+        assert evidence[0] == "6 modules depend on it; 25% of repo code"
+
+    @pytest.mark.parametrize("facts", [{"fan_in": 3, "share": 0.1}], indirect=True)
+    @pytest.mark.parametrize(
+        "policy", [{"business_weights": {"dependents": 0.6, "keyword": 0.2, "size": 0.3}}], indirect=True
+    )
+    def test_its_weights_are_relative(
+        self,
+        facts,
+        policy,
+    ):
+        assert business(facts, policy)[0] == pytest.approx(business(facts, Policy())[0])  # each weight doubled
 
 
 class TestEffects:

@@ -8,7 +8,7 @@ import pytest
 
 from clean_eval.external.environment import ClockGateway, EnvironmentGateway
 
-# A path list with an empty entry, an empty one (how action.sh gives the guard no roots), a plain variable, and one that
+# A path list with an empty entry, an empty one (how the guard gets no roots), a plain variable, and one that
 # is not set.
 VARIABLES = {"CE_ROOTS": os.pathsep.join(["/a", "", "/b c"]), "CE_EMPTY": "", "CE_X": "1", "CE_UNSET": None}
 

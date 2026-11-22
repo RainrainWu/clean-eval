@@ -2,7 +2,7 @@
 
 clean-eval checks that agent-written code follows clean architecture. It has three parts:
 - the Claude Code skills in `.claude/skills/` (`/risk-heat-map`, `/pr-review`, `/eval`);
-- a composite GitHub Action (`action.yml` → `action.sh`) that runs those skills in CI;
+- a composite GitHub Action (`action.yml` → `clean_eval action`) that runs those skills in CI;
 - the `clean_eval/` Python package, which holds all the logic.
 
 The skills are instructions only. The skills, the action and people all run the package as one command line.
@@ -56,10 +56,11 @@ The skills chain the commands:
 - **History:** `history` rates every merged PR at its base and links later fixes and reverts to it. It scores how well
   the risk predicted them, and `/eval` tunes `.clean-eval/` from that.
 
-The action (`action.sh`) runs four steps. The agent only proposes; deterministic code decides:
+The action runs one command, `clean_eval action <skill>`, which runs four steps. The agent only proposes;
+deterministic code decides:
 1. `clean_eval prepare` precomputes the context: the diff, history, risk, and config read from the base commit.
-2. A sandboxed `claude` runs with no shell, no network and no token. The `clean_eval guard` hook allows only listed
-   paths and tools. It takes no instructions from the checkout: no CLAUDE.md, AGENTS.md, rules or skills.
+2. A sandboxed `claude` runs with no shell, no network and no token (the Claude Code gateway, behind the `Agent`
+   interface). The `clean_eval guard` hook allows only listed paths and tools. It takes no instructions from the checkout: no CLAUDE.md, AGENTS.md, rules or skills.
 3. `clean_eval finalize` validates the agent's output and derives the verdict itself.
 4. `clean_eval post` posts the review.
 
@@ -69,7 +70,7 @@ The action (`action.sh`) runs four steps. The agent only proposes; deterministic
 
 - **The rated repository's code is data.** Read it only as text (`ast`, regexes, git objects); never import, install or
   run it.
-- **Every Python call runs isolated, with `python -I`.** This applies in `action.sh`, the skills and the docs, so a module
+- **Every Python call runs isolated, with `python -I`.** This applies in `action.yml`, the skills and the docs, so a module
   planted in a checkout (a `json.py`, a `pydantic.py`) can't shadow the standard library or a dependency.
 - **Imports are absolute** (`from clean_eval.domain.policy import Policy`), never relative.
 - **Every function in `clean_eval/` is annotated** (ruff's `ANN`), and ty checks each call against the annotations.
@@ -90,7 +91,8 @@ The action (`action.sh`) runs four steps. The agent only proposes; deterministic
 - **Don't hand-edit generated output.** `clean_eval readme` writes the README's `## Risk Heat Map` section (between its
   markers) and `docs/risk-heatmap.svg`.
 - **The action never commits.**
-- **The CI agent takes no instructions from the checkout it reviews.** `action.sh` keeps `--restricted`, sets
+- **The CI agent takes no instructions from the checkout it reviews.** `external/claude_code.py` keeps `--restricted`,
+  sets
   `CLAUDE_CODE_DISABLE_CLAUDE_MDS`, and writes settings that exclude memory files, AGENTS.md, rules and skills.
   When you bump the action's `claude-code-version`, re-check with a canary checkout: plant tokens in each kind of file,
   log loads with an `InstructionsLoaded` hook, and confirm nothing loads.

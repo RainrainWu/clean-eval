@@ -22,9 +22,8 @@ Rate every sub-module of **this** repository and refresh the README's heat map: 
 ## Step 1 - Rate
 
 `OUT` = `<scratchpad>/risk-heat-map/<repo>-<YYYYMMDD>` (must not exist). `CE rate --out <OUT>` rates the tracked
-Python files of the working tree and writes `<OUT>/data.json`. Options: `--depth N` (default 3); `--graph
-code-review-graph` when that CLI is installed (resolved calls and execution flows; the built-in graph sees imports and
-test links only, and Business Impact then leaves its flow terms out); `--rev <rev>` rates a revision from git objects.
+Python files of the working tree and writes `<OUT>/data.json`. Options: `--depth N` (default 3); `--rev <rev>` rates a
+revision from git objects.
 
 ## Step 2 - Level
 
@@ -44,7 +43,7 @@ heat map anywhere else. Don't commit unless asked.
 
 `CE report <OUT>/data.json [--judgement ...]` gives a summary table. Tell the user the three highest `overall` modules
 with one clause each on what drives them (their aspect evidence), what changed in the README (`git diff README.md`), and
-any caveat from the notes. Offer, never run: another `--depth`, the code-review-graph, a dig into one red module.
+any caveat from the notes. Offer, never run: another `--depth`, a dig into one red module.
 
 ## CI mode
 

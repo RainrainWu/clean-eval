@@ -129,3 +129,15 @@ def write_run_output(
     if result is not None:
         result.redactions += n
         write_json(fs, fs.join(out, "result.json"), result)
+
+
+def clear_path(
+    fs: FileSystem,
+    path: str,
+) -> None:
+    """Remove what is at `path`, if anything: a folder with all it holds, or a file or a symlink (never what it points
+    to)."""
+    if fs.is_dir(path) and not fs.is_link(path):
+        fs.remove_tree(path)
+    elif fs.lexists(path):
+        fs.remove(path)

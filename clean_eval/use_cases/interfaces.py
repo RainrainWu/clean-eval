@@ -2,15 +2,16 @@
 parameters and call only their abstract methods, so they never know (or import) what is behind them; the outer layers
 inherit and implement them:
 
-  Git, CodeHost, FileSystem, KnowledgeGraph, Environment, Clock   the external layer's gateways (external/*.py)
+  Git, CodeHost, FileSystem, Agent, Environment, Clock           the external layer's gateways (external/*.py)
   DiagramPresenter, ReportPresenter                              the adaptor layer's presenters (rendering only)
+  RunLog                                                         the command line's console (external/cli.py)
 """
 
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-from clean_eval.domain.rating import Graph, Heatmap
-from clean_eval.domain.review import HostReview, PullRequest, ReviewPost
+from clean_eval.domain.rating import Heatmap
+from clean_eval.domain.review import AgentRun, HostReview, PullRequest, ReviewPost, RunFolders
 
 
 class Git(ABC):
@@ -21,6 +22,12 @@ class Git(ABC):
         self,
     ) -> str:
         """The repository's root folder."""
+
+    @abstractmethod
+    def is_shallow(
+        self,
+    ) -> bool:
+        """Whether the repository is a shallow clone, missing the history before its oldest commit."""
 
     @abstractmethod
     def rev_parse(
@@ -368,16 +375,27 @@ class FileSystem(ABC):
     ) -> None: ...
 
 
-class KnowledgeGraph(ABC):
-    """A tool that builds the knowledge graph of a working tree (code-review-graph): calls and execution flows."""
+class Agent(ABC):
+    """The coding agent a CI run hands a skill to. It runs sandboxed: no shell, no network and no token; it reads the
+    workspace and the context folder, writes only to the folders it is given, and takes no instructions from the
+    checkout."""
 
     @abstractmethod
-    def graph_of(
+    def require(
         self,
-        repo_root: str,
-        data_dir: str,
-    ) -> Graph:
-        """The graph of the working tree at `repo_root`, built into `data_dir`."""
+    ) -> None:
+        """Make sure the agent can run (installing it when it is missing); HeatmapError when it can't, such as without
+        credentials in CI."""
+
+    @abstractmethod
+    def run(
+        self,
+        prompt: str,
+        folders: RunFolders,
+        writable: list[str],
+    ) -> AgentRun:
+        """Run the agent on `prompt`, in `folders.workspace`: it may read the workspace and `folders.context`, and write
+        only under `folders.agent` and the folders in `writable`. Its exit status and its transcript."""
 
 
 class Environment(ABC):
@@ -442,3 +460,28 @@ class ReportPresenter(ABC):
         heatmap: Heatmap,
     ) -> str:
         """A short Markdown summary: the riskiest modules and what drives them."""
+
+
+class RunLog(ABC):
+    """Where a CI run reports its progress: the runner's log, which people read while it runs."""
+
+    @abstractmethod
+    def step(
+        self,
+        title: str,
+    ) -> None:
+        """Start a step of the run: what it does next."""
+
+    @abstractmethod
+    def warning(
+        self,
+        message: str,
+    ) -> None:
+        """Report something that went wrong without failing the run."""
+
+    @abstractmethod
+    def show(
+        self,
+        text: str,
+    ) -> None:
+        """Show a block of text in the current step, such as the agent's transcript."""

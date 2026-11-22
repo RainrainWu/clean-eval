@@ -6,7 +6,7 @@ use cases take.
 - `git` and `fs` are stateful: they answer through an in-memory repository and file system (tests/use_cases/fakes.py,
   contract-tested against the real gateways in tests/external/) and record every call. Their contents come from the
   data fixtures `history`, `files` and `links`.
-- The others (`clock`, `env`, `host`, `knowledge_graph`, `diagram_presenter`, `report_presenter`) are autospecced: a
+- The others (`clock`, `env`, `host`, `agent`, `run_log`, `diagram_presenter`, `report_presenter`) are autospecced: a
   call that doesn't match the interface's signature fails. `request.param` configures them, as `configure_mock`'s
   keywords (`{"review_threads.return_value": (view, inline), "require_auth.side_effect": HeatmapError("...")}`).
 - The data fixtures `graph`, `rating_cache` and `period` add the models the use cases take to the cross-layer ones of
@@ -24,20 +24,22 @@ import pytest
 from clean_eval.domain.evaluation import Period
 from clean_eval.domain.policy import Policy
 from clean_eval.domain.rating import Graph, RatingCache
+from clean_eval.domain.review import AgentRun
 from clean_eval.use_cases.evaluation import collect_history
 from clean_eval.use_cases.interfaces import (
+    Agent,
     Clock,
     CodeHost,
     DiagramPresenter,
     Environment,
     FileSystem,
     Git,
-    KnowledgeGraph,
     ReportPresenter,
+    RunLog,
 )
 from tests.use_cases.fakes import MemoryFileSystem, MemoryGit
 
-EMPTY_GRAPH: dict[str, Any] = {"nodes": {}, "links": {}, "tested": {}, "flows": [], "stats": {}}
+EMPTY_GRAPH: dict[str, Any] = {"nodes": {}, "links": {}, "tested": {}, "stats": {}}
 # The period an eval looks back over: six weeks, with fixes looked for in the 30 days after it.
 PERIOD: dict[str, Any] = {"since": "2026-01-15", "until": "2026-02-28"}
 # What `collected` collects by default: a lone root commit (so no merged PR) over PERIOD, under the default policy.
@@ -175,16 +177,6 @@ def host(
 
 
 @pytest.fixture
-def knowledge_graph(
-    request,
-):
-    """A KnowledgeGraph; `request.param` configures it (configure_mock's keywords)."""
-    mock = create_autospec(KnowledgeGraph, instance=True)
-    mock.configure_mock(**getattr(request, "param", {}))
-    return mock
-
-
-@pytest.fixture
 def diagram_presenter(
     request,
 ):
@@ -212,8 +204,7 @@ def graph(
     request,
 ):
     """A knowledge Graph, validated from `request.param` (Graph fields over EMPTY_GRAPH: `nodes`, `links`, `tested`,
-    `flows`, and `stats` or `has_flows` when they matter); an empty graph, with flows available, when not
-    parametrized."""
+    and `stats` when it matters); an empty graph when not parametrized."""
     return Graph.model_validate({**EMPTY_GRAPH, **getattr(request, "param", {})})
 
 
@@ -276,3 +267,24 @@ def collected_prs(
 ):
     """The PRs of `collected_json`, by PR number."""
     return {entry["pr"]: entry for entry in collected_json["prs"]}
+
+
+# A CI run's agent and log.
+
+
+@pytest.fixture
+def agent(
+    request,
+):
+    """An Agent, which finishes (status 0) with an empty transcript unless `request.param` configures it (configure_mock's
+    keywords), e.g. `{"run.return_value": AgentRun(status=1, transcript="...")}` or `{"require.side_effect": ...}`."""
+    mock = create_autospec(Agent, instance=True)
+    mock.run.return_value = AgentRun(status=0, transcript="")
+    mock.configure_mock(**getattr(request, "param", {}))
+    return mock
+
+
+@pytest.fixture
+def run_log():
+    """A RunLog, recording the steps, warnings and texts a CI run reports."""
+    return create_autospec(RunLog, instance=True)

@@ -7,12 +7,9 @@ out (the 0.5 is `overall_peak_share`).
 
 ## Inputs
 
-- **Signals:** a knowledge graph plus lines, `ast` metrics and write-call regexes from the source. Python only.
-  - *Built-in graph* (default; any revision; nothing to install): imports between files, functions, and a test linked to
-    a function when the test file imports the function's file (one package `__init__` hop) and names it. No execution
-    flows.
-  - *code-review-graph* (`--graph code-review-graph`; working tree only; must be installed): resolved imports and calls,
-    function-to-test links, and flows with a criticality score.
+- **Signals:** a knowledge graph plus lines, `ast` metrics and write-call regexes from the source. Python only. The
+  graph is built from the source alone, for any revision: imports between files, functions, and a test linked to a
+  function when the test file imports the function's file (one package `__init__` hop) and names it.
 - **Modules:** top-level folders, tests excluded; `--depth` (default 3) splits each module of 200+ lines into its
   sub-folders level by level, or into one module per file in a flat folder of 2-25 files; at most 60 modules.
 - **Levels:** each aspect is rated 0-3, 0 most severe. Level 0 takes the Critical band (75-100), 1 High (50-74), 2
@@ -25,10 +22,8 @@ out (the 0.5 is `overall_peak_share`).
 - **2:** integration and arrangement around the core utility, to streamline the process.
 - **3:** logic that does not directly affect the core utility.
 
-Static: modules depending on it 0.30 (saturates at 6) · share of total flow criticality through it 0.30 (saturates at
-50%) · top criticality of a flow starting there 0.15 · core-flow keyword in the path 0.10 · share of repo code 0.15
-(saturates at 25%); tooling paths halved. Without flow data (built-in graph) the two flow terms are left out and the
-other weights scaled up to the same total.
+Static: the weighted mean of modules depending on it 0.30 (saturates at 6) · core-flow keyword in the path 0.10 · share
+of repo code 0.15 (saturates at 25%); the weights are relative (`business_weights`), and tooling paths are halved.
 
 ## 2. Side Effects & Reversibility
 

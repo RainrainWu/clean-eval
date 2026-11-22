@@ -1,6 +1,9 @@
 # Monthly calibration of the risk model and review rules over the last 90 days.
 # With apply: "true", the agent may edit .clean-eval/*; the action keeps an edit only if it is well-formed, touches
 # only tunable keys, and doesn't lower AUC on replay — and the result is still proposed as a PR for humans to approve.
+# Keyless: Claude signs in by workload identity federation, under a rule for runs on the default branch only (subject
+# `repo:OWNER/REPO:ref:refs/heads/main`; README "Keyless credentials"), so no other branch's workflow can use it. To
+# use an API key instead, drop `id-token: write` and the three anthropic-*-id inputs, and uncomment anthropic-api-key.
 name: clean-eval eval
 on:
   schedule:
@@ -13,6 +16,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  id-token: write   # lets the job request its OIDC token, which the action trades for a Claude credential
 
 jobs:
   eval:
@@ -27,7 +31,10 @@ jobs:
         uses: RainrainWu/clean-eval@v1
         with:
           skill: eval
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic-federation-rule-id: ${{ vars.ANTHROPIC_MAIN_FEDERATION_RULE_ID }}
+          anthropic-organization-id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic-service-account-id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          # anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           since: ${{ inputs.since }}
           until: ${{ inputs.until }}
           apply: "true"

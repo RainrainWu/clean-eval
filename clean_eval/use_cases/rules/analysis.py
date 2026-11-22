@@ -343,8 +343,7 @@ def file_signals(
 #
 # Links are imports between repository files, resolved by path; functions and methods are nodes; a test file is linked
 # to a function when it imports the function's file (following one package `__init__` re-export) and names the function.
-# It cannot see execution flows (`Graph.has_flows` is False), so Business Impact leaves its flow terms out. Per-file
-# syntax is cached by content, so many revisions of one repository parse each version of a file once.
+# Per-file syntax is cached by content, so many revisions of one repository parse each version of a file once.
 
 STDLIB = frozenset(sys.stdlib_module_names)
 
@@ -542,5 +541,5 @@ def builtin_graph(
                 if qual.split(".")[-1] in refs:
                     tested["%s::%s" % (tgt, qual)].add(t.path)
     links = {k: v for k, v in links.items() if v}
-    stats = {"source": "built-in ast", "nodes": len(nodes), "edges": sum(len(v) for v in links.values()), "flows": 0}
-    return Graph(nodes=nodes, links=links, tested=dict(tested), flows=[], stats=stats, has_flows=False)
+    stats = {"source": "built-in ast", "nodes": len(nodes), "edges": sum(len(v) for v in links.values())}
+    return Graph(nodes=nodes, links=links, tested=dict(tested), stats=stats)

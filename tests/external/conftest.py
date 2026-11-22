@@ -1,11 +1,13 @@
 """Fixtures for the external layer's tests (clean_eval/external/): the real things the gateways wrap, made in temporary
-folders (throwaway repositories, files and links, the CI agent's folders, a graph.db), MagicMocks of what the gateways
+folders (throwaway repositories, files and links, the CI agent's folders), MagicMocks of what the gateways
 call out to, and the CI commands' arguments over real folders.
 
 - `git` and `fs` are the real gateways, holding `history` and `files` / `links`. The contract tests parametrize them
   with the in-memory fakes of tests/use_cases/fakes.py too, so each check runs on each.
-- `gh` and `graph_build` replace subprocess.run where the GitHub and code-review-graph gateways call it. `host` is the
-  CodeHost the command line's cli.github() hands out, and `guard_env` the Environment the guard's hook reads.
+- `gh` replaces subprocess.run where the GitHub gateway calls it. For the Claude Code gateway, `claude_runs` replaces
+  subprocess.Popen (claude), `npm_installs` subprocess.run (npm) and `oidc_tokens` urllib's urlopen (the job's OIDC
+  token). `host` is the CodeHost the command line's cli.github() hands out, and `guard_env` the Environment the
+  guard's hook reads.
 - `run_cli` runs `python -I <checkout>/clean_eval ...` in a subprocess, for the end-to-end tests, and `cli_runner`
   runs a command in-process through click, with the CI commands' arguments (argv lists) over real folders.
 
@@ -17,18 +19,21 @@ the data of their run (`tuning`, `eval_history`, `agent_files`, `context_files`,
 import io
 import json
 import os
-import sqlite3
 import subprocess
 import sys
-from contextlib import closing
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import create_autospec
+from typing import Any
+from unittest.mock import MagicMock, create_autospec
 
 import pytest
 from click.testing import CliRunner
 
+from clean_eval.domain.review import RunFolders
 from clean_eval.external import cli
+from clean_eval.external.claude_code import ClaudeCodeGateway
 from clean_eval.external.filesystem import FileSystemGateway
 from clean_eval.external.git import GitGateway
 from clean_eval.use_cases.evaluation import SNAPSHOT, snapshot_tuning
@@ -182,7 +187,7 @@ def fs(
     return FileSystemGateway()
 
 
-# The CLIs the gateways run, mocked: gh, and code-review-graph's build (with the graph.db it leaves, made for real).
+# The CLI the GitHub gateway runs, mocked.
 
 
 @pytest.fixture
@@ -215,49 +220,6 @@ def gh(
     return run
 
 
-@pytest.fixture
-def graph_dir(
-    tmp_path,
-):
-    """The data folder of a code-review-graph build, where its graph.db goes: a temporary folder, as its real path."""
-    return str(tmp_path.resolve())
-
-
-@pytest.fixture
-def graph_db(
-    request,
-    graph_dir,
-):
-    """The graph.db a code-review-graph build leaves in `graph_dir`, made for real (in-process, with sqlite3) by the
-    SQL script in `request.param`; no database when not parametrized, or for None. Its path."""
-    path = Path(graph_dir, "graph.db")
-    script = getattr(request, "param", None)
-    if script is not None:
-        with closing(sqlite3.connect(path)) as connection:
-            connection.executescript(script)
-            connection.commit()
-    return str(path)
-
-
-@pytest.fixture
-def graph_build(
-    request,
-    monkeypatch,
-):
-    """The code-review-graph CLI's build as CodeReviewGraphGateway runs it: an autospecced MagicMock of subprocess.run,
-    patched into clean_eval.external.code_review_graph only (as `gh` is into the GitHub gateway), that succeeds and
-    writes nothing (`graph_db` stands for what a build leaves). `request.param` configures it (configure_mock's
-    keywords): a failing build is `{"side_effect": subprocess.CalledProcessError(1, "build", stderr="boom")}`, a
-    missing CLI a FileNotFoundError."""
-    run = create_autospec(subprocess.run)
-    run.return_value = subprocess.CompletedProcess(["code-review-graph"], 0, "", "")
-    run.mock.configure_mock(**getattr(request, "param", {}))
-    monkeypatch.setattr(
-        "clean_eval.external.code_review_graph.subprocess", SimpleNamespace(**{**vars(subprocess), "run": run})
-    )
-    return run
-
-
 # The CI agent's guard: its folders (real, since resolving real paths is what it guards with), the tool call it
 # decides, the hook's stdin and stderr, and the environment it reads its roots from.
 
@@ -266,7 +228,7 @@ def graph_build(
 def sandbox(
     tmp_path,
 ):
-    """The CI agent's folders on the real file system, as action.sh lays them out in one folder `base` (resolved): the
+    """The CI agent's folders on the real file system, as a CI run lays them out in one folder `base` (resolved): the
     workspace `ws` (the checkout under review, with a .git folder, and link.txt, a symlink out of it to secret.txt in
     `base`), the context `ctx` and the agent's output `agent`. A SimpleNamespace of their paths, and of the roots the
     guard is given: `read_roots` [ws, ctx] and `write_roots` [agent]."""
@@ -325,7 +287,7 @@ def guard_env(
     sandbox,
 ):
     """The Environment the hook reads its roots from: an autospecced mock whose paths() gives the `sandbox` folders
-    action.sh sets, ws and ctx for CE_GUARD_READ_ROOTS and agent for CE_GUARD_WRITE_ROOTS. `request.param` replaces
+    a CI run sets, ws and ctx for CE_GUARD_READ_ROOTS and agent for CE_GUARD_WRITE_ROOTS. `request.param` replaces
     a variable's folders, by name: {"CE_GUARD_READ_ROOTS": []} for no read roots."""
     roots = {"CE_GUARD_READ_ROOTS": ["ws", "ctx"], "CE_GUARD_WRITE_ROOTS": ["agent"], **getattr(request, "param", {})}
     mock = create_autospec(Environment, instance=True)
@@ -400,7 +362,7 @@ def write_files():
 def ci_folders(
     tmp_path,
 ):
-    """The folders of a CI run, as action.sh lays them out (under tmp_path): `ctx`, the context `prepare` precomputes;
+    """The folders of a CI run, as the action lays them out (under tmp_path): `ctx`, the context `prepare` precomputes;
     `agent`, the agent's output; `out`, the results CI trusts; `ws`, the workspace (the checkout); and `gh_output`, the
     step-outputs file ($GITHUB_OUTPUT). A SimpleNamespace of their paths: ctx, agent and ws exist, out and gh_output
     are the commands' to write."""
@@ -620,3 +582,154 @@ def post_args(
     write_files(ci_folders.ctx, context_files)
     context = ["--ctx", ci_folders.ctx] if context_files else []
     return ["post", "--pr", str(risk_report.pr), "--out", ci_folders.out, "--head", risk_report.head, *context]
+
+
+# Claude Code, the CI agent: its gateway over real folders, with its CLI and npm mocked.
+
+# What the agent's process may see of the runner's environment, and what it must not.
+AGENT_VARIABLES = {
+    "PATH": "/usr/bin:/bin",
+    "ANTHROPIC_API_KEY": "sk-ant-api03-" + "k" * 40,
+    "GH_TOKEN": "ghs_" + "t" * 36,
+    "SOME_RUNNER_TOKEN": "x" * 20,
+}
+GUARD = "python -I /action/clean_eval guard || exit 2"  # the PreToolUse hook the composition root passes
+
+
+@pytest.fixture
+def npm_installs(
+    request,
+):
+    """subprocess.run as the Claude Code gateway calls it to install the CLI with npm: an autospecced MagicMock, which
+    `claude_runs` patches in. Every call finishes with `request.param`: {"exit": status, "out": stdout, "err": stderr}
+    (by default 0, "added 1 package", "")."""
+    reply = getattr(request, "param", {})
+    run = create_autospec(subprocess.run)
+    run.return_value = subprocess.CompletedProcess(
+        ["npm"], reply.get("exit", 0), reply.get("out", "added 1 package"), reply.get("err", "")
+    )
+    return run
+
+
+@pytest.fixture
+def claude_runs(
+    request,
+    monkeypatch,
+    npm_installs,
+):
+    """subprocess.Popen as the Claude Code gateway starts claude: an autospecced MagicMock, patched into
+    clean_eval.external.claude_code only, with `npm_installs` as its subprocess.run. `request.param` is how the run
+    goes: {"exit": status, "out": its transcript, "timeouts": how many of the gateway's waits for it time out first,
+    "interrupted": an exception the wait then raises instead, claude still running} (by default 0, "done", 0, None); or
+    an exception, which starting claude raises. The process is `claude_runs.return_value`, and
+    `claude_runs.identity_tokens` collects what the identity-token file held at each wait (nothing without one)."""
+    outcome = getattr(request, "param", {})
+    popen = create_autospec(subprocess.Popen)
+    popen.identity_tokens = []
+    if isinstance(outcome, BaseException):
+        popen.side_effect = outcome
+    else:
+        process = popen.return_value
+
+        def communicate(
+            timeout=None,
+        ):
+            token = popen.call_args.kwargs["env"].get("ANTHROPIC_IDENTITY_TOKEN_FILE")
+            if token:
+                popen.identity_tokens.append(Path(token).read_text())
+            if process.communicate.call_count <= outcome.get("timeouts", 0):
+                raise subprocess.TimeoutExpired("claude", timeout or 0)
+            if outcome.get("interrupted"):
+                raise outcome["interrupted"]
+            process.returncode = process.poll.return_value = outcome.get("exit", 0)
+            return outcome.get("out", "done"), None
+
+        process.communicate.side_effect = communicate
+        process.returncode = process.poll.return_value = None  # running, until the wait ends
+    monkeypatch.setattr(
+        "clean_eval.external.claude_code.subprocess",
+        SimpleNamespace(**{**vars(subprocess), "run": npm_installs, "Popen": popen}),
+    )
+    return popen
+
+
+@pytest.fixture
+def oidc_tokens(
+    request,
+    monkeypatch,
+):
+    """GitHub's OIDC token endpoint as the Claude Code gateway calls it (urllib.request.urlopen): an autospecced
+    MagicMock patched into clean_eval.external.claude_code only. `request.param` lists its replies to successive calls,
+    each a token it issues (a str), a raw body (bytes) or an exception it raises; past them, or unparametrized, the
+    n-th call issues "jwt-<n>". Each call holds the Request the gateway made."""
+    replies = list(getattr(request, "param", []))
+
+    def respond(
+        url_request,
+        **options,
+    ):
+        reply = replies.pop(0) if replies else "jwt-%d" % urlopen.call_count
+        if isinstance(reply, BaseException):
+            raise reply
+        return io.BytesIO(reply if isinstance(reply, bytes) else json.dumps({"value": reply}).encode())
+
+    urlopen = create_autospec(urllib.request.urlopen, side_effect=respond)
+    monkeypatch.setattr(
+        "clean_eval.external.claude_code.urllib",
+        SimpleNamespace(parse=urllib.parse, request=SimpleNamespace(**{**vars(urllib.request), "urlopen": urlopen})),
+    )
+    return urlopen
+
+
+@pytest.fixture
+def claude_installed(
+    request,
+    monkeypatch,
+):
+    """Whether `claude` is on the PATH the gateway looks on: `request.param`, True by default. shutil.which is mocked in
+    clean_eval.external.claude_code only; the mock is returned."""
+    which = MagicMock(return_value="/usr/bin/claude" if getattr(request, "param", True) else None)
+    monkeypatch.setattr("clean_eval.external.claude_code.shutil", SimpleNamespace(which=which))
+    return which
+
+
+@pytest.fixture
+def run_folders(
+    request,
+    tmp_path,
+):
+    """The folders of a CI run, made under tmp_path (resolved): the workspace `ws`, and the output folder with the
+    context and the agent's folder in it. The output folder is `request.param`, relative to tmp_path: "out" by default,
+    "ws/out" for one inside the workspace."""
+    base = tmp_path.resolve()
+    out = base / getattr(request, "param", "out")
+    folders = RunFolders(
+        workspace=str(base / "ws"),
+        out=str(out),
+        context=str(out / "context"),
+        agent=str(out / "agent"),
+    )
+    for folder in (folders.workspace, folders.context, folders.agent):
+        Path(folder).mkdir(parents=True)
+    return folders
+
+
+@pytest.fixture
+def claude_code(
+    request,
+    run_folders,
+    claude_runs,
+    claude_installed,
+    oidc_tokens,
+):
+    """The Claude Code gateway of a run in `run_folders`, writing its settings with FileSystemGateway, with
+    `claude_runs` (and its `npm_installs`), `claude_installed` and `oidc_tokens` in place of the CLI, the PATH and
+    GitHub's token endpoint. `request.param` replaces any of its constructor's keywords: `variables` (AGENT_VARIABLES
+    by default), `version`, `model`, `max_turns`."""
+    keywords: dict[str, Any] = {
+        "variables": AGENT_VARIABLES,
+        "guard_command": GUARD,
+        "install_dir": run_folders.out,
+        **getattr(request, "param", {}),
+    }
+    return ClaudeCodeGateway(FileSystemGateway(), **keywords)

@@ -3,6 +3,7 @@ MemoryGit (tests/use_cases/fakes.py): the contract checks run on both, over the 
 of `history`, and `shas` are theirs."""
 
 import datetime as dt
+import subprocess
 
 import pytest
 
@@ -124,6 +125,16 @@ class TestGitGateway:
     ):
         assert not hasattr(GitGateway, "run")
 
+    @pytest.mark.parametrize("history", [CONTRACT], indirect=True)
+    def test_a_shallow_clone_says_so(
+        self,
+        repo,
+        tmp_path,
+    ):
+        clone = tmp_path / "shallow"
+        subprocess.run(["git", "clone", "-q", "--depth", "1", "file://" + repo.path, str(clone)], check=True)
+        assert GitGateway(str(clone)).is_shallow()
+
 
 @pytest.mark.parametrize("history", [CONTRACT], indirect=True)
 @pytest.mark.parametrize("git", ["MemoryGit", "GitGateway"], indirect=True)
@@ -146,6 +157,12 @@ class TestMemoryGitAgreesWithTheGateway:
         assert (git.branch(), git.default_branch()) == ("main", "main")
         with pytest.raises(HeatmapError):
             git.ensure_commit("0" * 40, "refs/heads/nope")
+
+    def test_a_whole_history_is_not_shallow(
+        self,
+        git,
+    ):
+        assert not git.is_shallow()
 
     def test_files_and_contents(
         self,

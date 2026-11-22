@@ -1,4 +1,5 @@
-# Refresh the README "Risk Heat Map" weekly and open a PR when it changes. No API key needed.
+# Refresh the README "Risk Heat Map" weekly and open a PR when it changes. No Claude credentials needed; with
+# `use-claude: "true"`, sign in as clean-eval-eval.yml does.
 name: clean-eval risk heat map
 on:
   schedule:

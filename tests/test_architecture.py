@@ -73,9 +73,9 @@ REACHING_OUT = {
 GATEWAYS = {
     "external/git.py": ({"subprocess"}, {"GitGateway"}),  # the git CLI
     "external/github.py": ({"subprocess"}, {"GitHubGateway"}),  # the gh CLI
-    "external/code_review_graph.py": ({"subprocess", "sqlite3"}, {"CodeReviewGraphGateway"}),  # its CLI and database
     "external/filesystem.py": ({"os", "shutil", "filecmp", "pathlib"}, {"FileSystemGateway"}),  # files and folders
     "external/environment.py": ({"os", "datetime"}, {"EnvironmentGateway", "ClockGateway"}),  # variables, today's date
+    "external/claude_code.py": ({"subprocess", "shutil", "os", "urllib"}, {"ClaudeCodeGateway"}),  # the CI agent
 }
 # The interfaces (use_cases/interfaces.py) and the one class implementing each: a gateway or a presenter.
 INTERFACES = "use_cases/interfaces.py"
@@ -83,11 +83,12 @@ IMPLEMENTATIONS = {
     "Git": "external/git.py",
     "CodeHost": "external/github.py",
     "FileSystem": "external/filesystem.py",
-    "KnowledgeGraph": "external/code_review_graph.py",
     "Environment": "external/environment.py",
     "Clock": "external/environment.py",
+    "Agent": "external/claude_code.py",
     "DiagramPresenter": "adaptor/presenters.py",
     "ReportPresenter": "adaptor/presenters.py",
+    "RunLog": "external/cli.py",  # a CI run's log is the console, the driver's
 }
 DRIVERS = {"external/cli.py", "external/agent_guard.py"}  # the console is theirs (they are driven by it)
 BOOTSTRAP = {"__main__.py"}  # puts the checkout on sys.path before any of the package can be imported

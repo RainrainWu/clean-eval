@@ -334,3 +334,26 @@ class ToolCall(BaseModel):
         tool_input: object,
     ) -> object:
         return {} if tool_input is None else tool_input
+
+
+# A CI run of a skill (the `action` command): its folders, and what running the agent gave.
+
+
+class RunFolders(BaseModel):
+    """The folders of a CI run, as real absolute paths: the workspace (the checkout the skill runs on), the output
+    folder, and in it the context the agent reads (precomputed, read-only to it) and the agent's own folder, the only
+    one it may write."""
+
+    model_config = ConfigDict(frozen=True)
+
+    workspace: str
+    out: str
+    context: str
+    agent: str
+
+
+class AgentRun(BaseModel):
+    """What running the agent gave: its exit status, and its transcript (what it printed)."""
+
+    status: int
+    transcript: str

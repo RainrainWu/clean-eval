@@ -8,8 +8,10 @@
                      cases' interfaces (use_cases/interfaces.py), and nothing more:
                        git.py                GitGateway(Git)                         the git CLI
                        github.py             GitHubGateway(CodeHost)                 the GitHub CLI, gh
-                       code_review_graph.py  CodeReviewGraphGateway(KnowledgeGraph)  the code-review-graph CLI and the
-                                                                                     SQLite database it builds
+                       claude_code.py        ClaudeCodeGateway(Agent)                the CI agent: the claude CLI, run
+                                                                                     sandboxed, its npm install, and
+                                                                                     the job's OIDC token for keyless
+                                                                                     sign-in
                        filesystem.py         FileSystemGateway(FileSystem)           files and folders
                        environment.py        EnvironmentGateway(Environment)         environment variables, the home folder
                                              ClockGateway(Clock)                     today's date

@@ -10,14 +10,29 @@ inputs:
     description: "Which skill to run: risk-heat-map | pr-review | eval"
     required: true
 
-  # --- Claude credentials (not needed for risk-heat-map unless use-claude: true).
-  # For Bedrock/Vertex, leave both empty and set CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX
+  # --- Claude credentials (not needed for risk-heat-map unless use-claude: true): one of an API key, an OAuth token,
+  # or keyless workload identity federation (the anthropic-federation-* inputs; the job needs `id-token: write`).
+  # For Bedrock/Vertex, leave them all empty and set CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX
   # (plus cloud credentials) in the step's env.
   anthropic-api-key:
     description: Anthropic API key
     required: false
   claude-code-oauth-token:
     description: Claude Code OAuth token (alternative to anthropic-api-key)
+    required: false
+  anthropic-federation-rule-id:
+    description: >-
+      Keyless sign-in, instead of a key or token: the workload identity federation rule (fdrl_...) under which the
+      job's GitHub OIDC token is traded for a short-lived credential. The job needs `id-token: write`.
+    required: false
+  anthropic-organization-id:
+    description: With anthropic-federation-rule-id, the Anthropic organization's ID
+    required: false
+  anthropic-service-account-id:
+    description: With anthropic-federation-rule-id, the service account (svac_...) to act as
+    required: false
+  anthropic-workspace-id:
+    description: With anthropic-federation-rule-id, the workspace, when the rule covers more than one
     required: false
   github-token:
     description: Token for gh (read PRs, post reviews). Needs pull-requests:write to post.
@@ -127,8 +142,9 @@ runs:
     - id: run
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      # The inputs reach the command as CE_* variables, never interpolated into this script, so no input can inject
+      # shell code; clean_eval's `action` command reads them (`clean_eval action --help`).
       env:
-        CE_ACTION_DIR: ${{ github.action_path }}
         CE_PYTHON: ${{ steps.env.outputs.python }}
         CE_SKILL: ${{ inputs.skill }}
         CE_WORKSPACE: ${{ inputs.working-directory }}
@@ -148,5 +164,9 @@ runs:
         CE_EXTRA_PROMPT: ${{ inputs.extra-prompt }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key || env.ANTHROPIC_API_KEY }}
         CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token || env.CLAUDE_CODE_OAUTH_TOKEN }}
+        ANTHROPIC_FEDERATION_RULE_ID: ${{ inputs.anthropic-federation-rule-id || env.ANTHROPIC_FEDERATION_RULE_ID }}
+        ANTHROPIC_ORGANIZATION_ID: ${{ inputs.anthropic-organization-id || env.ANTHROPIC_ORGANIZATION_ID }}
+        ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ inputs.anthropic-service-account-id || env.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+        ANTHROPIC_WORKSPACE_ID: ${{ inputs.anthropic-workspace-id || env.ANTHROPIC_WORKSPACE_ID }}
         GH_TOKEN: ${{ inputs.github-token }}
-      run: bash "$GITHUB_ACTION_PATH/action.sh"
+      run: '"$CE_PYTHON" -I "$GITHUB_ACTION_PATH/clean_eval" action'

@@ -6,10 +6,11 @@ from unittest.mock import call
 
 import pytest
 
-from clean_eval.domain.errors import HeatmapError, RemoteError
+from clean_eval.domain.errors import HeatmapError, RemoteError, RunFailed
 from clean_eval.domain.evaluation import FetchFailure, ReviewSignal
 from clean_eval.domain.policy import BAND_NAMES
-from clean_eval.use_cases.evaluation import collect_history, review_of
+from clean_eval.domain.review import RunFolders
+from clean_eval.use_cases.evaluation import collect_history, review_of, run_eval_action
 from clean_eval.use_cases.rules import evaluation
 
 # A period with a fix, a revert and a docs-only PR: #3 fixes the billing code #1 changed, and #5 reverts #4.
@@ -206,3 +207,47 @@ class TestReviewOf:
     ):
         assert review_of(host, 8) == FetchFailure(error="not_found", message="no PR 8")
         host.review_threads.assert_called_once_with(8)
+
+
+# A CI run's folders.
+RUN_FOLDERS = RunFolders(workspace="/repo", out="/out", context="/out/context", agent="/out/agent")
+
+
+class TestRunEvalAction:
+    """The eval's CI run refuses what it can't run on before it asks the code host or runs the agent."""
+
+    @pytest.mark.parametrize(("since", "until"), [("yesterday", None), ("2026-01-01", "soon")], ids=["since", "until"])
+    def test_dates_that_are_not_dates_are_refused(
+        self,
+        git,
+        fs,
+        clock,
+        env,
+        host,
+        agent,
+        run_log,
+        since,
+        until,
+    ):
+        with pytest.raises(RunFailed, match="YYYY-MM-DD"):
+            run_eval_action(
+                git, fs, clock, env, host, agent, run_log, RUN_FOLDERS, since, until, False, "", "", "/out/o", "/out/s"
+            )
+        host.require_auth.assert_not_called()
+
+    @pytest.mark.parametrize("links", [{"/repo/.clean-eval": "/elsewhere"}], indirect=True)
+    def test_apply_refuses_a_symlinked_clean_eval(
+        self,
+        git,
+        fs,
+        clock,
+        env,
+        host,
+        agent,
+        run_log,
+    ):
+        with pytest.raises(RunFailed, match="symlink"):
+            run_eval_action(
+                git, fs, clock, env, host, agent, run_log, RUN_FOLDERS, None, None, True, "", "", "/out/o", "/out/s"
+            )
+        agent.run.assert_not_called()

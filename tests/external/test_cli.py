@@ -19,7 +19,7 @@ from tests.helpers import Dates
 pytestmark = pytest.mark.e2e  # the command line's tests: most run `python -I clean_eval ...` in a subprocess
 
 # The commands `clean_eval --help` lists, in its order.
-COMMANDS = ["assess", "finalize", "guard", "history", "post", "prepare", "rate", "readme", "redact", "report"]
+COMMANDS = ["action", "assess", "finalize", "guard", "history", "post", "prepare", "rate", "readme", "redact", "report"]
 # A review-rules.md: a blocker rule from the Low band, and a major and a minor one from Moderate.
 RULES = """
 | ID | Severity | Min tier | Rule |
@@ -532,19 +532,6 @@ class TestRate:
         rated = run_cli("rate", "--rev", shas[0], "--out", str(tmp_path), cwd=repo.path)
         assert rated.returncode == 0, rated.stderr
         assert json.loads((tmp_path / "data.json").read_text())["ref"] == shas[0]
-
-    def test_a_past_revision_takes_only_the_builtin_graph(
-        self,
-        repo,
-        shas,
-        run_cli,
-        tmp_path,
-    ):
-        refused = run_cli(
-            "rate", "--rev", shas[0], "--graph", "code-review-graph", "--out", str(tmp_path), cwd=repo.path
-        )
-        assert refused.returncode != 0
-        assert "only --graph builtin" in refused.stderr
 
 
 @pytest.mark.parametrize("history", [BILLING], indirect=True)

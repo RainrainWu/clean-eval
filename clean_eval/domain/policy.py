@@ -158,12 +158,8 @@ class Policy(BaseModel):
     # Band of a changed path no rated module covers (a new module, or non-Python code): unknown, not low, risk.
     unrated_band: Band = "Moderate"
     # Business Impact.
-    business_weights: dict[str, Number] = Field(
-        default_factory=lambda: dict(dependents=0.30, flow_weight=0.30, entry=0.15, keyword=0.10, size=0.15)
-    )
-    business_saturation: dict[str, Divisor] = Field(
-        default_factory=lambda: dict(dependents=6, flow_weight=0.5, size=0.25)
-    )
+    business_weights: dict[str, Number] = Field(default_factory=lambda: dict(dependents=0.30, keyword=0.10, size=0.15))
+    business_saturation: dict[str, Divisor] = Field(default_factory=lambda: dict(dependents=6, size=0.25))
     tooling_factor: Number = 0.5
     # Side Effects & Reversibility.
     effect_points: dict[str, Number] = Field(
