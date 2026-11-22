@@ -8,6 +8,7 @@ the output folder. Through the FileSystem and Environment interfaces (the enviro
   risk-heat-map   the report is the deterministic summary (the agent only levels)
 
 Reports and results are redacted; the step outputs carry only enums and numbers, never agent text."""
+
 from pydantic import ValidationError
 
 from clean_eval.domain.ci import StepOutputs
@@ -17,11 +18,23 @@ from clean_eval.domain.review import AgentReview, RiskReport
 from clean_eval.domain.tuning import Rejection
 from clean_eval.use_cases.rules.redaction import sanitize_report, secret_values
 from clean_eval.use_cases.rules.review import finalize_review, parse_rules, review_outputs
-from clean_eval.use_cases.rules.tuning import (MODEL_FILE, RULES_FILE, TUNING_FILES, eval_recommendations, eval_result,
-                                               judge_model_edit, judge_rules_edit)
+from clean_eval.use_cases.rules.tuning import (
+    MODEL_FILE,
+    RULES_FILE,
+    TUNING_FILES,
+    eval_recommendations,
+    eval_result,
+    judge_model_edit,
+    judge_rules_edit,
+)
 from clean_eval.use_cases.store import read_json, write_json
-from clean_eval.use_cases.tuning_files import (SNAPSHOT, current_tuning, original_tuning, restore_other_tuning,
-                                               restore_tuning)
+from clean_eval.use_cases.tuning_files import (
+    SNAPSHOT,
+    current_tuning,
+    original_tuning,
+    restore_other_tuning,
+    restore_tuning,
+)
 
 SKILLS = ("pr-review", "eval", "risk-heat-map")
 # What judging a malformed agent output (or edit) can raise: it then counts as invalid and is restored, never a crash.
@@ -65,8 +78,12 @@ def finalize_run(fs, env, ctx, agent, out, skill, apply=False, workspace="."):
 
 def _review(fs, ctx, agent, secrets):
     try:
-        review = finalize_review(_validated(AgentReview, fs, agent, "result.json"), _validated(RiskReport, fs, ctx, "risk.json"),
-                                 parse_rules(fs.read_text(fs.join(ctx, "review-rules.md"))), secrets)
+        review = finalize_review(
+            _validated(AgentReview, fs, agent, "result.json"),
+            _validated(RiskReport, fs, ctx, "risk.json"),
+            parse_rules(fs.read_text(fs.join(ctx, "review-rules.md"))),
+            secrets,
+        )
     except JUDGING_ERRORS as e:
         raise _invalid(e)
     return review, review_outputs(review)
@@ -78,8 +95,9 @@ def _eval(fs, ctx, agent, apply, workspace, secrets):
     snapshot_dir = fs.join(ctx, SNAPSHOT)
     try:
         history = _validated(EvalHistory, fs, ctx, "eval-history.json")
-        model_change = _judge(fs, workspace, snapshot_dir, MODEL_FILE, apply,
-                              lambda new, orig: judge_model_edit(new, orig, history))
+        model_change = _judge(
+            fs, workspace, snapshot_dir, MODEL_FILE, apply, lambda new, orig: judge_model_edit(new, orig, history)
+        )
         rules_change = _judge(fs, workspace, snapshot_dir, RULES_FILE, apply, lambda new, orig: judge_rules_edit(new))
         other = restore_other_tuning(fs, workspace, snapshot_dir, TUNING_FILES)
         recommendations = eval_recommendations(read_json(fs, fs.join(agent, "result.json")), secrets)

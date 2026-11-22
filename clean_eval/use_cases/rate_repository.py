@@ -1,6 +1,7 @@
 """Use cases: rate every sub-module of a repository on the four aspects. The working tree is read through the Git and
 FileSystem interfaces, with the built-in graph or a KnowledgeGraph (code-review-graph); a revision is read straight
 from git objects. The rating date comes from the Clock."""
+
 from collections import Counter
 
 from clean_eval.domain.errors import NoPythonSource
@@ -30,8 +31,16 @@ def rate(snapshot, files, graph, policy, today, coverage=None, signals_cache=Non
     mods, notes = split_modules(src, policy, depth, max_modules)
     if not mods:
         raise _no_python(snapshot)
-    notes.insert(0, "Knowledge graph (%s): %d nodes, %d edges, %d flows" % (
-        graph.stats.get("source", "graph"), graph.stats.get("nodes", 0), graph.stats.get("edges", 0), graph.stats.get("flows", 0)))
+    notes.insert(
+        0,
+        "Knowledge graph (%s): %d nodes, %d edges, %d flows"
+        % (
+            graph.stats.get("source", "graph"),
+            graph.stats.get("nodes", 0),
+            graph.stats.get("edges", 0),
+            graph.stats.get("flows", 0),
+        ),
+    )
     coverage = coverage or {}
     file_mod = {f.path: m for m, fl in mods.items() for f in fl}
     fan_in, fan_out = dependents(graph, file_mod)
@@ -55,35 +64,59 @@ def rate(snapshot, files, graph, policy, today, coverage=None, signals_cache=Non
         test_files = set().union(*[graph.tested[q] for q in linked]) if linked else set()
         rates = [(coverage[f.path], f.loc) for f in mod_files if f.path in coverage]
         return Facts(
-            name=name, loc=loc, files=len(mod_files), share=loc / total_loc,
+            name=name,
+            loc=loc,
+            files=len(mod_files),
+            share=loc / total_loc,
             funcs=[x for s in py for x in s.funcs],
             typed_share=sum(s.typed for s in py) / n if n else None,
-            broad=sum(s.broad for s in py), swallow=sum(s.swallow for s in py),
+            broad=sum(s.broad for s in py),
+            swallow=sum(s.swallow for s in py),
             todo=sum(signals[f.path].todo for f in mod_files),
             big_files=sum(1 for f in mod_files if f.loc > policy.big_file_lines),
-            fan_in=len(fan_in[name]), fan_out=len(fan_out[name]),
-            effect_counts=counts, effect_examples=examples,
+            fan_in=len(fan_in[name]),
+            fan_out=len(fan_out[name]),
+            effect_counts=counts,
+            effect_examples=examples,
             migrations=sum(1 for f in mod_files if classify.is_migration(f.path, policy)),
             entry_flows=[crit for crit, entry, _ in graph.flows if file_mod.get(entry) == name],
-            flow_touch=sum(crit for crit, _, fs in graph.flows if any(file_mod.get(x) == name for x in fs)) / total_crit,
-            keyword=classify.has_core_keyword(name, policy), tooling=classify.looks_like_tooling(name, mod_files[0].path, policy),
-            graph_functions=len(functions), linked_functions=len(linked), linked_test_files=len(test_files),
+            flow_touch=sum(crit for crit, _, fs in graph.flows if any(file_mod.get(x) == name for x in fs))
+            / total_crit,
+            keyword=classify.has_core_keyword(name, policy),
+            tooling=classify.looks_like_tooling(name, mod_files[0].path, policy),
+            graph_functions=len(functions),
+            linked_functions=len(linked),
+            linked_test_files=len(test_files),
             linked_test_loc=sum(test_loc.get(t, 0) / max(len(test_mods[t]), 1) for t in test_files),
             test_scales=Counter(classify.classify_scale(t) for t in sorted(test_files)),
             line_rate=sum(r * w for r, w in rates) / max(sum(w for _, w in rates), 1) if rates else None,
-            na_reason=classify.not_applicable(name, policy), flows_available=graph.has_flows)
+            na_reason=classify.not_applicable(name, policy),
+            flows_available=graph.has_flows,
+        )
 
     def top_files(mod_files):
         out = []
         for f in sorted(mod_files, key=lambda f: -f.loc)[:5]:
             stats = signals[f.path].stats
-            out.append(TopFile(path=f.path, loc=f.loc, max_fn=max((x[0] for x in stats.funcs), default=0) if stats else None))
+            out.append(
+                TopFile(path=f.path, loc=f.loc, max_fn=max((x[0] for x in stats.funcs), default=0) if stats else None)
+            )
         return out
 
-    ratings = sorted((rate_module(facts_of(name, fl), top_files(fl), policy) for name, fl in mods.items()), key=lambda r: -r.loc)
+    ratings = sorted(
+        (rate_module(facts_of(name, fl), top_files(fl), policy) for name, fl in mods.items()), key=lambda r: -r.loc
+    )
     notes.append("Unverified uses test links from the graph" + ("" if coverage else "; no coverage report in the repo"))
-    return Heatmap(repo=snapshot.repo, ref=snapshot.ref, sha=snapshot.sha, generated_at=today, loc_total=total_loc,
-                   modules=ratings, notes=notes, policy_version=policy.version)
+    return Heatmap(
+        repo=snapshot.repo,
+        ref=snapshot.ref,
+        sha=snapshot.sha,
+        generated_at=today,
+        loc_total=total_loc,
+        modules=ratings,
+        notes=notes,
+        policy_version=policy.version,
+    )
 
 
 def rate_working_tree(git, fs, clock, policy, knowledge_graph=None, graph_dir=None, depth=None, max_modules=None):
@@ -98,8 +131,16 @@ def rate_working_tree(git, fs, clock, policy, knowledge_graph=None, graph_dir=No
         data_dir = graph_dir or fs.join(snapshot.root, ".git", "clean-eval-graph")
         fs.make_dirs(data_dir)
         graph = knowledge_graph.graph_of(snapshot.root, data_dir)
-    return rate(snapshot, files, graph, policy, clock.today(), coverage_line_rates(fs, snapshot.root),
-                depth=depth, max_modules=max_modules)
+    return rate(
+        snapshot,
+        files,
+        graph,
+        policy,
+        clock.today(),
+        coverage_line_rates(fs, snapshot.root),
+        depth=depth,
+        max_modules=max_modules,
+    )
 
 
 def rate_revision(git, clock, rev, policy, cache, depth=None, max_modules=None):
@@ -108,5 +149,13 @@ def rate_revision(git, clock, rev, policy, cache, depth=None, max_modules=None):
     snapshot, files = read_revision(git, rev, policy, cache.blobs)
     if not rated_sources(files, policy):
         raise _no_python(snapshot)
-    return rate(snapshot, files, builtin_graph(files, cache.syntax), policy, clock.today(), signals_cache=cache.signals,
-                depth=depth, max_modules=max_modules)
+    return rate(
+        snapshot,
+        files,
+        builtin_graph(files, cache.syntax),
+        policy,
+        clock.today(),
+        signals_cache=cache.signals,
+        depth=depth,
+        max_modules=max_modules,
+    )

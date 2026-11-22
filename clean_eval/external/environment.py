@@ -1,4 +1,5 @@
 """The process environment: its variables (secrets to redact, the guard's roots, PATH) and the home folder."""
+
 import os
 
 from clean_eval.use_cases.interfaces import Environment

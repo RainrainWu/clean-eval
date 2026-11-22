@@ -1,4 +1,5 @@
 """Use case: a short summary of a finalized heatmap (levels applied), for the chat and the CI job summary."""
+
 from clean_eval.use_cases.finalize_heatmap import finalize_heatmap
 
 

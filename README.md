@@ -117,15 +117,19 @@ The agent reads untrusted text (PR diffs and descriptions, commit messages, comm
 
 ```bash
 uv sync                                                # Python 3.15 and the locked dependencies, in .venv
-uv run python -m unittest discover -s tests -t .       # every test: fake gh/claude, no network
-uv run python -m unittest tests.use_cases.test_sources # one module
+uv run pytest                                          # every test: fake gh/claude, no network
+uv run pytest -m "not e2e"                             # skip the subprocess end-to-end tests (seconds, not ~30 s)
+uv run pytest tests/use_cases/test_sources.py          # one module (::test_helpers for one test, -k to filter)
+uv run ruff check --fix .                              # lint: pycodestyle, pyflakes, isort's import order
+uv run ruff format .                                   # format: Black's style, 120 columns
 ```
 
-The tests are laid out like the package: `tests/<layer>/` holds the tests of `clean_eval/<layer>/` (`test_<module>.py`
-for `<module>.py`) and follows the same dependency rule, so the use cases are tested against in-memory fakes of their
-interfaces (`tests/use_cases/fakes.py`) and the real dependencies only in `tests/external/`, where each fake runs
-through the same checks as the gateway it stands in for. The tests at the top of `tests/` span the layers: the
-architecture rules, `action.sh` end to end, and the release check. The `tests` workflow runs the suite on every push to
+The tests are written for pytest (fixtures in `conftest.py`, parametrized tables, plain asserts) and laid out like the
+package: `tests/<layer>/` holds the tests of `clean_eval/<layer>/` (`test_<module>.py` for `<module>.py`) and follows
+the same dependency rule, so the use cases are tested against in-memory fakes of their interfaces
+(`tests/use_cases/fakes.py`) and the real dependencies only in `tests/external/`, where each fake runs through the same
+checks as the gateway it stands in for. The tests at the top of `tests/` span the layers: the architecture rules,
+`action.sh` end to end, and the release check. The `tests` workflow runs the suite and both ruff checks on every push to
 a pull request and to `master`.
 
 Coding agents: `AGENTS.md` at the root and in each layer folder (and `tests/`) holds the commands and the rules that

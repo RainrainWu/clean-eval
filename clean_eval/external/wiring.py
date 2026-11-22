@@ -1,6 +1,7 @@
 """The composition root: the implementations the use-case functions are given. One gateway per external dependency
 (the use cases' interfaces Git, CodeHost, FileSystem, KnowledgeGraph, Environment, Clock) and the presenters. The
 command line passes them to the use cases."""
+
 from pydantic import ValidationError
 
 from clean_eval.adaptor.presenters.diagram import SvgDiagramPresenter
@@ -32,8 +33,10 @@ def github():
 
 def knowledge_graph():
     """The code-review-graph CLI: on PATH, else where its installer puts it."""
-    return CodeReviewGraphGateway(FS.find_executable("code-review-graph", ENV.get("PATH"))
-                                  or FS.join(ENV.home(), ".local", "bin", "code-review-graph"))
+    return CodeReviewGraphGateway(
+        FS.find_executable("code-review-graph", ENV.get("PATH"))
+        or FS.join(ENV.home(), ".local", "bin", "code-review-graph")
+    )
 
 
 def diagram_presenter():

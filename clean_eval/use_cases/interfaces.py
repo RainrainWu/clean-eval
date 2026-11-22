@@ -5,6 +5,7 @@ inherit and implement them:
   Git, CodeHost, FileSystem, KnowledgeGraph, Environment, Clock   the external layer's gateways (external/*.py)
   DiagramPresenter, ReportPresenter                              the adaptor layer's presenters (rendering only)
 """
+
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -115,6 +116,7 @@ class CodeHost(ABC):
 
 class FileSystem(ABC):
     """Files and folders, and the path strings that name them."""
+
     sep: str  # the path separator
 
     @abstractmethod

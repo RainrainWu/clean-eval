@@ -1,5 +1,6 @@
 """The repository's tuning files (`.clean-eval/` in the working tree) and the snapshot of them taken before the CI agent
 ran, through the FileSystem interface: what an eval may change, and how anything it may not keep is put back."""
+
 from clean_eval.domain.policy import REPO_DIR
 
 SNAPSHOT = "clean-eval.orig"  # in the context folder: .clean-eval/ as it was before the agent ran
@@ -54,10 +55,10 @@ def restore_other_tuning(fs, workspace, snapshot_dir, keep):
                 continue
             live, orig = fs.join(live_dir, rel), fs.join(snapshot_dir, rel)
             if not in_snapshot and not fs.exists(orig):
-                fs.remove(live)                                     # created by the agent
+                fs.remove(live)  # created by the agent
             elif not fs.exists(live) or not fs.same_content(live, orig):
                 fs.make_dirs(fs.parent(live))
-                fs.copy_file(orig, live)                            # changed or removed by the agent
+                fs.copy_file(orig, live)  # changed or removed by the agent
             else:
                 continue
             restored.add(rel)

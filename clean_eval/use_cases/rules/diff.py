@@ -1,4 +1,5 @@
 """Unified diffs as text: one patch per file, size limits, and the lines GitHub accepts inline comments on."""
+
 import re
 
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -27,8 +28,10 @@ def truncate(text, limit):
 def line_counts(patch):
     """(lines added, lines removed) by a patch."""
     lines = patch.splitlines()
-    return (sum(1 for l in lines if l.startswith("+") and not l.startswith("+++")),
-            sum(1 for l in lines if l.startswith("-") and not l.startswith("---")))
+    return (
+        sum(1 for line in lines if line.startswith("+") and not line.startswith("+++")),
+        sum(1 for line in lines if line.startswith("-") and not line.startswith("---")),
+    )
 
 
 def commentable_lines(patch):
@@ -39,8 +42,8 @@ def commentable_lines(patch):
         if m:
             new = int(m.group(1))
         elif new is None or line.startswith(("-", "\\")):
-            continue                     # file header, removed line, or "\ No newline at end of file"
-        else:                            # added ("+") or context (" ") line on the new side
+            continue  # file header, removed line, or "\ No newline at end of file"
+        else:  # added ("+") or context (" ") line on the new side
             lines.add(new)
             new += 1
     return lines

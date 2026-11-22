@@ -1,5 +1,6 @@
 """Line coverage from a Cobertura coverage.xml in a working tree, when there is one (revisions have none), through the
 FileSystem interface."""
+
 import re
 
 CLASS = re.compile(r'<class [^>]*filename="([^"]+)"[^>]*line-rate="([0-9.]+)"')

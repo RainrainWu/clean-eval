@@ -2,6 +2,7 @@
 SQLite database (graph.db) this gateway reads read-only and translates into the domain's Graph. Unlike the built-in
 graph it resolves calls and sees execution flows with a criticality score. Working trees only: it parses files on disk.
 Everything about code-review-graph (the command, its database schema, SQLite) stays in this module."""
+
 import sqlite3
 import subprocess
 
@@ -10,8 +11,10 @@ from clean_eval.domain.graph import Graph
 from clean_eval.use_cases.interfaces import KnowledgeGraph
 
 NODES = "select qualified_name, kind, file_path, is_test from nodes where language = 'python'"
-EDGES = ("select kind, source_qualified, target_qualified, confidence_tier, target_resolution from edges "
-         "where kind in ('IMPORTS_FROM','CALLS','REFERENCES','INHERITS','TESTED_BY')")
+EDGES = (
+    "select kind, source_qualified, target_qualified, confidence_tier, target_resolution from edges "
+    "where kind in ('IMPORTS_FROM','CALLS','REFERENCES','INHERITS','TESTED_BY')"
+)
 FLOWS = "select f.id, f.criticality, n.qualified_name from flows f join nodes n on n.id = f.entry_point_id"
 FLOW_FILES = "select n.file_path from flow_memberships m join nodes n on n.id = m.node_id where m.flow_id = ?"
 
@@ -19,7 +22,7 @@ FLOW_FILES = "select n.file_path from flow_memberships m join nodes n on n.id = 
 def read_graph(con, root):
     """The graph in an open code-review-graph database, Python only, with paths relative to `root`."""
     prefix = root.rstrip("/") + "/"
-    rel = lambda p: p[len(prefix):] if p.startswith(prefix) else p  # noqa: E731
+    rel = lambda p: p[len(prefix) :] if p.startswith(prefix) else p  # noqa: E731
     fof = lambda q: rel(q.split("::")[0])  # noqa: E731
     rows = lambda query, params=(): con.execute(query, params).fetchall()  # noqa: E731
     nodes = {q: (kind, rel(fp), bool(t)) for q, kind, fp, t in rows(NODES)}
@@ -36,8 +39,12 @@ def read_graph(con, root):
     for fid, crit, entry in rows(FLOWS):
         files = {rel(r[0]) for r in rows(FLOW_FILES, (fid,))}
         flows.append((crit or 0.0, fof(entry), files))  # a flow without a criticality weighs nothing
-    stats = {"source": "code-review-graph", "nodes": rows("select count(*) from nodes")[0][0],
-             "edges": rows("select count(*) from edges")[0][0], "flows": len(flows)}
+    stats = {
+        "source": "code-review-graph",
+        "nodes": rows("select count(*) from nodes")[0][0],
+        "edges": rows("select count(*) from edges")[0][0],
+        "flows": len(flows),
+    }
     return Graph(nodes=nodes, links=links, tested=tested, flows=flows, stats=stats, has_flows=True)
 
 
@@ -47,11 +54,17 @@ class CodeReviewGraphGateway(KnowledgeGraph):
 
     def graph_of(self, repo_root, data_dir):
         try:
-            subprocess.run([self.executable, "build", "--repo", repo_root, "--data-dir", data_dir, "-q"],
-                           capture_output=True, text=True, check=True)
+            subprocess.run(
+                [self.executable, "build", "--repo", repo_root, "--data-dir", data_dir, "-q"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
         except (OSError, subprocess.CalledProcessError) as e:
-            raise HeatmapError("code-review-graph build failed (install it, or use --graph builtin): %s"
-                               % (getattr(e, "stderr", None) or e))
+            raise HeatmapError(
+                "code-review-graph build failed (install it, or use --graph builtin): %s"
+                % (getattr(e, "stderr", None) or e)
+            )
         db = data_dir.rstrip("/") + "/graph.db"
         try:
             con = sqlite3.connect("file:%s?mode=ro" % db, uri=True)

@@ -1,4 +1,5 @@
 """Value types shared by the data models: constrained scalars whose rules pydantic enforces wherever they are used."""
+
 from typing import Annotated, Literal
 
 from pydantic import Field
@@ -11,8 +12,8 @@ Band = Literal["Low", "Moderate", "High", "Critical"]
 SEVERITIES = ("minor", "major", "blocker")  # ascending
 Severity = Literal["minor", "major", "blocker"]
 
-Score = Annotated[int, Field(ge=0, le=100)]                        # 0-100, as the bands read it
-Level = Annotated[int, Field(ge=0, le=3, strict=True)]             # 0 most severe ... 3 least
+Score = Annotated[int, Field(ge=0, le=100)]  # 0-100, as the bands read it
+Level = Annotated[int, Field(ge=0, le=3, strict=True)]  # 0 most severe ... 3 least
 Count = Annotated[int, Field(ge=0)]
 Fraction = Annotated[float, Field(ge=0, le=1)]
 Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")]  # a full git object id (SHA-1 or SHA-256)

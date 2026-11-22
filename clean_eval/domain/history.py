@@ -1,5 +1,6 @@
 """Merged-PR history: the period looked back over, each merged PR rated at its base, the later fixes and reverts that point
 back at it ("escaped defects"), what its review cited, and how well the scores predicted the defects (calibration)."""
+
 import datetime as dt
 from typing import Literal, Optional, Union
 
@@ -11,6 +12,7 @@ from clean_eval.domain.values import Band, Count, Fraction, Score, Sha
 
 class Period(BaseModel):
     """The PRs merged from `since` to `until` (inclusive days), and how long after each one a fix still counts."""
+
     since: dt.date
     until: dt.date
     window_days: Count = 30
@@ -34,6 +36,7 @@ class Period(BaseModel):
 
 class DefectLink(BaseModel):
     """A later fix or revert attributed to a PR: `high` when the fix names it, else `heuristic` (shared files)."""
+
     fix_sha: Sha
     fix_pr: Optional[int] = None
     subject: str
@@ -45,6 +48,7 @@ class DefectLink(BaseModel):
 
 class ReviewSignal(BaseModel):
     """What a PR's reviews said: the rules cited, NEW findings, and the clean-eval marker of a trusted reviewer."""
+
     model_config = ConfigDict(extra="forbid")  # so a fetch failure can never pass for a review
 
     url: Optional[str] = None
@@ -59,6 +63,7 @@ class ReviewSignal(BaseModel):
 
 class FetchFailure(BaseModel):
     """A PR whose reviews couldn't be fetched: `not_found` (no such PR) or `error`."""
+
     model_config = ConfigDict(extra="forbid")
 
     error: Literal["not_found", "error"]
@@ -67,6 +72,7 @@ class FetchFailure(BaseModel):
 
 class MergedPR(BaseModel):
     """One merged PR: the first-parent commit that merged it, the base it was merged onto, what it changed and touched."""
+
     sha: Sha
     base: Sha
     author: str
@@ -102,6 +108,7 @@ class AspectMeans(BaseModel):
 
 class Replay(BaseModel):
     """How a policy's scores separate defective from clean PRs."""
+
     auc_max_score: Optional[Fraction] = None  # P(a defective PR outscores a clean one); None when undefined
     by_band: dict[Band, BandStats] = {}
     band_mix: dict[Band, Fraction] = {}
@@ -132,6 +139,7 @@ class RuleUse(BaseModel):
 
 class RuleStats(BaseModel):
     """How the review rules did on the PRs whose reviews were fetched; unreliable when too many fetches failed."""
+
     per_rule: dict[str, RuleUse] = {}
     prs_reviewed: Count = 0
     prs_fetch_failed: list[int] = []
@@ -160,6 +168,7 @@ class HistoryPeriod(BaseModel):
 
 class EvalHistory(BaseModel):
     """eval-history.json: what a replay re-scores and what the eval agent reads."""
+
     period: HistoryPeriod
     totals: Totals
     calibration: Calibration
@@ -170,6 +179,7 @@ class EvalHistory(BaseModel):
 
 class DefectPatch(BaseModel):
     """One defect link whose PR and fix patches were written for the eval agent to verify (defects/index.json)."""
+
     file_stem: str
     pr: Optional[int]
     pr_sha: Sha
@@ -183,6 +193,7 @@ class DefectPatch(BaseModel):
 
 class EvalContext(BaseModel):
     """context.json of an eval."""
+
     since: dt.date
     until: dt.date
     prs: Count

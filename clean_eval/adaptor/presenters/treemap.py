@@ -27,5 +27,5 @@ def squarify(items, x, y, w, h):
                 out.append((p, cx, y, a / rh, rh))
                 cx += a / rh
             y, h = y + rh, h - rh
-        rest = rest[len(row):]
+        rest = rest[len(row) :]
     return out

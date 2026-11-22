@@ -3,6 +3,7 @@ through the FileSystem interface and a DiagramPresenter.
 
 Nothing is written when the ratings are the same as in the README already (same fingerprint, diagram present): a
 scheduled refresh then has nothing to propose. The README keeps the commit and date of the last real change."""
+
 from clean_eval.domain.rating import ReadmeUpdate
 from clean_eval.use_cases.finalize_heatmap import finalize_heatmap
 from clean_eval.use_cases.rules.readme import block_fingerprint, fingerprint, merge_readme

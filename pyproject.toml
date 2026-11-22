@@ -7,3 +7,32 @@ requires-python = ">=3.15"
 dependencies = [
     "pydantic>=2.14,<3",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.6",
+]
+
+[tool.ruff]
+line-length = 120  # the codebase's width; Black's 88 would rewrap nearly every line
+
+[tool.ruff.lint]
+# pycodestyle (E, W), pyflakes (F), isort's import order (I), pytest's idioms (PT: plain asserts, pytest.raises,
+# fixtures, parametrize), and no relative imports (TID252, the rule tests/test_architecture.py enforces, caught as you
+# type)
+select = ["E", "W", "F", "I", "PT", "TID252"]
+ignore = ["E501"]  # line length is the formatter's job, as with Black
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+known-first-party = ["clean_eval", "tests"]
+
+[tool.pytest]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+filterwarnings = ["error"]  # a deprecation fails the suite instead of scrolling past
+xfail_strict = true
+markers = ["e2e: runs the command line or action.sh end to end in subprocesses (the slow tests: -m 'not e2e' skips them)"]

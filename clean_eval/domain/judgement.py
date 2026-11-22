@@ -1,4 +1,5 @@
 """A reviewer's judgement of a heat map: one level (0 most severe ... 3 least) per module and aspect, with a reason."""
+
 from typing import Literal
 
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
@@ -22,6 +23,7 @@ class AspectLevel(BaseModel):
 class Judgement(BaseModel):
     """{"modules": {name: {aspect: {"level": 0-3, "reason": ...}}}}. The levelling agent's output is untrusted: an entry
     that doesn't validate is dropped rather than failing the whole judgement, as the skill documents."""
+
     modules: dict[str, dict[AspectName, AspectLevel]] = {}
 
     @model_validator(mode="before")

@@ -4,12 +4,14 @@ The risk-heat-map skill's `references/rate.md` documents these numbers; change b
 tunable numbers in `.clean-eval/risk-model.json`; `Policy.from_overrides` checks every override with the validators
 below (types and ranges on the fields, the cross-field rules on the model).
 """
+
 import json
 import re
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from clean_eval.domain.errors import InvalidPolicy
+
 # BAND_NAMES and BANDS are re-exported
 from clean_eval.domain.values import BAND_NAMES, BANDS, AtLeastOne, Band, Divisor, Fraction, Number, Whole  # noqa: F401
 
@@ -55,9 +57,27 @@ SCORE_KEYS = tuple(key for _, key, _, _, _ in ASPECTS)
 WEIGHT_GROUPS = ("business_weights", "effects_mix", "entropy_weights", "unverified_mix")
 REGEX_KNOBS = ("test_file", "tooling", "keywords", "migration_path")
 # Keys of the retired v1 model, recognised only to explain why they no longer apply.
-V1_KEYS = frozenset({"window_days", "module_roots", "module_depth", "modules", "include", "new_module_tier", "test_roots",
-                     "test_file_pattern", "test_ratio_target", "fix_pattern", "revert_pattern", "fix_ratio_prior",
-                     "likelihood_weights", "impact_weights", "criticality_default", "criticality", "level_thresholds"})
+V1_KEYS = frozenset(
+    {
+        "window_days",
+        "module_roots",
+        "module_depth",
+        "modules",
+        "include",
+        "new_module_tier",
+        "test_roots",
+        "test_file_pattern",
+        "test_ratio_target",
+        "fix_pattern",
+        "revert_pattern",
+        "fix_ratio_prior",
+        "likelihood_weights",
+        "impact_weights",
+        "criticality_default",
+        "criticality",
+        "level_thresholds",
+    }
+)
 
 
 class Policy(BaseModel):
@@ -72,19 +92,39 @@ class Policy(BaseModel):
     exclude: tuple[str, ...] = ()  # globs of source paths that are not rated (vendored or generated code)
     # Paths a change may touch without carrying risk of its own: documentation and images. Not every Markdown file:
     # agent instructions (SKILL.md, CLAUDE.md, AGENTS.md) and review rules steer behaviour, so they stay risky.
-    ignore_paths: tuple[str, ...] = ("README*", "*/README*", "CHANGELOG*", "*/CHANGELOG*", "LICENSE*", "*/LICENSE*", "docs/*",
-                                     "*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg")
+    ignore_paths: tuple[str, ...] = (
+        "README*",
+        "*/README*",
+        "CHANGELOG*",
+        "*/CHANGELOG*",
+        "LICENSE*",
+        "*/LICENSE*",
+        "docs/*",
+        "*.png",
+        "*.jpg",
+        "*.jpeg",
+        "*.gif",
+        "*.svg",
+    )
     # Path conventions (regular expressions over repo-relative paths).
     test_dirs: tuple[str, ...] = ("tests", "test", "spec", "specs", "e2e")
     test_file: str = r"(^test_.*\.py$|.*_test\.py$|^conftest\.py$)"
     tooling: str = r"(^|/)(scripts?|docs?|examples?|tools?|benchmarks?|notebooks?|fixtures?)(/|$)"
-    keywords: str = (r"orchestr|pipeline|ingest|retriev|chat|agent|auth|billing|payment|gateway|handler|core|engine|router"
-                     r"|scheduler|worker|consumer|api|service|search")
+    keywords: str = (
+        r"orchestr|pipeline|ingest|retriev|chat|agent|auth|billing|payment|gateway|handler|core|engine|router"
+        r"|scheduler|worker|consumer|api|service|search"
+    )
     migration_path: str = r"(migrations|alembic/versions)/"
     # Modules not rated for Unverified (N/A): build and infrastructure manifests, and test code itself.
     not_applicable: tuple[tuple[str, str], ...] = (
-        ("Build manifest (CI workflow or pre-commit hook)", r"(^|/)(\.github|\.circleci|\.gitlab|\.pre-commit[^/]*)(/|$)"),
-        ("Infrastructure manifest (terraform, kustomize, helm, k8s)", r"(^|/)(terraform|kustomize|k8s|kubernetes|helm|charts|ansible)(/|$)"),
+        (
+            "Build manifest (CI workflow or pre-commit hook)",
+            r"(^|/)(\.github|\.circleci|\.gitlab|\.pre-commit[^/]*)(/|$)",
+        ),
+        (
+            "Infrastructure manifest (terraform, kustomize, helm, k8s)",
+            r"(^|/)(terraform|kustomize|k8s|kubernetes|helm|charts|ansible)(/|$)",
+        ),
         ("Test code", r"(^|/)(tests?|testing|fixtures?|e2e|specs?)(/|$)"),
     )
     # Overall score: half the geometric mean of impact and weakness, half (this share) the worst single aspect.
@@ -92,23 +132,42 @@ class Policy(BaseModel):
     # Band of a changed path no rated module covers (a new module, or non-Python code): unknown, not low, risk.
     unrated_band: Band = "Moderate"
     # Business Impact.
-    business_weights: dict[str, Number] = Field(default_factory=lambda: dict(dependents=0.30, flow_weight=0.30, entry=0.15,
-                                                                              keyword=0.10, size=0.15))
-    business_saturation: dict[str, Divisor] = Field(default_factory=lambda: dict(dependents=6, flow_weight=0.5, size=0.25))
+    business_weights: dict[str, Number] = Field(
+        default_factory=lambda: dict(dependents=0.30, flow_weight=0.30, entry=0.15, keyword=0.10, size=0.15)
+    )
+    business_saturation: dict[str, Divisor] = Field(
+        default_factory=lambda: dict(dependents=6, flow_weight=0.5, size=0.25)
+    )
     tooling_factor: Number = 0.5
     # Side Effects & Reversibility.
-    effect_points: dict[str, Number] = Field(default_factory=lambda: dict(db_write=3, aws_write=2, es_write=2, http_write=1.5,
-                                                                           fs_destructive=3, fs_write=1, subprocess=1))
+    effect_points: dict[str, Number] = Field(
+        default_factory=lambda: dict(
+            db_write=3, aws_write=2, es_write=2, http_write=1.5, fs_destructive=3, fs_write=1, subprocess=1
+        )
+    )
     migration_points: Number = 6
     effects_scale: Divisor = 40.0
     effects_mix: dict[str, Number] = Field(default_factory=lambda: dict(points=0.7, dependents=0.3))
     effects_dependents_saturation: Divisor = 6
     # Entropy.
-    entropy_weights: dict[str, Number] = Field(default_factory=lambda: dict(
-        long_funcs=0.20, longest_func=0.15, complex_funcs=0.12, avg_complexity=0.08, exceptions=0.20, untyped=0.12,
-        coupling=0.07, big_files=0.04, todo=0.02))
-    entropy_saturation: dict[str, Divisor] = Field(default_factory=lambda: dict(
-        long_funcs=0.15, complex_funcs=0.10, coupling=10, big_files=0.2, todo_per_k=8, exceptions_per_k=6))
+    entropy_weights: dict[str, Number] = Field(
+        default_factory=lambda: dict(
+            long_funcs=0.20,
+            longest_func=0.15,
+            complex_funcs=0.12,
+            avg_complexity=0.08,
+            exceptions=0.20,
+            untyped=0.12,
+            coupling=0.07,
+            big_files=0.04,
+            todo=0.02,
+        )
+    )
+    entropy_saturation: dict[str, Divisor] = Field(
+        default_factory=lambda: dict(
+            long_funcs=0.15, complex_funcs=0.10, coupling=10, big_files=0.2, todo_per_k=8, exceptions_per_k=6
+        )
+    )
     long_func_lines: Whole = 60
     complex_func: Whole = 15
     big_file_lines: Whole = 800
@@ -136,8 +195,10 @@ class Policy(BaseModel):
         data = {k: v for k, v in data.items() if not (isinstance(k, str) and (k.startswith("_") or k == "notes"))}
         legacy = sorted(set(data) & V1_KEYS)
         if legacy:
-            raise ValueError("written for the v1 model (likelihood x impact from git history): %s are no longer used. The v2 "
-                             "model rates four aspects; see the risk-heat-map skill's references/rate.md" % ", ".join(legacy))
+            raise ValueError(
+                "written for the v1 model (likelihood x impact from git history): %s are no longer used. The v2 "
+                "model rates four aspects; see the risk-heat-map skill's references/rate.md" % ", ".join(legacy)
+            )
         for key, value in data.items():
             field = cls.model_fields.get(key)
             default = field.get_default(call_default_factory=True) if field else None
@@ -192,7 +253,21 @@ class Policy(BaseModel):
 
 
 # Knobs a calibration may change on its own; the rest decide what is measured (module shape, path conventions).
-STRUCTURAL = frozenset({"depth", "max_modules", "split_min_loc", "split_max_files", "exclude", "ignore_paths", "test_dirs",
-                        "test_file", "tooling", "keywords", "migration_path", "not_applicable"})
+STRUCTURAL = frozenset(
+    {
+        "depth",
+        "max_modules",
+        "split_min_loc",
+        "split_max_files",
+        "exclude",
+        "ignore_paths",
+        "test_dirs",
+        "test_file",
+        "tooling",
+        "keywords",
+        "migration_path",
+        "not_applicable",
+    }
+)
 TUNABLE = frozenset(Policy.model_fields) - STRUCTURAL - {"version"}
 DEFAULT = Policy()

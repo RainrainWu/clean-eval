@@ -1,6 +1,7 @@
 """Fakes of the use cases' interfaces (clean_eval/use_cases/interfaces.py), so the use-case tests run in memory: a
 one-line fake of any interface, a file system and a git repository. MemoryFileSystem and MemoryGit behave as the
 interfaces document; tests/external/test_contracts.py runs them and the real gateways through the same checks."""
+
 import datetime as dt
 import difflib
 import fnmatch
@@ -15,9 +16,11 @@ def fake(interface, **members):
     """An implementation of one of the interfaces in a line: `members` are its methods (as plain functions, without
     `self`) and attributes. Calling any other abstract method fails the test, so a fake also shows which methods a use
     case needs."""
+
     def unexpected(name):
         def method(self, *args, **kwargs):
             raise AssertionError("unexpected call: %s.%s" % (interface.__name__, name))
+
         return method
 
     body = {name: unexpected(name) for name in interface.__abstractmethods__}
@@ -27,6 +30,7 @@ def fake(interface, **members):
 
 class MemoryFileSystem(FileSystem):
     """Files, folders and symlinks in memory, at POSIX paths (relative ones resolve against `cwd`)."""
+
     sep = "/"
 
     def __init__(self, files=None, cwd="/work"):
@@ -104,18 +108,29 @@ class MemoryFileSystem(FileSystem):
         top = self._norm(top)
         if top not in self.dirs:
             return []
-        listed = self._under(self.files, top) + [p for p in self._under(self.links, top) if self.links[p] not in self.dirs]
+        listed = self._under(self.files, top) + [
+            p for p in self._under(self.links, top) if self.links[p] not in self.dirs
+        ]
         return sorted(posixpath.relpath(p, top) for p in listed)
 
     def glob(self, folder, pattern):
         folder = self._norm(folder)
-        return sorted(p for p in self._under(set(self.files) | set(self.links) | self.dirs, folder)
-                      if posixpath.relpath(p, folder).count("/") == pattern.count("/")
-                      and fnmatch.fnmatchcase(posixpath.relpath(p, folder), pattern))
+        return sorted(
+            p
+            for p in self._under(set(self.files) | set(self.links) | self.dirs, folder)
+            if posixpath.relpath(p, folder).count("/") == pattern.count("/")
+            and fnmatch.fnmatchcase(posixpath.relpath(p, folder), pattern)
+        )
 
     def find_executable(self, name, search_path=None):
-        return next((posixpath.join(d, name) for d in (search_path or "").split(":")
-                     if d and posixpath.join(d, name) in self.files), None)
+        return next(
+            (
+                posixpath.join(d, name)
+                for d in (search_path or "").split(":")
+                if d and posixpath.join(d, name) in self.files
+            ),
+            None,
+        )
 
     # reading and writing
     def read_text(self, path):
@@ -154,9 +169,9 @@ class MemoryFileSystem(FileSystem):
             raise FileExistsError(dst)
         self.make_dirs(dst)
         for d in self._under(self.dirs, src):
-            self.make_dirs(dst + d[len(src):])
+            self.make_dirs(dst + d[len(src) :])
         for store in (self.files, self.links):  # links are copied as links
-            store.update({dst + p[len(src):]: v for p, v in list(store.items()) if p.startswith(src + "/")})
+            store.update({dst + p[len(src) :]: v for p, v in list(store.items()) if p.startswith(src + "/")})
 
     def remove(self, path):
         path = self._norm(path)
@@ -171,7 +186,9 @@ class MemoryFileSystem(FileSystem):
         path = self._norm(path)
         if path not in self.dirs:
             raise FileNotFoundError(path)
-        inside = set(self._under(self.files, path)) | set(self._under(self.links, path)) | set(self._under(self.dirs, path))
+        inside = (
+            set(self._under(self.files, path)) | set(self._under(self.links, path)) | set(self._under(self.dirs, path))
+        )
         self.files = {p: t for p, t in self.files.items() if p not in inside}
         self.links = {p: t for p, t in self.links.items() if p not in inside}
         self.dirs -= inside | {path}
@@ -191,9 +208,14 @@ def _patch(path, old, new):
     """The `git diff` section of one file."""
     header = "diff --git a/%s b/%s\n" % (path, path)
     header += "new file mode 100644\n" if old is None else "deleted file mode 100644\n" if new is None else ""
-    return header + "".join(difflib.unified_diff((old or "").splitlines(True), (new or "").splitlines(True),
-                                                  "/dev/null" if old is None else "a/" + path,
-                                                  "/dev/null" if new is None else "b/" + path))
+    return header + "".join(
+        difflib.unified_diff(
+            (old or "").splitlines(True),
+            (new or "").splitlines(True),
+            "/dev/null" if old is None else "a/" + path,
+            "/dev/null" if new is None else "b/" + path,
+        )
+    )
 
 
 class MemoryGit(Git):
@@ -211,8 +233,16 @@ class MemoryGit(Git):
             tree.pop(path, None)
         ts = int((when or dt.datetime.now(dt.timezone.utc)).timestamp())
         sha = hashlib.sha1(("%d\0%s\0%d" % (len(self.commits), subject, ts)).encode()).hexdigest()
-        self.commits.append({"sha": sha, "parent": self.commits[-1]["sha"] if self.commits else None, "author": author,
-                             "ts": ts, "subject": subject, "tree": tree})
+        self.commits.append(
+            {
+                "sha": sha,
+                "parent": self.commits[-1]["sha"] if self.commits else None,
+                "author": author,
+                "ts": ts,
+                "subject": subject,
+                "tree": tree,
+            }
+        )
         return sha
 
     def stage(self, path):
@@ -277,20 +307,28 @@ class MemoryGit(Git):
 
     def file_log(self, rev, path, limit=10):
         history = self.commits[: self.commits.index(self._commit(rev)) + 1]
-        touched = [c for i, c in enumerate(history) if c["tree"].get(path) != (history[i - 1]["tree"].get(path) if i else None)]
-        return "\n".join("%s %s %s: %s" % (c["sha"][:7], _day(c["ts"]), c["author"], c["subject"])
-                         for c in reversed(touched[-limit:]))
+        touched = [
+            c for i, c in enumerate(history) if c["tree"].get(path) != (history[i - 1]["tree"].get(path) if i else None)
+        ]
+        return "\n".join(
+            "%s %s %s: %s" % (c["sha"][:7], _day(c["ts"]), c["author"], c["subject"])
+            for c in reversed(touched[-limit:])
+        )
 
     def commit_patch(self, sha, paths):
         c = self._commit(sha)
         old = self._commit(c["parent"])["tree"] if c["parent"] else {}
         return "%s\n%s %s\n%s\n\n" % (c["sha"], c["author"], _day(c["ts"]), c["subject"]) + "".join(
-            _patch(p, old.get(p), c["tree"].get(p)) for p in paths if old.get(p) != c["tree"].get(p))
+            _patch(p, old.get(p), c["tree"].get(p)) for p in paths if old.get(p) != c["tree"].get(p)
+        )
 
     def default_branch(self):
         return self._branch
 
     def first_parent_log(self, branch, since, until):
         self._commit(branch)
-        return [(c["sha"], [c["parent"]] if c["parent"] else [], c["author"], c["ts"], c["subject"])
-                for c in reversed(self.commits) if since <= _day(c["ts"]) <= until]
+        return [
+            (c["sha"], [c["parent"]] if c["parent"] else [], c["author"], c["ts"], c["subject"])
+            for c in reversed(self.commits)
+            if since <= _day(c["ts"]) <= until
+        ]

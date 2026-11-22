@@ -1,6 +1,7 @@
 """Merged-PR history: which PR a commit merged, which later fixes and reverts point back at it ("escaped defects"), and
 what its clean-eval review cited. Each first-parent commit of the main branch is one merged PR (merge or squash). The
 fix-to-PR links are heuristics (shared files plus fix/revert wording) that the eval skill verifies from the diffs."""
+
 import re
 from collections import defaultdict
 
@@ -47,10 +48,17 @@ def attribute_defects(units, prs, period, policy):
             continue
         strong = [u for u in candidates if u.sha[:7] in fix.subject or (is_revert and u.subject in fix.subject)]
         target = (strong or candidates)[-1]
-        target.defects.append(DefectLink(
-            fix_sha=fix.sha, fix_pr=fix.pr, subject=fix.subject, kind="revert" if is_revert else "fix",
-            confidence="high" if strong else "heuristic", days_after=round((fix.ts - target.ts) / DAY, 1),
-            overlap_files=sorted(fset & set(target.files))[:20]))
+        target.defects.append(
+            DefectLink(
+                fix_sha=fix.sha,
+                fix_pr=fix.pr,
+                subject=fix.subject,
+                kind="revert" if is_revert else "fix",
+                confidence="high" if strong else "heuristic",
+                days_after=round((fix.ts - target.ts) / DAY, 1),
+                overlap_files=sorted(fset & set(target.files))[:20],
+            )
+        )
     return prs
 
 
@@ -81,11 +89,16 @@ def review_signal(view, inline, reviewer_logins=None):
     # When a clean-eval review exists, measure rules by what *it* cited, not by third-party comments.
     cited_text = "\n".join(b for login, b in posts if not marker_authors or login in marker_authors)
     tags = RULE_ID.findall(cited_text)
-    return ReviewSignal(url=view.get("url"), labels=[label.get("name") for label in view.get("labels", [])],
-                        size=(view.get("additions") or 0) + (view.get("deletions") or 0),
-                        review_comment_count=len([b for _, b in posts if b.strip()]),
-                        rules_cited=sorted(set(tags) - {"NEW"}), new_findings=tags.count("NEW"),
-                        clean_eval_marker=marker or None, untrusted_markers_ignored=ignored_markers)
+    return ReviewSignal(
+        url=view.get("url"),
+        labels=[label.get("name") for label in view.get("labels", [])],
+        size=(view.get("additions") or 0) + (view.get("deletions") or 0),
+        review_comment_count=len([b for _, b in posts if b.strip()]),
+        rules_cited=sorted(set(tags) - {"NEW"}),
+        new_findings=tags.count("NEW"),
+        clean_eval_marker=marker or None,
+        untrusted_markers_ignored=ignored_markers,
+    )
 
 
 def rule_stats(prs):
@@ -100,11 +113,17 @@ def rule_stats(prs):
         for r in u.review.rules_cited:
             per_rule[r].prs_cited += 1
             per_rule[r].cited_in_defective_prs += bool(u.defects)
-    return RuleStats(per_rule=dict(per_rule), prs_reviewed=len(fetched), prs_fetch_failed=failed, prs_not_found=not_found,
-                     gh_error_rate=error_rate, reliable=error_rate <= GH_ERROR_RATE_LIMIT,
-                     prs_with_clean_eval_review=sum(1 for u in fetched if u.review.clean_eval_marker),
-                     new_findings=sum(u.review.new_findings for u in fetched),
-                     defective_prs_with_no_rule_cited=[u.pr for u in fetched if u.defects and not u.review.rules_cited])
+    return RuleStats(
+        per_rule=dict(per_rule),
+        prs_reviewed=len(fetched),
+        prs_fetch_failed=failed,
+        prs_not_found=not_found,
+        gh_error_rate=error_rate,
+        reliable=error_rate <= GH_ERROR_RATE_LIMIT,
+        prs_with_clean_eval_review=sum(1 for u in fetched if u.review.clean_eval_marker),
+        new_findings=sum(u.review.new_findings for u in fetched),
+        defective_prs_with_no_rule_cited=[u.pr for u in fetched if u.defects and not u.review.rules_cited],
+    )
 
 
 def rules_warning(rules):
@@ -113,8 +132,11 @@ def rules_warning(rules):
     if not failed:
         return None
     return "gh review fetch failed for %d/%d PRs (%d%%)%s" % (
-        failed, rules.prs_reviewed + failed, round(rules.gh_error_rate * 100),
-        "" if rules.reliable else " - rule metrics unreliable")
+        failed,
+        rules.prs_reviewed + failed,
+        round(rules.gh_error_rate * 100),
+        "" if rules.reliable else " - rule metrics unreliable",
+    )
 
 
 def module_stats(prs):
@@ -128,8 +150,13 @@ def module_stats(prs):
             if m.score is not None:
                 bm["scores"].append(m.score)
             bm["bands"][m.band] += 1
-    return {name: ModuleStats(prs=bm["prs"], defective_prs=bm["defective_prs"],
-                              escape_rate=round(bm["defective_prs"] / bm["prs"], 3),
-                              mean_score=round(sum(bm["scores"]) / len(bm["scores"]), 1) if bm["scores"] else None,
-                              bands_seen=dict(bm["bands"]))
-            for name, bm in sorted(by_module.items(), key=lambda kv: -kv[1]["defective_prs"])}
+    return {
+        name: ModuleStats(
+            prs=bm["prs"],
+            defective_prs=bm["defective_prs"],
+            escape_rate=round(bm["defective_prs"] / bm["prs"], 3),
+            mean_score=round(sum(bm["scores"]) / len(bm["scores"]), 1) if bm["scores"] else None,
+            bands_seen=dict(bm["bands"]),
+        )
+        for name, bm in sorted(by_module.items(), key=lambda kv: -kv[1]["defective_prs"])
+    }

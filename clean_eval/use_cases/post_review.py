@@ -1,6 +1,7 @@
 """Use case: post the validated review on its PR as one review, with the findings on diff lines attached inline, then
 dismiss this reviewer's earlier "changes requested" reviews, so a fixed PR isn't left blocked. Through the CodeHost,
 FileSystem and Environment interfaces (the environment names the secrets to redact from host errors)."""
+
 from clean_eval.domain.errors import RemoteError
 from clean_eval.domain.review import DiffIndex, PostOutcome, Review, ReviewPost
 from clean_eval.use_cases.rules.diff import commentable_lines
@@ -33,7 +34,9 @@ def post_review(host, fs, env, out, pr, head, ctx=None):
         try:
             posted = host.post_review(pr, ReviewPost(commit_id=head, body=body, event=ev, comments=cm))
         except RemoteError as e:
-            outcome.log.append(("warning", "review post failed (event=%s, comments=%d): %s" % (ev, len(cm), error(e, 300))))
+            outcome.log.append(
+                ("warning", "review post failed (event=%s, comments=%d): %s" % (ev, len(cm), error(e, 300)))
+            )
             continue
         outcome.posted = True
         outcome.log.append(("info", "posted review on #%s: event=%s, inline comments=%d" % (pr, ev, len(cm))))

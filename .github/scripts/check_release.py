@@ -11,6 +11,7 @@ A release tag is a semantic version: vMAJOR.MINOR.PATCH, or a pre-release vMAJOR
 
 On success it prints `version=`, `sha=`, `major=` and `prerelease=` lines (for $GITHUB_OUTPUT); otherwise an ::error::
 annotation on stderr, and it exits 1. Run it from the repository root: it reads only git and pyproject.toml."""
+
 import argparse
 import re
 import subprocess
@@ -58,8 +59,10 @@ def check(tag, branch="origin/master"):
     """The step outputs for releasing `tag`; ReleaseError says why it can't be released."""
     version = parse(tag)
     if version is None:
-        raise ReleaseError("%s is not a release tag: use vMAJOR.MINOR.PATCH, or vMAJOR.MINOR.PATCH-alpha.N, -beta.N or "
-                           "-rc.N for a pre-release" % tag)
+        raise ReleaseError(
+            "%s is not a release tag: use vMAJOR.MINOR.PATCH, or vMAJOR.MINOR.PATCH-alpha.N, -beta.N or "
+            "-rc.N for a pre-release" % tag
+        )
     sha = git("rev-parse", "--verify", tag + "^{commit}").strip()
     on_branch = subprocess.run(["git", "merge-base", "--is-ancestor", sha, branch], capture_output=True, text=True)
     if on_branch.returncode == 1:
@@ -71,14 +74,26 @@ def check(tag, branch="origin/master"):
     except (tomllib.TOMLDecodeError, KeyError, TypeError) as e:
         raise ReleaseError("cannot read the project version in pyproject.toml at %s: %s" % (tag, e))
     if declared != python_version(version):
-        raise ReleaseError("%s needs version %s in pyproject.toml, which says %s at that commit: run `uv version %s` "
-                           "in a PR and tag its merge commit" % (tag, python_version(version), declared, tag[1:]))
-    newer = sorted((t for t in git("tag", "--list", "v*").split()
-                    if t != tag and parse(t) and precedence(parse(t)) >= precedence(version)),
-                   key=lambda t: precedence(parse(t)))
+        raise ReleaseError(
+            "%s needs version %s in pyproject.toml, which says %s at that commit: run `uv version %s` "
+            "in a PR and tag its merge commit" % (tag, python_version(version), declared, tag[1:])
+        )
+    newer = sorted(
+        (
+            t
+            for t in git("tag", "--list", "v*").split()
+            if t != tag and parse(t) and precedence(parse(t)) >= precedence(version)
+        ),
+        key=lambda t: precedence(parse(t)),
+    )
     if newer:
         raise ReleaseError("%s is not newer than the release tag(s) %s" % (tag, ", ".join(newer)))
-    return {"version": tag[1:], "sha": sha, "major": "v%d" % version[0], "prerelease": str(version[3] is not None).lower()}
+    return {
+        "version": tag[1:],
+        "sha": sha,
+        "major": "v%d" % version[0],
+        "prerelease": str(version[3] is not None).lower(),
+    }
 
 
 def main(argv=None):
@@ -91,8 +106,11 @@ def main(argv=None):
     except ReleaseError as e:
         print("::error::%s" % e, file=sys.stderr)
         return 1
-    print("%s (%s) is on %s, matches pyproject.toml and is newer than every release tag"
-          % (args.tag, outputs["sha"][:8], args.branch), file=sys.stderr)
+    print(
+        "%s (%s) is on %s, matches pyproject.toml and is newer than every release tag"
+        % (args.tag, outputs["sha"][:8], args.branch),
+        file=sys.stderr,
+    )
     print("".join("%s=%s\n" % kv for kv in outputs.items()), end="")
     return 0
 

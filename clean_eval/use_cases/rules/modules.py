@@ -1,5 +1,6 @@
 """Group source files into sub-modules (top-level folders, split level by level down to a depth), and find the module a
 path belongs to."""
+
 ROOT_MODULE = "(root)"
 FILES_SUFFIX = "/(files)"
 

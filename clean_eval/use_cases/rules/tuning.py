@@ -2,6 +2,7 @@
 
 The domain models check the shape of an edit (a valid policy changing only tunable knobs; rules that parse into unique
 rows). The evidence is judged here: enough PRs in the period, and a replay AUC no lower than the current model's."""
+
 import json
 
 from pydantic import ValidationError
@@ -23,14 +24,18 @@ def judge_model_edit(new_text, orig_text, history):
     """The accepted change of the risk-model overrides (None text: no file, i.e. the defaults), judged on the collected
     EvalHistory; InvalidOutput (or a parse error) when it has to be restored."""
     try:
-        edit = PolicyEdit(new=json.loads(new_text) if new_text is not None else {},
-                          orig=json.loads(orig_text) if orig_text is not None else {})
+        edit = PolicyEdit(
+            new=json.loads(new_text) if new_text is not None else {},
+            orig=json.loads(orig_text) if orig_text is not None else {},
+        )
     except ValidationError as e:
         raise InvalidOutput.from_validation(e, MODEL_FILE)
     prs, defective = history.totals.prs, history.totals.defective_prs
     if prs < MIN_PRS or defective < MIN_DEFECTIVE:
-        raise InvalidOutput("sample too small for a model change (%d PRs, %d defective; need at least %d and %d)"
-                            % (prs, defective, MIN_PRS, MIN_DEFECTIVE))
+        raise InvalidOutput(
+            "sample too small for a model change (%d PRs, %d defective; need at least %d and %d)"
+            % (prs, defective, MIN_PRS, MIN_DEFECTIVE)
+        )
     # compare replay with replay: stored signals are rounded, so a replay of the unchanged model can differ slightly
     # from the collected AUC
     before = replay(history, Policy.from_overrides(edit.orig)).auc_max_score
@@ -59,15 +64,26 @@ def eval_recommendations(raw, secrets=()):
         recs = AgentEvalResult.model_validate(raw).recommendations
     except ValidationError as e:
         raise InvalidOutput.from_validation(e, "result.json")
-    return [r.model_copy(update={k: redact(getattr(r, k), secrets)[0] for k in ("target", "change", "evidence")})
-            for r in recs]
+    return [
+        r.model_copy(update={k: redact(getattr(r, k), secrets)[0] for k in ("target", "change", "evidence")})
+        for r in recs
+    ]
 
 
 def eval_result(history, recommendations, model_change, rules_change, other_reverted):
     """(EvalResult, step outputs). Counts and AUC come from the collected history, never from agent text."""
     baseline = history.calibration.auc_max_score
-    res = EvalResult(since=history.period.since, until=history.period.until, prs=history.totals.prs,
-                     defective_prs=history.totals.defective_prs, auc=baseline, recommendations=recommendations,
-                     model_change=model_change, rules_change=rules_change, other_files_reverted=other_reverted)
-    return res, StepOutputs({"auc": "" if baseline is None else "%.3f" % baseline,
-                             "applied": "true" if res.applied else "false"})
+    res = EvalResult(
+        since=history.period.since,
+        until=history.period.until,
+        prs=history.totals.prs,
+        defective_prs=history.totals.defective_prs,
+        auc=baseline,
+        recommendations=recommendations,
+        model_change=model_change,
+        rules_change=rules_change,
+        other_files_reverted=other_reverted,
+    )
+    return res, StepOutputs(
+        {"auc": "" if baseline is None else "%.3f" % baseline, "applied": "true" if res.applied else "false"}
+    )
