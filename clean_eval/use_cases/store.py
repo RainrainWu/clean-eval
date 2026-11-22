@@ -1,8 +1,7 @@
 """The files of a run, through the FileSystem interface: JSON, the policy overrides, the rated heat map, a reviewer's
-judgement, and GitHub step outputs."""
+judgement, and the agent's output CI trusts."""
 
 import json
-from collections.abc import Sequence
 from typing import (
     Optional,
     Union,
@@ -29,7 +28,7 @@ from clean_eval.domain.rating import (
 )
 from clean_eval.domain.review import (
     Review,
-    StepOutputs,
+    Secrets,
 )
 from clean_eval.use_cases.interfaces import FileSystem
 from clean_eval.use_cases.rules.review import sanitize_report
@@ -97,15 +96,6 @@ def load_judgement(
     return Judgement.model_validate(read_json(fs, path))
 
 
-def write_step_outputs(
-    fs: FileSystem,
-    path: str,
-    outputs: StepOutputs,
-) -> None:
-    """Append the StepOutputs (validated: one line each) as `name=value` lines to a GitHub Actions step-outputs file."""
-    fs.append_text(path, "".join("%s=%s\n" % kv for kv in outputs.root.items()))
-
-
 # What judging a malformed agent output (or edit) can raise: it then counts as invalid and is restored, never a crash.
 JUDGING_ERRORS = (HeatmapError, ArithmeticError, ValueError, KeyError, TypeError, AttributeError)
 
@@ -142,7 +132,7 @@ def write_run_output(
     out: str,
     report_path: str,
     result: Optional[Union[Review, EvalResult]],
-    secrets: Sequence[str],
+    secrets: Secrets,
 ) -> None:
     """report.md (`report_path` redacted, or a note that there is none) and, when there is a result, result.json into
     `out`. The result counts the report's redactions too."""

@@ -27,8 +27,8 @@ REVIEW_RULES = (
 
 
 class Codebase:
-    """The checkout at `root`, read as code: the files of its package `top` and of its tests, what a Python module holds,
-    the package's classes (imported: only this checkout's package is importable), and its default review rules."""
+    """The checkout at `root`, read as code: the files of its package `top` and of its tests, what a module holds, the
+    package's classes (imported: only this checkout's package is importable) and its default review rules."""
 
     def __init__(
         self,
@@ -424,7 +424,7 @@ class Codebase:
         self,
         module,
     ):
-        """`line function(parameter)` of every parameter of a function or lambda of `module` named with one character."""
+        """`line function(parameter)` of every one-character parameter of a function or lambda of `module`."""
         return [
             "%d %s(%s)" % (function.lineno, getattr(function, "name", "lambda"), parameter.arg)
             for function in self.nodes(module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)

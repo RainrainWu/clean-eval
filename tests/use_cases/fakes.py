@@ -1,15 +1,18 @@
-"""In-memory implementations of two of the use cases' interfaces (clean_eval/use_cases/interfaces.py): a file system
-and a git repository. They behave as the interfaces document: the contract tests in tests/external/test_filesystem.py
-and test_git.py run them and the real gateways through the same checks. The use cases' tests get them behind MagicMocks
-(the `fs` and `git` fixtures of tests/use_cases/conftest.py), which record every call."""
+"""In-memory implementations of two of the use cases' interfaces (clean_eval/use_cases/interfaces.py), a file system
+and a git repository, and how the fake code host numbers the PRs of the tests' histories. The two behave as the
+interfaces document: the contract tests in tests/external/test_filesystem.py and test_git.py run them and the real
+gateways through the same checks. The use cases' tests get them behind MagicMocks (the `fs`, `git` and `host` fixtures
+of tests/use_cases/conftest.py), which record every call."""
 
 import datetime as dt
 import difflib
 import fnmatch
 import hashlib
 import posixpath
+import re
 
 from clean_eval.domain.errors import HeatmapError
+from clean_eval.domain.review import FileDiff
 from clean_eval.use_cases.interfaces import (
     FileSystem,
     Git,
@@ -343,6 +346,27 @@ class MemoryGit(Git):
             )
         )
 
+    @staticmethod
+    def file_diff(
+        path,
+        patch,
+    ):
+        """The FileDiff of `path`, read from its patch as git's is: its added and removed lines, and the lines of the
+        new file each hunk shows (from the hunk headers)."""
+        lines = patch.splitlines()
+        hunks = []
+        for header in re.findall(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", patch, re.M):
+            first, shown = int(header[0]), int(header[1] or "1")
+            if shown:
+                hunks.append((first, first + shown - 1))
+        return FileDiff(
+            path=path,
+            patch=patch,
+            added=sum(1 for line in lines if line.startswith("+") and not line.startswith("+++")),
+            removed=sum(1 for line in lines if line.startswith("-") and not line.startswith("---")),
+            hunks=hunks,
+        )
+
     def commit(
         self,
         subject,
@@ -484,15 +508,15 @@ class MemoryGit(Git):
                 "commit %s is not available locally (checkout with fetch-depth: 0)" % sha,
             )
 
-    def diff(
+    def file_diffs(
         self,
         base,
         head,
-        path=None,
+        paths,
     ):
         old, new = self.find_commit(base)["tree"], self.find_commit(head)["tree"]
-        paths = self.diff_files(base, head) if path is None else [path]
-        return "".join(self.file_patch(p, old.get(p), new.get(p)) for p in paths if old.get(p) != new.get(p))
+        patches = [self.file_patch(p, old.get(p), new.get(p)) if old.get(p) != new.get(p) else "" for p in paths]
+        return [self.file_diff(path, patch) for path, patch in zip(paths, patches)]
 
     def file_log(
         self,
@@ -537,3 +561,15 @@ class MemoryGit(Git):
             for c in reversed(self.commits)
             if since <= self.day_of(c["ts"]) <= until
         ]
+
+
+class SquashSubjects:
+    """How the fake code host reads which PR a commit merged: the number in the last "(#N)" of its subject, as the
+    tests' histories write their squash merges; none without one."""
+
+    def merged_pr(
+        self,
+        subject,
+    ):
+        found = re.findall(r"\(#(\d+)\)", subject)
+        return int(found[-1]) if found else None

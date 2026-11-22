@@ -16,6 +16,7 @@ A fixture reads its customisation from `request.param` and has a default without
 from it follow: `repo`, `git` and `shas` from `history`; `fs` from `files` and `links`; the CI commands' arguments from
 the data of their run (`tuning`, `eval_history`, `agent_files`, `context_files`, `agent_review`, `risk_report`, ...)."""
 
+import base64
 import datetime as dt
 import io
 import json
@@ -36,8 +37,11 @@ from click.testing import CliRunner
 from clean_eval.domain.review import (
     HostReview,
     InlineComment,
+    PostAttempt,
     ReviewPost,
+    ReviewPosting,
     RunFolders,
+    Secrets,
 )
 from clean_eval.external import cli
 from clean_eval.external.claude_code import ClaudeCodeGateway
@@ -93,6 +97,21 @@ def process_env(
         else:
             monkeypatch.setenv(name, value)
     return os.environ
+
+
+@pytest.fixture
+def github_app_token():
+    """A GitHub App's token, ghs_, as a runner's GH_TOKEN holds one (not a real one)."""
+    return "ghs_" + "z" * 36
+
+
+@pytest.fixture
+def github_app_token_basic(
+    github_app_token,
+):
+    """The base64 of the authorization header's value that actions/checkout persists in .git/config for
+    `github_app_token`."""
+    return base64.b64encode(("x-access-token:" + github_app_token).encode()).decode()
 
 
 @pytest.fixture
@@ -207,6 +226,55 @@ def contract_history():
     ]
 
 
+@pytest.fixture
+def rename_history():
+    """A commit of old.py, then one that renames it to new.py, unchanged (git sees a rename)."""
+    return [
+        {"subject": "init", "files": {"old.py": "x\n"}, "when": Dates.days_ago(2)},
+        {"subject": "rename", "files": {"new.py": "x\n"}, "remove": ["old.py"], "when": Dates.days_ago(1)},
+    ]
+
+
+# A diff as `git diff` prints it, which the gateway splits per file.
+
+
+@pytest.fixture
+def patch_of_x():
+    """The patch of file x, as `git diff` writes it: a line added."""
+    return "diff --git a/x b/x\n+1\n"
+
+
+@pytest.fixture
+def patch_of_y():
+    """The patch of file y, as `git diff` writes it: a line removed."""
+    return "diff --git a/y b/y\n-2\n"
+
+
+@pytest.fixture
+def diff_of_x_and_y(
+    patch_of_x,
+    patch_of_y,
+):
+    """A `git diff` of files x and y: `patch_of_x` followed by `patch_of_y`."""
+    return patch_of_x + patch_of_y
+
+
+# Coverage reports, as the Cobertura gateway reads them (test_cobertura.py).
+
+
+@pytest.fixture
+def coverage_report():
+    """A Cobertura coverage report (coverage.xml): src/a.py has 75% of its lines covered."""
+    return '<coverage><class name="a" filename="src/a.py" line-rate="0.75"/></coverage>'
+
+
+@pytest.fixture
+def deeper_coverage_report():
+    """Another Cobertura coverage report (coverage.xml), which a test puts deeper than `coverage_report`: src/a.py has
+    10% of its lines covered."""
+    return '<coverage><class name="a" filename="src/a.py" line-rate="0.1"/></coverage>'
+
+
 # Files and folders: real temporary ones, and the in-memory fake.
 
 
@@ -313,8 +381,16 @@ def gh(
 @pytest.fixture
 def review_threads_view():
     """A PR's reviews and comments as `gh pr view --json reviews,comments,labels,additions,deletions,url` prints them
-    (a dict): none of either, no label, a line added and one removed, at url "u"."""
-    return {"url": "u", "reviews": [], "comments": [], "labels": [], "additions": 1, "deletions": 1}
+    (a dict): a review by the app clean-eval[bot] and a comment by dev, a label "bug" (and one gh printed without a
+    name), a line added and one removed, at url "u"."""
+    return {
+        "url": "u",
+        "reviews": [{"author": {"login": "clean-eval[bot]"}, "body": "r"}],
+        "comments": [{"author": {"login": "dev"}, "body": None}],
+        "labels": [{"name": "bug"}, {}],
+        "additions": 1,
+        "deletions": 1,
+    }
 
 
 @pytest.fixture
@@ -337,17 +413,16 @@ def review_pages():
 
 @pytest.fixture
 def review_with_comments():
-    """A review as the GitHub gateway posts it (a ReviewPost): a change request on commit "c" * 40, with one inline
-    comment, a CA-01 blocker on line 2 of a.py."""
+    """A review the GitHub gateway posts (a ReviewPost): a change request on commit "c" * 40, with one inline comment,
+    a CA-01 blocker on line 2 of a.py."""
     return ReviewPost(
-        commit_id="c" * 40,
+        commit="c" * 40,
         body="b",
-        event="REQUEST_CHANGES",
+        request_changes=True,
         comments=[
             InlineComment(
                 path="a.py",
                 line=2,
-                side="RIGHT",
                 body="[CA-01][blocker] s",
             )
         ],
@@ -360,9 +435,8 @@ def review_without_comments(
 ):
     """`review_with_comments` as a plain comment, without inline comments (`comments` left at its default)."""
     return ReviewPost(
-        commit_id=review_with_comments.commit_id,
+        commit=review_with_comments.commit,
         body=review_with_comments.body,
-        event="COMMENT",
     )
 
 
@@ -555,8 +629,8 @@ def cli_commands():
 
 @pytest.fixture
 def billing_history():
-    """A billing module (one with tests) and a users module that depends on it, four days ago; then a change of the users
-    module two days ago, which also adds docs and infrastructure."""
+    """A billing module (one with tests) and a users module that depends on it, four days ago; then a change of the
+    users module two days ago, which also adds docs and infrastructure."""
     return [
         {
             "subject": "init",
@@ -641,7 +715,12 @@ def review(
 ):
     """The Review CI trusts, as `finalize` writes it to result.json: `agent_review` finalized against `risk_report` and
     `review_rules`."""
-    return finalize_review(agent_review, risk_report, parse_rules(review_rules))
+    return finalize_review(
+        agent_review,
+        risk_report,
+        parse_rules(review_rules),
+        Secrets(),
+    )
 
 
 # What `finalize --skill pr-review` and `post` are given (test_cli.py): the agent's findings and report, the diff in the
@@ -674,7 +753,7 @@ def unsanitized_report():
 @pytest.fixture
 def prepared_diff():
     """The diff of a.py as `prepare pr-review` writes it to the context ({path in it: content}, for `context_files`):
-    its index and its patch, which changes line 2, so lines 1-3 take inline comments."""
+    its index and its patch, which changes line 2 in a hunk that shows lines 1-3, so they take inline comments."""
     return {
         "diff/index.json": [
             {
@@ -685,6 +764,7 @@ def prepared_diff():
                 "added": 1,
                 "removed": 1,
                 "truncated": False,
+                "hunks": [[1, 3]],
             }
         ],
         "diff/001.patch": "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,3 @@\n x\n-y\n+Y\n z\n",
@@ -699,29 +779,62 @@ def reviews_once_posted():
     return [
         HostReview(
             id=10,
-            state="CHANGES_REQUESTED",
-            user="github-actions[bot]",
+            author="github-actions[bot]",
+            requests_changes=True,
             body=marker,
         ),
         HostReview(
             id=11,
-            state="CHANGES_REQUESTED",
-            user="human",
+            author="human",
+            requests_changes=True,
             body=marker,
         ),
         HostReview(
             id=12,
-            state="COMMENTED",
-            user="github-actions[bot]",
+            author="github-actions[bot]",
             body=marker,
         ),
         HostReview(
             id=50,
-            state="CHANGES_REQUESTED",
-            user="github-actions[bot]",
+            author="github-actions[bot]",
+            requests_changes=True,
             body=marker,
         ),
     ]
+
+
+@pytest.fixture
+def posted_after_a_refusal():
+    """What posting a review did (a ReviewPosting) when the code host refused its inline comments and then took it
+    without them, as github-actions[bot]'s review 50."""
+    return ReviewPosting(
+        attempts=[
+            PostAttempt(
+                tried="event=REQUEST_CHANGES, inline comments=1",
+                error="gh api -X failed: HTTP 422: line must be part of the diff",
+            ),
+            PostAttempt(
+                tried="event=REQUEST_CHANGES, inline comments=0",
+            ),
+        ],
+        review=HostReview(
+            id=50,
+            author="github-actions[bot]",
+        ),
+    )
+
+
+@pytest.fixture
+def refused_every_time():
+    """What posting a review did (a ReviewPosting) when the code host refused every attempt: the token may not write."""
+    return ReviewPosting(
+        attempts=[
+            PostAttempt(
+                tried="event=COMMENT, inline comments=0",
+                error="gh api -X failed: HTTP 403 (the token needs pull-requests: write)",
+            )
+        ],
+    )
 
 
 # The data of an eval: the merged-PR history, and the repository's tuning files before and after the agent ran.
@@ -815,8 +928,8 @@ def tuning_edits(
     return dict(getattr(request, "param", {}))
 
 
-# What the CI agent writes for an eval, which `finalize --skill eval` judges (test_cli.py): risk-model.json contents (its
-# edits, and one that was there before) and a recommendation.
+# What the CI agent writes for an eval, which `finalize --skill eval` judges (test_cli.py): risk-model.json contents
+# (its edits, and one that was there before) and a recommendation.
 
 
 @pytest.fixture
@@ -1141,18 +1254,30 @@ def run_folders(
 
 
 @pytest.fixture
+def skills_folder(
+    tmp_path,
+):
+    """The skills the Claude Code gateway's agent follows: a folder beside the run's (under tmp_path) holding the
+    pr-review skill's SKILL.md, "# PR review"."""
+    folder = str(tmp_path.resolve() / "skills")
+    Contents.write(folder, {"pr-review/SKILL.md": "# PR review\n"})
+    return folder
+
+
+@pytest.fixture
 def claude_code(
     environ,
     settings,
     run_folders,
+    skills_folder,
     claude_runs,
     claude_installed,
     oidc_tokens,
 ):
-    """The Claude Code gateway of a run in `run_folders` whose environment holds `environ`: its `settings`, and the
-    variables it passes on to the agent. It writes Claude Code's settings with FileSystemGateway, with `claude_runs`
-    (and its `npm_installs`), `claude_installed` and `oidc_tokens` in place of the CLI, the PATH and GitHub's token
-    endpoint."""
+    """The Claude Code gateway of a run in `run_folders` whose environment holds `environ`: its `settings`, the
+    variables it passes on to the agent, and the skills of `skills_folder`. It writes Claude Code's settings with
+    FileSystemGateway, with `claude_runs` (and its `npm_installs`), `claude_installed` and `oidc_tokens` in place of the
+    CLI, the PATH and GitHub's token endpoint."""
     variables = {name: value for name, value in environ.items() if value is not None}
     return ClaudeCodeGateway(
         FileSystemGateway(),
@@ -1160,4 +1285,5 @@ def claude_code(
         variables,
         GUARD,
         run_folders.out,
+        skills_folder,
     )

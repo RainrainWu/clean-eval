@@ -1,5 +1,5 @@
-"""The eval's rules: reading the merged-PR history (PR numbers, escaped defects, review signal, rule stats),
-calibrating the risk model against it, and judging the tuning the agent proposes."""
+"""The eval's rules: reading the merged-PR history (escaped defects, review signal, rule stats), calibrating the risk
+model against it, and judging the tuning the agent proposes."""
 
 import json
 import re
@@ -12,7 +12,6 @@ from collections.abc import (
     Sequence,
 )
 from typing import (
-    Any,
     Optional,
     Union,
 )
@@ -34,6 +33,7 @@ from clean_eval.domain.evaluation import (
     EvalHistory,
     EvalResult,
     FetchFailure,
+    HostComment,
     MergedPR,
     ModelChange,
     ModuleStats,
@@ -43,6 +43,7 @@ from clean_eval.domain.evaluation import (
     Rejection,
     Replay,
     ReviewSignal,
+    ReviewThreads,
     RulesChange,
     RuleStats,
     RuleUse,
@@ -55,7 +56,10 @@ from clean_eval.domain.policy import (
     Policy,
 )
 from clean_eval.domain.rating import ModuleRecord
-from clean_eval.domain.review import StepOutputs
+from clean_eval.domain.review import (
+    Secrets,
+    StepOutputs,
+)
 from clean_eval.use_cases.rules.analysis import ignored
 from clean_eval.use_cases.rules.heatmap import (
     band,
@@ -69,28 +73,16 @@ from clean_eval.use_cases.rules.review import (
     redact,
 )
 
-# Merged-PR history: which PR a commit merged, which later fixes and reverts point back at it ("escaped defects"), and
-# what its clean-eval review cited. Each first-parent commit of the main branch is one merged PR (merge or squash). The
-# fix-to-PR links are heuristics (shared files plus fix/revert wording) that the eval skill verifies from the diffs.
+# Merged-PR history: which later fixes and reverts point back at a merged PR ("escaped defects"), and what its
+# clean-eval review cited. Each first-parent commit of the main branch is one merged PR (merge or squash), whose number
+# the code host reads from its subject. The fix-to-PR links are heuristics (shared files plus fix/revert wording) that
+# the eval skill verifies from the diffs.
 
 RULE_ID = re.compile(r"\[([A-Z]{1,4}-\d{2,3}|NEW)\]")  # pr-review tags findings as [CA-01] / [NEW]
-MERGE_PR = re.compile(r"Merge pull request #(\d+)")
-SQUASH_PR = re.compile(r"\(#(\d+)\)")  # GitHub squash subjects end with "(#123)"; take the last one
 FIX = re.compile(r"(?i)\b(fix(es|ed)?|bug|hotfix|regression|patch|revert)\b")
 REVERT = re.compile(r"(?i)^revert\b")
-GH_ERROR_RATE_LIMIT = 0.2  # above this share of failed fetches, rule metrics are flagged unreliable
+FETCH_ERROR_RATE_LIMIT = 0.2  # above this share of failed review fetches, rule metrics are flagged unreliable
 DAY = 86400
-
-
-def pr_number(
-    subject: str,
-) -> Optional[int]:
-    """The PR a first-parent commit merged, from its subject; None for a direct push."""
-    m = MERGE_PR.search(subject)
-    if m:
-        return int(m.group(1))
-    found = SQUASH_PR.findall(subject)
-    return int(found[-1]) if found else None
 
 
 def in_period(
@@ -106,9 +98,9 @@ def attribute_defects(
     period: Period,
     policy: Policy,
 ) -> list[MergedPR]:
-    """Attach to each of `prs` the later fixes and reverts (from `units`, the period plus its look-ahead) that most likely
-    repaired it: a fix or revert merged within the window that shares files with the PR. Of several such PRs one the fix
-    names (its short sha, or the reverted subject) wins, else the most recent; `confidence` says which."""
+    """Attach to each of `prs` the later fixes and reverts (from `units`, the period plus its look-ahead) that most
+    likely repaired it: a fix or revert merged within the window that shares files with the PR. Of several such PRs, one
+    the fix names (its short sha, or the reverted subject) wins, else the most recent; `confidence` says which."""
     window = period.window_days * DAY
     for u in prs:
         u.defects = []
@@ -137,44 +129,40 @@ def attribute_defects(
 
 
 def is_reviewer(
-    login: Optional[str],
+    comment: HostComment,
     reviewer_logins: Optional[Collection[str]] = None,
 ) -> bool:
-    """Whose clean-eval markers count: the given logins, else any GitHub App bot (`name[bot]` logins can't be registered
-    by users, so a commenter can't forge one)."""
-    if not login:
+    """Whose clean-eval markers count: the given logins', else any app's (an app's account can't be registered by a
+    user, so a commenter can't pass as one)."""
+    if not comment.author:
         return False
-    return login in reviewer_logins if reviewer_logins else login.endswith("[bot]")
+    return comment.author in reviewer_logins if reviewer_logins else comment.by_app
 
 
 def review_signal(
-    view: dict[str, Any],
-    inline: list[dict[str, Any]],
+    threads: ReviewThreads,
     reviewer_logins: Optional[Collection[str]] = None,
 ) -> ReviewSignal:
-    """What one PR's reviews said. `view` holds the reviews, comments, labels and size of the PR (as the code host gives
-    them); `inline` its inline review comments."""
-    posts = [((r.get("author") or {}).get("login"), r.get("body") or "") for r in view.get("reviews", [])]
-    posts += [((c.get("author") or {}).get("login"), c.get("body") or "") for c in view.get("comments", [])]
-    posts += [((c.get("user") or {}).get("login"), c.get("body") or "") for c in inline]
+    """What one PR's reviews said, from what was said on it (its ReviewThreads)."""
+    comments = threads.comments
     marker, marker_authors, ignored_markers = {}, set(), 0
-    for login, body in posts:
-        for m in REVIEW_MARKER.finditer(body):
-            if not is_reviewer(login, reviewer_logins):
+    for comment in comments:
+        for m in REVIEW_MARKER.finditer(comment.body):
+            if not is_reviewer(comment, reviewer_logins):
                 ignored_markers += 1  # a marker from anyone else is not trusted
                 continue
-            marker_authors.add(login)
+            marker_authors.add(comment.author)
             for kv in m.group(1).split():
                 k, _, v = kv.partition("=")
                 marker[k] = v
     # When a clean-eval review exists, measure rules by what *it* cited, not by third-party comments.
-    cited_text = "\n".join(b for login, b in posts if not marker_authors or login in marker_authors)
+    cited_text = "\n".join(c.body for c in comments if not marker_authors or c.author in marker_authors)
     tags = RULE_ID.findall(cited_text)
     return ReviewSignal(
-        url=view.get("url"),
-        labels=[label.get("name") for label in view.get("labels", [])],
-        size=(view.get("additions") or 0) + (view.get("deletions") or 0),
-        review_comment_count=len([b for _, b in posts if b.strip()]),
+        url=threads.url,
+        labels=list(threads.labels),
+        size=threads.size,
+        review_comment_count=len([c for c in comments if c.body.strip()]),
         rules_cited=sorted(set(tags) - {"NEW"}),
         new_findings=tags.count("NEW"),
         clean_eval_marker=marker or None,
@@ -203,7 +191,7 @@ def rule_stats(
         prs_fetch_failed=failed,
         prs_not_found=not_found,
         gh_error_rate=error_rate,
-        reliable=error_rate <= GH_ERROR_RATE_LIMIT,
+        reliable=error_rate <= FETCH_ERROR_RATE_LIMIT,
         prs_with_clean_eval_review=sum(1 for _, review in fetched if review.clean_eval_marker),
         new_findings=sum(review.new_findings for _, review in fetched),
         defective_prs_with_no_rule_cited=[
@@ -219,7 +207,7 @@ def rules_warning(
     failed = len(rules.prs_fetch_failed)
     if not failed:
         return None
-    return "gh review fetch failed for %d/%d PRs (%d%%)%s" % (
+    return "review fetch failed for %d/%d PRs (%d%%)%s" % (
         failed,
         rules.prs_reviewed + failed,
         round(rules.gh_error_rate * 100),
@@ -308,8 +296,8 @@ def summarise(
     merged_pr: MergedPR,
     mods: list[ModuleRecord],
 ) -> MergedPR:
-    """Copy of `merged_pr` touching `mods`: its band is the most severe one, its score the highest (an unrated module counts
-    at the floor of its band)."""
+    """Copy of `merged_pr` touching `mods`: its band is the most severe one, its score the highest (an unrated module
+    counts at the floor of its band)."""
     scores = [m.score for m in mods if m.score is not None] + [band_floor(m.band) for m in mods if m.score is None]
     return merged_pr.model_copy(
         update={
@@ -459,7 +447,7 @@ def judge_rules_edit(
 
 def eval_recommendations(
     raw: object,
-    secrets: Sequence[str] = (),
+    secrets: Secrets,
 ) -> list[Recommendation]:
     """The recommendations of the agent's result.json, validated and redacted of `secrets`."""
     try:

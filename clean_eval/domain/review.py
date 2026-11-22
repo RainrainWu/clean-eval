@@ -1,11 +1,10 @@
 """The PR review in CI: the pull request, what the agent proposes, the review CI derives, posts and reports, and
-the step outputs and tool calls of a CI run."""
+a CI run's step outputs, secrets, task and folders."""
 
+import re
 from enum import StrEnum
 from typing import (
     Annotated,
-    Any,
-    Literal,
     Optional,
     Self,
 )
@@ -199,30 +198,25 @@ class Finding(BaseModel):
 
 
 class PullRequest(BaseModel):
-    """A pull request as the code host describes it. Its text is untrusted; its commits are checked to be object ids."""
+    """A pull request as the code host describes it: its title, body and author (untrusted text), its URL, its base and
+    head branches and commits, whether its head is in another repository, and the ref its head is fetched from
+    (`head_refspec`). The commits are checked to be object ids."""
 
     number: int
     title: str = ""
     body: Optional[str] = None
     author: Optional[str] = None
     url: Optional[str] = None
-    baseRefName: str
-    headRefName: str
-    baseRefOid: Sha
-    headRefOid: Sha
-    isCrossRepository: bool = False
-
-    @field_validator("author", mode="before")
-    @classmethod
-    def author_login(
-        cls,
-        author: object,
-    ) -> object:
-        return author.get("login") if isinstance(author, dict) else author
+    base_ref: str
+    head_ref: str
+    base_sha: Sha
+    head_sha: Sha
+    cross_repository: bool = False
+    head_refspec: str
 
 
 class ChangeHeader(BaseModel):
-    """Which change a review is about, how risky it is (from the heat map of its base), and where its config came from."""
+    """Which change a review is about, how risky it is (from the heat map of its base), and where its config is from."""
 
     pr: int
     base: Sha
@@ -252,6 +246,17 @@ class RiskReport(ChangeHeader):
     notes: list[str]
 
 
+class FileDiff(BaseModel):
+    """One changed file's diff: its patch, the lines it adds and removes, and the lines of the new file that its hunks
+    show (`hunks`: first and last of each), the only ones an inline comment can go on."""
+
+    path: str
+    patch: str
+    added: Count
+    removed: Count
+    hunks: list[tuple[int, int]] = []
+
+
 class PatchEntry(BaseModel):
     """One changed file of a PR and its patch (diff/index.json)."""
 
@@ -262,6 +267,7 @@ class PatchEntry(BaseModel):
     added: Count
     removed: Count
     truncated: bool
+    hunks: list[tuple[int, int]] = []  # the lines of the changed file its diff shows (FileDiff's)
 
 
 class DiffIndex(RootModel[list[PatchEntry]]):
@@ -309,62 +315,57 @@ class Review(BaseModel):
 
 
 class InlineComment(BaseModel):
+    """A review's comment on one line of a changed file, as the change leaves it."""
+
     path: str
     line: LineNumber
-    side: Literal["RIGHT"]
     body: str
-
-
-class ReviewEvent(StrEnum):
-    """The event a review is posted with: a comment, or a request for changes (never an approval: the action doesn't
-    approve PRs)."""
-
-    COMMENT = "COMMENT"
-    REQUEST_CHANGES = "REQUEST_CHANGES"
 
 
 class ReviewPost(BaseModel):
-    """One review as it is sent to the code host."""
+    """A review to post on commit `commit`: its body, whether it requests changes (else it comments: the action never
+    approves a PR), and its inline comments."""
 
-    commit_id: Sha
+    commit: Sha
     body: str
-    event: ReviewEvent
+    request_changes: bool = False
     comments: list[InlineComment] = []
 
 
 class HostReview(BaseModel):
-    """A review as the code host lists it."""
+    """A review as the code host lists it: its id, its author, whether it requests changes, and its body."""
 
     id: Optional[int] = None
-    state: Optional[str] = None
-    user: Optional[str] = None
+    author: Optional[str] = None
+    requests_changes: bool = False
     body: str = ""
 
-    @field_validator("user", mode="before")
-    @classmethod
-    def user_login(
-        cls,
-        user: object,
-    ) -> object:
-        return user.get("login") if isinstance(user, dict) else user
 
-    @field_validator("body", mode="before")
-    @classmethod
-    def none_body_is_empty(
-        cls,
-        body: object,
-    ) -> object:
-        return body or ""
+class PostAttempt(BaseModel):
+    """One attempt at posting a review: what it tried, in the code host's terms, and why the host refused it (None when
+    it took it)."""
+
+    tried: str
+    error: Optional[str] = None
+
+
+class ReviewPosting(BaseModel):
+    """What the code host did with a review: each attempt in turn, and the review as posted (None when it refused them
+    all)."""
+
+    attempts: list[PostAttempt] = []
+    review: Optional[HostReview] = None
 
 
 class PostOutcome(BaseModel):
-    """What posting a review did: whether it went up, and a log of each step ("info" or "warning")."""
+    """What posting a review did, as the run reports it: whether it went up, and a log line per step."""
 
     posted: bool = False
     log: list[tuple[LogLevel, str]] = []
 
 
-# What crosses into and out of GitHub Actions around the CI agent: the tool calls it asks to make, and step outputs.
+# What crosses out of the CI runner around its agent: the step outputs, and the secrets cleaned from everything that
+# leaves it.
 
 OutputName = Annotated[
     str,
@@ -381,34 +382,31 @@ OutputValue = Annotated[
 
 
 class StepOutputs(RootModel[dict[OutputName, OutputValue]]):
-    """Step outputs: enums and numbers clean-eval built, never agent text."""
+    """A CI step's outputs, one line each: enums and numbers clean-eval built, never agent text."""
 
 
-class ToolCall(BaseModel):
-    """One tool call the CI agent wants to make, as Claude Code hands it to the PreToolUse hook."""
+class Secrets(BaseModel):
+    """What text that leaves the CI runner is cleaned of: secret values, and the patterns of well-known credentials. A
+    pattern with a group stands for the group alone (an authorization header's credential, not the header)."""
 
-    tool_name: str = ""
-    tool_input: dict[str, Any] = {}
-    cwd: Optional[str] = None
+    model_config = ConfigDict(
+        frozen=True,
+    )
 
-    @field_validator("tool_name", mode="before")
-    @classmethod
-    def none_name_is_empty(
-        cls,
-        name: object,
-    ) -> object:
-        return "" if name is None else name
-
-    @field_validator("tool_input", mode="before")
-    @classmethod
-    def none_input_is_empty(
-        cls,
-        tool_input: object,
-    ) -> object:
-        return {} if tool_input is None else tool_input
+    values: tuple[str, ...] = ()
+    patterns: tuple[re.Pattern[str], ...] = ()
 
 
-# A CI run of a skill (the `action` command): its folders, and what running the agent gave.
+# A CI run of a skill (the `action` command): the skill, its folders, the task it gives the agent, and what running the
+# agent gave.
+
+
+class Skill(StrEnum):
+    """The skills a CI run runs: what `action` and `finalize --skill` take."""
+
+    PR_REVIEW = "pr-review"
+    EVAL = "eval"
+    RISK_HEAT_MAP = "risk-heat-map"
 
 
 class RunFolders(BaseModel):
@@ -424,6 +422,21 @@ class RunFolders(BaseModel):
     out: str
     context: str
     agent: str
+
+
+class AgentTask(BaseModel):
+    """What a CI run asks of its agent: the skill to follow, what to do (`goal`, a sentence), the context to read
+    (`inputs`, paths in the context folder, with a note in parentheses where needed) and the files to write (`outputs`,
+    paths in the agent's folder). How the task is put to the agent is the agent's business."""
+
+    model_config = ConfigDict(
+        frozen=True,
+    )
+
+    skill: Skill
+    goal: str
+    inputs: tuple[str, ...]
+    outputs: tuple[str, ...]
 
 
 class AgentRun(BaseModel):

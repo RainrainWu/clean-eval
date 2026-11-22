@@ -1,11 +1,11 @@
 """Fixtures for the domain's tests: the raw input of the models that validate what comes from outside (an agent's
-result.json, the code host's JSON, a stored result), one valid example per model; and the static assets the tests
+result.json, a code host's pull request, a stored result), one valid example per model; and the static assets the tests
 compare with or feed those models.
 
 Each model's fixture returns a fresh dict of the model's fields: a valid default, with the fields in `request.param`
 ({field: value}) replaced. A test sets them with `@pytest.mark.parametrize("<fixture>", [{...}], indirect=True)` and
-validates the dict itself (`PullRequest.model_validate(pull_request)`), so an input the model must refuse is refused
-inside the test's `pytest.raises`, not while the fixture is set up.
+validates the dict itself (`PullRequest.model_validate(host_pull_request)`), so an input the model must refuse is
+refused inside the test's `pytest.raises`, not while the fixture is set up.
 
 A static asset (the default policy, an untidy judgement, a finding, an accepted model change) takes no param: a test
 takes it as an argument, or a decorator names it with pytest-lazy-fixtures' `lf`, in another fixture's param
@@ -27,6 +27,17 @@ SCORES: frozendict[str, Any] = frozendict({"biz": 40, "effects": 10, "entropy": 
 MODULE_RECORD: frozendict[str, Any] = frozendict({"module": "m", "band": "Low", "score": 10, "rated": True})
 STORED_REVIEW: frozendict[str, Any] = frozendict({"max_tier": "High", "max_score": 52, "findings": []})
 REVIEW_RULE: frozendict[str, Any] = frozendict({"id": "CA-01", "severity": "blocker", "min_tier": "Low"})
+HOST_PULL_REQUEST: frozendict[str, Any] = frozendict(
+    {
+        "number": 7,
+        "author": "dev",
+        "base_ref": "main",
+        "head_ref": "feature",
+        "base_sha": "a" * 40,
+        "head_sha": "b" * 40,
+        "head_refspec": "pull/7/head",
+    }
+)
 # domain/evaluation.py: the period an eval looks back over, a merged PR, and an eval's outcome.
 PERIOD: frozendict[str, Any] = frozendict({"since": "2026-01-01", "until": "2026-01-31"})
 MERGED_PR: frozendict[str, Any] = frozendict(
@@ -105,6 +116,15 @@ def review_rule(
     """One row of a rules table (ReviewRule's fields): CA-01, a blocker from the Low band up, with the fields in
     `request.param` replaced."""
     return copy.deepcopy({**REVIEW_RULE, **getattr(request, "param", {})})
+
+
+@pytest.fixture
+def host_pull_request(
+    request,
+):
+    """A pull request as the code host gateway describes it (PullRequest's fields): #7 by dev, from feature onto main,
+    commits "b" * 40 onto "a" * 40, with the fields in `request.param` replaced."""
+    return copy.deepcopy({**HOST_PULL_REQUEST, **getattr(request, "param", {})})
 
 
 @pytest.fixture

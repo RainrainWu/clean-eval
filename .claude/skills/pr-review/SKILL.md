@@ -92,7 +92,7 @@ the prompt:
 | `pr.json` | title, body, author, changed files (untrusted author text) |
 | `risk.json` | every touched module's band, overall and aspect scores and evidence at the base — authoritative, don't recompute |
 | `review-rules.md` | the rules file from the base commit (or the default) — use only this one |
-| `diff/index.json` | every changed file: its module, patch path (`diff/NNN.patch`), `patch_lines`, lines added/removed |
+| `diff/index.json` | every changed file: its module, patch path (`diff/NNN.patch`), `patch_lines`, lines added/removed, and `hunks`: the [first, last] lines of the new file each hunk shows (a finding on one of them is attached inline) |
 | `diff/NNN.patch` | the PR diff (base → head), one file per patch |
 | `file-history.txt` | the last 10 commits touching each changed file, before this PR |
 

@@ -22,6 +22,7 @@ from clean_eval.domain.rating import (
 )
 from clean_eval.domain.review import (
     AgentReview,
+    AgentTask,
     ChangeHeader,
     DiffIndex,
     HostReview,
@@ -34,6 +35,8 @@ from clean_eval.domain.review import (
     ReviewPost,
     RiskReport,
     RunFolders,
+    Secrets,
+    Skill,
     StepOutputs,
     Verdict,
 )
@@ -58,20 +61,15 @@ from clean_eval.use_cases.interfaces import (
     FileSystem,
     Git,
     RunLog,
+    Runner,
 )
 from clean_eval.use_cases.rules.review import (
     change_risk,
-    commentable_lines,
     compose_review,
     finalize_review,
-    line_counts,
     parse_rules,
-    post_attempts,
     redact,
     review_outputs,
-    rules_version,
-    secret_values,
-    split_patch,
     stale_reviews,
     truncate,
 )
@@ -82,7 +80,6 @@ from clean_eval.use_cases.store import (
     validated,
     write_json,
     write_run_output,
-    write_step_outputs,
 )
 
 # Use case: the risk a change carries, from the heat map of its base. The PR review scales its depth by this.
@@ -118,12 +115,12 @@ def assess_change(
 # metadata, its diff (one patch per file), per-file history, the risk the change carries (from the heat map of its base)
 # and the base's config. Through the CodeHost, Git, FileSystem and Clock interfaces, into the context folder `ctx`.
 #
-# Config always comes from the PR's *base* commit (or the defaults), so a PR can't relax the rules or the risk model it is
-# judged by.
+# Config always comes from the PR's *base* commit (or the defaults), so a PR can't relax the rules or the risk model it
+# is judged by.
 
 MAX_HISTORY_FILES = 60
 DEFAULT_SOURCE = "clean-eval default"
-PR_META = frozenset({"number", "title", "body", "url", "baseRefName", "headRefName", "isCrossRepository", "author"})
+PR_META = frozenset({"number", "title", "body", "url", "base_ref", "head_ref", "cross_repository", "author"})
 
 
 def policy_at(
@@ -151,25 +148,23 @@ def write_split_diff(
     file_modules: dict[str, Optional[str]],
 ) -> list[PatchEntry]:
     """One patch per changed file plus diff/index.json in `ctx`, so a reviewer can read every hunk in full (a single
-    combined diff is easily longer than one file read)."""
-    chunks = split_patch(git.diff(base, head))
-    if len(chunks) != len(files):  # unexpected shape (e.g. renames): fall back to per-path diffs
-        chunks = [git.diff(base, head, f) for f in files]
+    combined diff is easily longer than one file read). The index keeps the lines each diff shows, where inline
+    comments can go."""
     index = []
-    for i, (f, chunk) in enumerate(zip(files, chunks), 1):
-        text, cut = truncate(chunk, MAX_PATCH_CHARS)
+    for i, diff in enumerate(git.file_diffs(base, head, files), 1):
+        text, cut = truncate(diff.patch, MAX_PATCH_CHARS)
         name = "diff/%03d.patch" % i
         fs.write_text(fs.join(ctx, name), text)
-        added, removed = line_counts(chunk)
         index.append(
             PatchEntry(
-                file=f,
-                module=file_modules.get(f),
+                file=diff.path,
+                module=file_modules.get(diff.path),
                 patch=name,
                 patch_lines=text.count("\n"),
-                added=added,
-                removed=removed,
+                added=diff.added,
+                removed=diff.removed,
                 truncated=cut,
+                hunks=diff.hunks,
             )
         )
     write_json(
@@ -189,10 +184,9 @@ def pull_request_commits(
 ) -> tuple[PullRequest, str, str]:
     """PR `pr` as the code host shows it, with its commits fetched: the PR, its merge base and its head."""
     info = host.pull_request(pr)
-    head = info.headRefOid
-    git.ensure_commit(head, "pull/%d/head" % pr)
-    git.ensure_commit(info.baseRefOid, info.baseRefOid)
-    return info, git.merge_base(info.baseRefOid, head), head
+    git.ensure_commit(info.head_sha, info.head_refspec)
+    git.ensure_commit(info.base_sha, info.base_sha)
+    return info, git.merge_base(info.base_sha, info.head_sha), info.head_sha
 
 
 def write_rules_at_base(
@@ -276,7 +270,7 @@ def prepare_review(
         model_source=model_src,
         model_version=policy.version,
         rules_source=rules_src,
-        rules_version=rules_version(rules),
+        rules_version=git.blob_id(rules)[:8],
         files_changed=len(files),
     )
     write_risk_report(fs, ctx, header, heatmap, risk, model_note)
@@ -301,60 +295,54 @@ def lines_on_diff(
     fs: FileSystem,
     ctx: Optional[str],
 ) -> Optional[dict[str, set[int]]]:
-    """{path: new-side lines GitHub accepts inline comments on}, from the per-file patches in context folder `ctx`; None
-    without them."""
+    """{path: the lines of the file as the change leaves it that are in its diff, where inline comments can go}, from
+    the diff's index in context folder `ctx`; None without it."""
     if ctx is None or not fs.exists(fs.join(ctx, "diff", "index.json")):
         return None
     index = DiffIndex.model_validate(read_json(fs, fs.join(ctx, "diff", "index.json"))).root
-    return {e.file: commentable_lines(fs.read_text(fs.join(ctx, e.patch))) for e in index}
+    return {e.file: {line for first, last in e.hunks for line in range(first, last + 1)} for e in index}
 
 
 def host_error_text(
-    error: RemoteError,
-    secrets: tuple[str, ...],
+    error: str,
+    secrets: Secrets,
     limit: int,
 ) -> str:
     """A code host's error as a log line can show it: redacted of `secrets`, then cut to `limit` characters (redacted
     first, since a host's error can echo the request's data)."""
-    return redact(str(error), secrets)[0][:limit]
+    return redact(error, secrets)[0][:limit]
 
 
-def post_first_accepted(
+def post_on_the_host(
     host: CodeHost,
     pr: int,
     head: str,
     review: Review,
     report: str,
     lines: Optional[dict[str, set[int]]],
-    secrets: tuple[str, ...],
+    secrets: Secrets,
     outcome: PostOutcome,
 ) -> Optional[HostReview]:
-    """Post the review of PR `pr` at `head`, trying each of post_attempts in turn (fewer inline comments, then a plainer
-    event) until the code host accepts one; the posted review, or None. Each attempt is logged in `outcome`."""
-    body, event, comments = compose_review(review, report, lines)
-    for ev, cm in post_attempts(event, comments):
-        try:
-            posted = host.post_review(
-                pr,
-                ReviewPost(
-                    commit_id=head,
-                    body=body,
-                    event=ev,
-                    comments=cm,
-                ),
-            )
-        except RemoteError as e:
-            outcome.log.append(
-                (
-                    LogLevel.WARNING,
-                    "review post failed (event=%s, comments=%d): %s" % (ev, len(cm), host_error_text(e, secrets, 300)),
-                )
-            )
-            continue
-        outcome.posted = True
-        outcome.log.append((LogLevel.INFO, "posted review on #%s: event=%s, inline comments=%d" % (pr, ev, len(cm))))
-        return posted
-    return None
+    """Post the review of PR `pr` at `head`, as much of it as the code host takes; the posted review, or None. Each
+    attempt is logged in `outcome`, its errors redacted."""
+    body, request_changes, comments = compose_review(review, report, lines)
+    posting = host.post_review(
+        pr,
+        ReviewPost(
+            commit=head,
+            body=body,
+            request_changes=request_changes,
+            comments=comments,
+        ),
+    )
+    for attempt in posting.attempts:
+        if attempt.error is None:
+            outcome.log.append((LogLevel.INFO, "posted review on #%s: %s" % (pr, attempt.tried)))
+        else:
+            error = host_error_text(attempt.error, secrets, 300)
+            outcome.log.append((LogLevel.WARNING, "review post failed (%s): %s" % (attempt.tried, error)))
+    outcome.posted = posting.review is not None
+    return posting.review
 
 
 def dismiss_stale_reviews(
@@ -362,26 +350,24 @@ def dismiss_stale_reviews(
     pr: int,
     head: str,
     posted: HostReview,
-    secrets: tuple[str, ...],
+    secrets: Secrets,
     outcome: PostOutcome,
 ) -> None:
-    """Dismiss the earlier "changes requested" reviews of the action's user on PR `pr`, superseded by `posted`, so a
-    fixed PR isn't left blocked. Each step is logged in `outcome`."""
+    """Dismiss this reviewer's earlier reviews of PR `pr` that request changes, superseded by `posted`, so a fixed PR
+    isn't left blocked. Each step is logged in `outcome`."""
     try:
         reviews = host.reviews(pr)
     except RemoteError as e:
-        outcome.log.append(
-            (LogLevel.WARNING, "could not list reviews to dismiss stale ones: %s" % host_error_text(e, secrets, 200))
-        )
+        error = host_error_text(str(e), secrets, 200)
+        outcome.log.append((LogLevel.WARNING, "could not list reviews to dismiss stale ones: %s" % error))
         return
-    for review_id in stale_reviews(reviews, posted.user, posted.id):
+    for review_id in stale_reviews(reviews, posted.author, posted.id):
         try:
             host.dismiss_review(pr, review_id, "Superseded by the clean-eval review of %s" % head[:8])
             outcome.log.append((LogLevel.INFO, "dismissed stale review %s" % review_id))
         except RemoteError as e:
-            outcome.log.append(
-                (LogLevel.WARNING, "could not dismiss review %s: %s" % (review_id, host_error_text(e, secrets, 200)))
-            )
+            error = host_error_text(str(e), secrets, 200)
+            outcome.log.append((LogLevel.WARNING, "could not dismiss review %s: %s" % (review_id, error)))
 
 
 def post_review(
@@ -395,11 +381,11 @@ def post_review(
 ) -> PostOutcome:
     """Post out/result.json and out/report.md as the review of PR `pr` at commit `head`, and dismiss the reviews it
     supersedes; the PostOutcome."""
-    secrets = secret_values(env.variables())
+    secrets = env.secrets()
     outcome = PostOutcome()
     review = Review.model_validate(read_json(fs, fs.join(out, "result.json")))
     report = fs.read_text(fs.join(out, "report.md"))
-    posted = post_first_accepted(host, pr, head, review, report, lines_on_diff(fs, ctx), secrets, outcome)
+    posted = post_on_the_host(host, pr, head, review, report, lines_on_diff(fs, ctx), secrets, outcome)
     if posted is not None:
         dismiss_stale_reviews(host, pr, head, posted, secrets, outcome)
     return outcome
@@ -416,7 +402,7 @@ def finalize_pr_review(
     findings' shape, and the review rules hold them to the rules table and derive the verdict, blocker count, band and
     score. report.md and result.json go to `out`, redacted (the environment names the secrets). InvalidOutput when the
     agent's output can't be trusted; nothing is written then."""
-    secrets = secret_values(env.variables())
+    secrets = env.secrets()
     try:
         review = finalize_review(
             validated(AgentReview, fs, agent, "result.json"),
@@ -433,14 +419,27 @@ def finalize_pr_review(
 
 # Use case: the PR review's CI run (the action's pr-review skill): prepare the context, let the agent review the
 # change, finalize the review CI trusts, post it, and fail the run as configured. Through the CodeHost, Git,
-# FileSystem, Clock, Environment, Agent and RunLog interfaces.
+# FileSystem, Clock, Environment, Agent, Runner and RunLog interfaces.
 
-REVIEW_PROMPT = (
-    "Review pull request #%(pr)d. Read %(context)s/skills/pr-review/SKILL.md and follow its 'CI mode' section. "
-    "Precomputed context: %(context)s/context.json, %(context)s/pr.json, %(context)s/risk.json, "
-    "%(context)s/review-rules.md, %(context)s/diff/index.json (one patch per changed file — read them all), "
-    "%(context)s/file-history.txt. Write %(agent)s/report.md and %(agent)s/result.json. %(extra)s"
-)
+
+def review_task(
+    pr: int,
+) -> AgentTask:
+    """What the agent is asked to do for the review of PR `pr`: review it from the precomputed context, into a report
+    and the findings it proposes."""
+    return AgentTask(
+        skill=Skill.PR_REVIEW,
+        goal="Review pull request #%d." % pr,
+        inputs=(
+            "context.json",
+            "pr.json",
+            "risk.json",
+            "review-rules.md",
+            "diff/index.json (one patch per changed file — read them all)",
+            "file-history.txt",
+        ),
+        outputs=("report.md", "result.json"),
+    )
 
 
 def trusted_review(
@@ -480,7 +479,7 @@ def post_and_log(
         else:
             log.show(message)
     if not posted.posted:
-        log.warning("could not post the review (the token needs pull-requests: write)")
+        log.warning("could not post the review")
 
 
 def fail_as_told(
@@ -505,38 +504,31 @@ def run_review_action(
     clock: Clock,
     env: Environment,
     agent: Agent,
+    runner: Runner,
     log: RunLog,
     folders: RunFolders,
     settings: Settings,
     default_rules: str,
 ) -> None:
     """The PR review's CI run for the settings' PR: prepare its context, let the agent review it, finalize the review
-    CI trusts and, when the settings say `post`, post it; report its step outputs, and its report in the job summary.
-    RunFailed as the settings' `fail_on` says (fail_as_told), and on agent output that can't be trusted unless it is
-    never (trusted_review)."""
+    CI trusts, post it when the settings say `post`, and report it to the runner. RunFailed as the settings' `fail_on`
+    says (fail_as_told), and on agent output that can't be trusted unless `fail_on` is never (trusted_review)."""
     pr, fail_on = settings.review.pr, settings.review.fail_on
     if pr is None:
         raise RunFailed(
-            "pr-review needs a PR number (input 'pr', or run on pull_request events)",
+            "pr-review needs a PR number (input 'pr')",
         )
     log.step("Prepare the review context of #%d" % pr)
     context = prepare_review(host, git, fs, clock, folders.context, pr, default_rules)
     agent.require()
-    prompt = REVIEW_PROMPT % {
-        "pr": pr,
-        "context": folders.context,
-        "agent": folders.agent,
-        "extra": settings.agent.extra_prompt,
-    }
-    run_agent(agent, fs, env, log, folders, prompt.strip())
+    run_agent(agent, fs, env, log, folders, review_task(pr))
     trusted = trusted_review(fs, env, log, folders, fail_on)
     if trusted is None:
         return
     review, outputs = trusted
     if review.redactions:
         log.warning("clean-eval redacted %d secret-looking value(s) from agent output" % review.redactions)
-    write_step_outputs(fs, settings.github.step_outputs, outputs)
-    report_run(fs, settings.github.step_summary, "PR Review #%d" % pr, folders)
+    report_run(fs, runner, folders, "PR Review #%d" % pr, outputs)
     if settings.review.post:
         post_and_log(host, fs, env, log, folders, pr, context.head)
     fail_as_told(review, fail_on)

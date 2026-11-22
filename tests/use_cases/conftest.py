@@ -6,9 +6,10 @@ use cases take; and the static assets the tests feed the use cases or check agai
 - `git` and `fs` are stateful: they answer through an in-memory repository and file system (tests/use_cases/fakes.py,
   contract-tested against the real gateways in tests/external/) and record every call. Their contents come from the
   data fixtures `history`, `files` and `links`.
-- The others (`clock`, `env`, `host`, `agent`, `run_log`, `diagram_presenter`, `report_presenter`) are autospecced: a
-  call that doesn't match the interface's signature fails. `request.param` configures them, as `configure_mock`'s
-  keywords (`{"review_threads.return_value": (view, inline), "require_auth.side_effect": HeatmapError("...")}`).
+- The others (`clock`, `env`, `host`, `coverage`, `agent`, `runner`, `run_log`, `diagram_presenter`,
+  `report_presenter`) are autospecced: a call that doesn't match the interface's signature fails. `clock`, `env` and
+  `coverage` answer from data (`today`, `environ`, their param); `request.param` configures the rest, as
+  `configure_mock`'s keywords (`{"post_review.return_value": ..., "require_auth.side_effect": HeatmapError("...")}`).
 - The data fixtures `graph`, `rating_cache` and `period` add the models the use cases take to the cross-layer ones of
   tests/conftest.py. `collected` is the merged-PR history an eval collects, built once per class.
 - The static assets (a CI run's folders and files, the sources and histories a rating reads, the changes a review
@@ -30,7 +31,10 @@ from unittest.mock import (
 
 import pytest
 
-from clean_eval.domain.evaluation import Period
+from clean_eval.domain.evaluation import (
+    Period,
+    ReviewThreads,
+)
 from clean_eval.domain.policy import Policy
 from clean_eval.domain.rating import (
     Graph,
@@ -40,6 +44,7 @@ from clean_eval.domain.rating import (
 from clean_eval.domain.review import (
     AgentRun,
     RunFolders,
+    Secrets,
 )
 from clean_eval.use_cases.evaluation import collect_history
 from clean_eval.use_cases.heatmap import MAX_FILE_BYTES
@@ -47,17 +52,20 @@ from clean_eval.use_cases.interfaces import (
     Agent,
     Clock,
     CodeHost,
+    CoverageReport,
     DiagramPresenter,
     Environment,
     FileSystem,
     Git,
     ReportPresenter,
     RunLog,
+    Runner,
 )
 from clean_eval.use_cases.rules.heatmap import MARKERS
 from tests.use_cases.fakes import (
     MemoryFileSystem,
     MemoryGit,
+    SquashSubjects,
 )
 
 EMPTY_GRAPH: frozendict[str, Any] = frozendict({"nodes": {}, "links": {}, "tested": {}, "stats": {}})
@@ -176,11 +184,14 @@ def clock(
 def env(
     environ,
 ):
-    """An Environment answering from `environ` (tests/conftest.py), without its None (unset) variables; its home is
-    /home/user."""
+    """An Environment answering from `environ` (tests/conftest.py), without its None (unset) variables, every value of
+    which is a secret (a test's environment holds only what it means); its home is /home/user."""
     variables = {name: value for name, value in environ.items() if value is not None}
     mock = create_autospec(Environment, instance=True)
     mock.variables.side_effect = lambda: dict(variables)
+    mock.secrets.side_effect = lambda: Secrets(
+        values=tuple(variables.values()),
+    )
     mock.paths.side_effect = lambda name: [path for path in variables.get(name, "").split(os.pathsep) if path.strip()]
     mock.home.return_value = "/home/user"
     return mock
@@ -190,9 +201,22 @@ def env(
 def host(
     request,
 ):
-    """A CodeHost; `request.param` configures it (configure_mock's keywords)."""
+    """A CodeHost, which numbers a merged PR from the last "(#N)" of its subject (SquashSubjects); `request.param`
+    configures it (configure_mock's keywords)."""
     mock = create_autospec(CodeHost, instance=True)
+    mock.merged_pr.side_effect = SquashSubjects().merged_pr
     mock.configure_mock(**getattr(request, "param", {}))
+    return mock
+
+
+@pytest.fixture
+def coverage(
+    request,
+):
+    """A CoverageReport whose line rates ({path: share of lines covered}) are `request.param`; none when not
+    parametrized."""
+    mock = create_autospec(CoverageReport, instance=True)
+    mock.line_rates.return_value = dict(getattr(request, "param", {}))
     return mock
 
 
@@ -285,24 +309,28 @@ def collected(
     request,
     fix_and_revert_history,
 ):
-    """The EvalHistory that collect_history gathers, with no code host, from the run in `request.param`: `history`, the
-    repository's commits (as the `history` fixture takes them), by default `fix_and_revert_history`; `period`, the
+    """The EvalHistory that collect_history gathers, without the reviews, from the run in `request.param`: `history`,
+    the repository's commits (as the `history` fixture takes them), by default `fix_and_revert_history`; `period`, the
     Period's fields, by default PERIOD; and `policy`, risk-model.json overrides, by default none.
 
     It is class-scoped: parametrize it with `scope="class"`. A param that holds an `lf` is collected anew for each
-    test, since pytest can't match it to the param it resolved. The function-scoped `git` and `clock` can't serve it,
-    so it makes its own: a Git mock over a MemoryGit, and a Clock on COLLECTED_ON."""
+    test, since pytest can't match it to the param it resolved. The function-scoped `git`, `host` and `clock` can't
+    serve it, so it makes its own: a Git mock over a MemoryGit, a CodeHost numbering PRs as SquashSubjects does, and a
+    Clock on COLLECTED_ON."""
     run = {"history": fix_and_revert_history, "period": PERIOD, "policy": None, **getattr(request, "param", {})}
     memory_git = MemoryGit()
     for commit in run["history"]:
         memory_git.commit(**commit)
     clock = create_autospec(Clock, instance=True)
     clock.today.return_value = COLLECTED_ON
+    host = create_autospec(CodeHost, instance=True)
+    host.merged_pr.side_effect = SquashSubjects().merged_pr
     return collect_history(
         MagicMock(
             spec=Git,
             wraps=memory_git,
         ),
+        host,
         clock,
         Policy.from_overrides(run["policy"]),
         Period.model_validate(run["period"]),
@@ -325,15 +353,16 @@ def collected_prs(
     return {entry["pr"]: entry for entry in collected_json["prs"]}
 
 
-# A CI run's agent and log.
+# A CI run's agent, runner and log.
 
 
 @pytest.fixture
 def agent(
     request,
 ):
-    """An Agent, which finishes (status 0) with an empty transcript unless `request.param` configures it (configure_mock's
-    keywords), e.g. `{"run.return_value": AgentRun(status=1, transcript="...")}` or `{"require.side_effect": ...}`."""
+    """An Agent, which finishes (status 0) with an empty transcript unless `request.param` configures it
+    (configure_mock's keywords), e.g. `{"run.return_value": AgentRun(status=1, transcript="...")}` or
+    `{"require.side_effect": ...}`."""
     mock = create_autospec(Agent, instance=True)
     mock.run.return_value = AgentRun(
         status=0,
@@ -341,6 +370,12 @@ def agent(
     )
     mock.configure_mock(**getattr(request, "param", {}))
     return mock
+
+
+@pytest.fixture
+def runner():
+    """A Runner, recording the step outputs and the job summary a CI run reports."""
+    return create_autospec(Runner, instance=True)
 
 
 @pytest.fixture
@@ -367,25 +402,21 @@ def run_folders():
 
 @pytest.fixture
 def files_before_a_run():
-    """What a runner holds before a run, as `files` takes it: the skills in the action's checkout, an earlier run's
-    output folder (its context, the agent's result, the report, the transcript, and a file that isn't the run's), and
-    the step-outputs file."""
+    """What a runner holds before a run, as `files` takes it: an earlier run's output folder (its context, the agent's
+    result, the report, the transcript, and a file that isn't the run's)."""
     return {
-        "/action/skills/pr-review/SKILL.md": "# PR review\n",
         "/out/context/old.json": "{}",
         "/out/agent/result.json": "{}",
         "/out/report.md": "old",
         "/out/claude.log": "old",
         "/out/keep.txt": "not the run's",
-        "/runner/outputs": "",
     }
 
 
 @pytest.fixture
 def run_environment():
-    """The variables of a CI run on /repo with its outputs in /out (the folders of `run_folders`), and its step outputs
-    in /runner/outputs."""
-    return {"CE_WORKSPACE": "/repo", "CE_OUTPUT_DIR": "/out", "GITHUB_OUTPUT": "/runner/outputs"}
+    """The variables of a CI run on /repo with its outputs in /out (the folders of `run_folders`)."""
+    return {"CE_WORKSPACE": "/repo", "CE_OUTPUT_DIR": "/out"}
 
 
 @pytest.fixture
@@ -403,7 +434,7 @@ def empty_agent_folder():
 
 
 # The sources a rating reads (use_cases/heatmap.py): a history of two commits, the second adding a generated file, a
-# huge one and one the working tree has lost; the working tree, which differs from it; and a coverage report.
+# huge one and one the working tree has lost; and the working tree, which differs from it.
 
 
 @pytest.fixture
@@ -468,16 +499,6 @@ def staged_symlink():
     """The symlink in the working tree of `sources_history`, as `links` takes it: src/link.py, which git has staged, to
     a file outside the repository."""
     return {"/repo/src/link.py": "/etc/hosts"}
-
-
-@pytest.fixture
-def coverage_report():
-    """A Cobertura coverage report (coverage.xml): src/a.py has 75% of its lines covered."""
-    return '<coverage><class name="a" filename="src/a.py" line-rate="0.75"/></coverage>'
-
-
-# Rating a snapshot: its files are two modules, src/api (600 lines) and src/core (100), and a test. In their knowledge
-# graph src/api calls into src/core, and its function is tested.
 
 
 @pytest.fixture
@@ -563,9 +584,9 @@ def core_checkout(
 
 
 @pytest.fixture
-def core_coverage_report():
-    """A Cobertura coverage report (coverage.xml) for `core_checkout`: src/core/c.py has half its lines covered."""
-    return '<coverage><class name="c" filename="src/core/c.py" line-rate="0.5"/></coverage>'
+def core_line_rates():
+    """The line rates the coverage report of `core_checkout` holds: src/core/c.py has half its lines covered."""
+    return {"src/core/c.py": 0.5}
 
 
 @pytest.fixture
@@ -696,17 +717,6 @@ def three_changed_paths():
 
 
 @pytest.fixture
-def rename_diffs():
-    """What `git diff` answers about a rename, in the order it is asked: the change's diff, which shows one section for
-    two paths, then the diff of each path (new.py added, old.py removed)."""
-    return [
-        "diff --git a/old.py b/new.py\nsimilarity index 100%\nrename from old.py\nrename to new.py\n",
-        "diff --git a/new.py b/new.py\n--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+x\n",
-        "diff --git a/old.py b/old.py\n--- a/old.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n",
-    ]
-
-
-@pytest.fixture
 def policy_file():
     """Where a repository keeps its policy's overrides, risk-model.json, relative to its root."""
     return ".clean-eval/risk-model.json"
@@ -728,28 +738,25 @@ def two_prs_history():
 
 @pytest.fixture
 def review_threads():
-    """A PR's review threads, as CodeHost.review_threads gives them: the PR, with clean-eval's review ([CA-01], and its
-    marker: tier High) and a human's, who cites [Q-02] and forges the marker (tier Low); and clean-eval's inline
-    comments ([NEW] and [R-03])."""
-    view = {
-        "url": "u",
-        "labels": [],
-        "additions": 1,
-        "deletions": 1,
-        "comments": [],
-        "reviews": [
-            {
-                "author": {"login": "clean-eval[bot]"},
-                "body": "[CA-01][blocker] x\n<!-- clean-eval:pr-review tier=High -->",
-            },
-            {"author": {"login": "human"}, "body": "also [Q-02] maybe <!-- clean-eval:pr-review tier=Low -->"},
-        ],
-    }
-    inline = [
-        {"user": {"login": "clean-eval[bot]"}, "body": "[NEW][major] y"},
-        {"user": {"login": "clean-eval[bot]"}, "body": "[R-03][blocker] z"},
-    ]
-    return view, inline
+    """A PR's review threads, as CodeHost.review_threads gives them (ReviewThreads): clean-eval's review ([CA-01], and
+    its marker: tier High), by an app, and a human's, who cites [Q-02] and forges the marker (tier Low); then
+    clean-eval's inline comments ([NEW] and [R-03])."""
+    return ReviewThreads.model_validate(
+        {
+            "url": "u",
+            "size": 2,
+            "comments": [
+                {
+                    "author": "clean-eval[bot]",
+                    "by_app": True,
+                    "body": "[CA-01][blocker] x\n<!-- clean-eval:pr-review tier=High -->",
+                },
+                {"author": "human", "body": "also [Q-02] maybe <!-- clean-eval:pr-review tier=Low -->"},
+                {"author": "clean-eval[bot]", "by_app": True, "body": "[NEW][major] y"},
+                {"author": "clean-eval[bot]", "by_app": True, "body": "[R-03][blocker] z"},
+            ],
+        }
+    )
 
 
 # A run's files (use_cases/store.py): text that isn't JSON, a heat map's modules, a file that is no heat map, a

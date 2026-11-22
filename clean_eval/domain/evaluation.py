@@ -35,8 +35,9 @@ from clean_eval.domain.policy import (
 )
 from clean_eval.domain.rating import ModuleRecord
 
-# Merged-PR history: the period looked back over, each merged PR rated at its base, the later fixes and reverts that point
-# back at it ("escaped defects"), what its review cited, and how well the scores predicted the defects (calibration).
+# Merged-PR history: the period looked back over, each merged PR rated at its base, the later fixes and reverts that
+# point back at it ("escaped defects"), what its review cited, and how well the scores predicted the defects
+# (calibration).
 
 
 class DefectKind(StrEnum):
@@ -47,7 +48,7 @@ class DefectKind(StrEnum):
 
 
 class Confidence(StrEnum):
-    """How sure a defect link is: `high` for a revert or a fix that names the PR, `heuristic` for one found by overlap."""
+    """How sure a defect link is: `high` for a revert or a fix naming the PR, `heuristic` for one found by overlap."""
 
     HIGH = "high"
     HEURISTIC = "heuristic"
@@ -97,6 +98,24 @@ class DefectLink(BaseModel):
     overlap_files: list[str]
 
 
+class HostComment(BaseModel):
+    """A review, comment or inline review comment on a PR: its author, whether that is an app (an account no user can
+    register, so no commenter can pass as one), and its text."""
+
+    author: Optional[str] = None
+    by_app: bool = False
+    body: str = ""
+
+
+class ReviewThreads(BaseModel):
+    """What was said on a PR: its URL, labels and size (lines added and removed), and its reviews and comments."""
+
+    url: Optional[str] = None
+    labels: list[str] = []
+    size: Count = 0
+    comments: list[HostComment] = []
+
+
 class ReviewSignal(BaseModel):
     """What a PR's reviews said: the rules cited, NEW findings, and the clean-eval marker of a trusted reviewer."""
 
@@ -126,7 +145,7 @@ class FetchFailure(BaseModel):
 
 
 class MergedPR(BaseModel):
-    """One merged PR: the first-parent commit that merged it, the base it was merged onto, what it changed and touched."""
+    """One merged PR: the first-parent commit that merged it, the base it merged onto, what it changed and touched."""
 
     sha: Sha
     base: Sha
@@ -346,7 +365,7 @@ class Recommendation(BaseModel):
 
 
 class AgentEvalResult(BaseModel):
-    """The eval agent's result.json: its recommendations (as text, cut to size). Counts and AUC it writes are ignored."""
+    """The eval agent's result.json: its recommendations (as text, cut to size); counts and AUC in it are ignored."""
 
     recommendations: list[Recommendation] = []
 

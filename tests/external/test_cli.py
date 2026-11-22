@@ -14,9 +14,11 @@ from pytest_lazy_fixtures import (
 
 from clean_eval.domain.errors import (
     InvalidRequest,
-    RemoteError,
 )
-from clean_eval.domain.review import HostReview
+from clean_eval.domain.review import (
+    HostReview,
+    ReviewPosting,
+)
 from clean_eval.external import cli
 from clean_eval.external.filesystem import FileSystemGateway
 from clean_eval.use_cases.review import lines_on_diff
@@ -447,75 +449,67 @@ class TestFinalizeReview:
 
 @pytest.mark.parametrize("agent_review", [{"findings": [lf("blocker_finding"), lf("unplaced_finding")]}], indirect=True)
 class TestPost:
-    """`post` puts the validated review up as one review of the PR's head commit, falling back to fewer inline comments
-    when the host rejects them, then dismisses this reviewer's stale change requests; it fails only when no attempt
-    went up."""
+    """`post` puts the validated review up as one review of the PR's head commit, of which the code host takes as much
+    as it accepts, logs each attempt, and then dismisses this reviewer's stale change requests; it fails only when
+    nothing went up."""
 
     @pytest.mark.parametrize(
         "host",
         [
             {
-                "post_review.side_effect": [
-                    RemoteError(
-                        "gh api -X failed: HTTP 422: line must be part of the diff",
-                    ),
-                    HostReview(
-                        id=50,
-                        user="github-actions[bot]",
-                    ),
-                ],
+                "post_review.return_value": lf("posted_after_a_refusal"),
                 "reviews.return_value": lf("reviews_once_posted"),
             }
         ],
         indirect=True,
     )
-    def test_fallbacks_and_dismissal(
+    def test_the_review_goes_up_and_the_stale_ones_are_dismissed(
         self,
         host,
         post_args,
         risk_report,
         cli_runner,
     ):
-        assert cli_runner.invoke(cli.clean_eval, post_args).exit_code == 0
-        assert [made.args[0] for made in host.post_review.call_args_list] == [1, 1]
-        posts = [made.args[1] for made in host.post_review.call_args_list]
-        assert [(post.event, post.commit_id) for post in posts] == [("REQUEST_CHANGES", risk_report.head)] * 2
-        assert posts[0].comments
-        assert posts[1].comments == []  # retried without inline comments
-        assert "clean-eval:pr-review tier=%s" % risk_report.max_tier in posts[1].body
-        assert "rules=CA-01,Q-02" in posts[1].body
-        assert "score=%d " % risk_report.max_score in posts[1].body  # scores are integers 0-100
+        result = cli_runner.invoke(cli.clean_eval, post_args)
+        assert result.exit_code == 0
+        number, post = host.post_review.call_args.args
+        assert (number, post.commit, post.request_changes) == (1, risk_report.head, True)
+        assert [comment.line for comment in post.comments] == [3]  # no diff in the context: every line is tried
+        assert "clean-eval:pr-review tier=%s" % risk_report.max_tier in post.body
+        assert "rules=CA-01,Q-02" in post.body
+        assert "score=%d " % risk_report.max_score in post.body  # scores are integers 0-100
+        assert "::warning::review post failed (event=REQUEST_CHANGES, inline comments=1): " in result.stderr
+        assert "posted review on #1: event=REQUEST_CHANGES, inline comments=0" in result.stdout
         host.dismiss_review.assert_called_once_with(
             1, 10, "Superseded by the clean-eval review of %s" % risk_report.head[:8]
         )
 
-    @pytest.mark.parametrize(
-        "host",
-        [
-            {
-                "post_review.side_effect": RemoteError(
-                    "gh api -X failed: HTTP 403",
-                )
-            }
-        ],
-        indirect=True,
-    )
-    def test_all_attempts_fail(
+    @pytest.mark.parametrize("host", [{"post_review.return_value": lf("refused_every_time")}], indirect=True)
+    def test_a_review_that_never_went_up_fails(
         self,
         host,
         post_args,
         cli_runner,
     ):
-        assert cli_runner.invoke(cli.clean_eval, post_args).exit_code == 1
-        assert host.post_review.call_count == 4
+        result = cli_runner.invoke(cli.clean_eval, post_args)
+        assert result.exit_code == 1
+        assert "(the token needs pull-requests: write)" in result.stderr
+        host.post_review.assert_called_once()
         host.reviews.assert_not_called()
 
     @pytest.mark.parametrize(
-        "host",  # HostReview(): what the gateway makes of a reply to a post that it can't read
-        [{"post_review.return_value": HostReview(), "reviews.return_value": []}],
+        "host",
+        [
+            {
+                "post_review.return_value": ReviewPosting(
+                    review=HostReview(),
+                ),
+                "reviews.return_value": [],
+            }
+        ],
         indirect=True,
     )
-    def test_an_unreadable_reply_is_not_posted_twice(
+    def test_a_review_whose_reply_is_unread_still_went_up(
         self,
         host,
         post_args,
@@ -523,7 +517,7 @@ class TestPost:
     ):
         assert cli_runner.invoke(cli.clean_eval, post_args).exit_code == 0
         host.post_review.assert_called_once()
-        host.dismiss_review.assert_not_called()
+        host.dismiss_review.assert_not_called()  # without its id and author, no review of the PR is known stale
 
 
 @pytest.mark.parametrize(
@@ -544,9 +538,11 @@ class TestPost:
     "host",
     [
         {
-            "post_review.return_value": HostReview(
-                id=5,
-                user="x[bot]",
+            "post_review.return_value": ReviewPosting(
+                review=HostReview(
+                    id=5,
+                    author="x[bot]",
+                ),
             ),
             "reviews.return_value": [],
         }
@@ -554,8 +550,8 @@ class TestPost:
     indirect=True,
 )
 class TestPostOnTheDiff:
-    """With the diff in the context, `post` attaches inline only the findings on lines of the diff, which GitHub
-    accepts, and lists the others in the review's body."""
+    """With the diff in the context, `post` attaches inline only the findings on lines of the diff, where a code host
+    takes them, and lists the others in the review's body."""
 
     def test_only_on_diff_comments_attached(
         self,
@@ -566,7 +562,7 @@ class TestPostOnTheDiff:
     ):
         assert lines_on_diff(FileSystemGateway(), ci_folders.ctx) == {"a.py": {1, 2, 3}}
         assert cli_runner.invoke(cli.clean_eval, post_args).exit_code == 0
-        host.post_review.assert_called_once()  # no 422 retry needed
+        host.post_review.assert_called_once()
         post = host.post_review.call_args.args[1]
         assert [comment.line for comment in post.comments] == [2]
         assert "`a.py:40`" in post.body

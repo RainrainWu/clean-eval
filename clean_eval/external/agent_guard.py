@@ -1,8 +1,8 @@
 """PreToolUse hook for the CI agent (`clean_eval guard`): an allowlist that fails closed.
 
-Second layer behind `claude --restricted` (which already removes code-running tools and confines file tools). This hook
-does not depend on how permission rules are interpreted: it resolves real paths (so a symlink in the checkout can't point
-the agent at /proc/self/environ or ~/.ssh) and allows only:
+Second layer behind `claude --restricted` (which already removes code-running tools and confines file tools). This
+hook doesn't depend on how permission rules are interpreted: it resolves real paths (so a symlink in the checkout can't
+point the agent at /proc/self/environ or ~/.ssh) and allows only:
 
   Read / Grep / Glob / LS        real path under a read root (or a write root), never inside .git
   Write / Edit / MultiEdit       real path under a write root
@@ -12,8 +12,8 @@ the agent at /proc/self/environ or ~/.ssh) and allows only:
 Skill is denied because a skill is instructions, and the checkout's skills are as untrusted as the rest of it (the
 agent reads clean-eval's own skills from the precomputed context, with Read).
 
-Roots come from the environment the Claude Code gateway gives the agent (read through the environment gateway; paths are resolved
-through the file-system gateway):
+Roots come from the environment the Claude Code gateway gives the agent (read through the environment gateway; paths
+resolve through the file-system gateway):
   CE_GUARD_READ_ROOTS   os.pathsep-separated absolute directories
   CE_GUARD_WRITE_ROOTS  os.pathsep-separated absolute directories
 
@@ -28,7 +28,11 @@ from typing import (
     TextIO,
 )
 
-from clean_eval.domain.review import ToolCall
+from pydantic import (
+    BaseModel,
+    field_validator,
+)
+
 from clean_eval.external.environment import EnvironmentGateway
 from clean_eval.external.filesystem import FileSystemGateway
 from clean_eval.use_cases.interfaces import (
@@ -40,6 +44,30 @@ READ_TOOLS = frozendict({"Read": "file_path", "Grep": "path", "Glob": "path", "L
 WRITE_TOOLS = frozendict({"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path"})
 SAFE_TOOLS = frozenset({"TodoWrite", "ToolSearch"})
 ALLOW, DENY = 0, 2
+
+
+class ToolCall(BaseModel):
+    """One tool call the CI agent wants to make, as Claude Code hands it to the PreToolUse hook."""
+
+    tool_name: str = ""
+    tool_input: dict[str, Any] = {}
+    cwd: Optional[str] = None
+
+    @field_validator("tool_name", mode="before")
+    @classmethod
+    def none_name_is_empty(
+        cls,
+        name: object,
+    ) -> object:
+        return "" if name is None else name
+
+    @field_validator("tool_input", mode="before")
+    @classmethod
+    def none_input_is_empty(
+        cls,
+        tool_input: object,
+    ) -> object:
+        return {} if tool_input is None else tool_input
 
 
 def roots(

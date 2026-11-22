@@ -1,6 +1,7 @@
-"""Claude Code, the agent of a CI run: its CLI, installed with npm when it is missing, run sandboxed on a skill's prompt.
-It is the use cases' Agent interface. Everything about the claude CLI (its install, settings, flags and environment)
-stays in this module.
+"""Claude Code, the agent of a CI run: its CLI, installed with npm when it is missing, run sandboxed on a task. It is
+the use cases' Agent interface, and everything about the claude CLI stays here: its install, settings, flags,
+environment and prompt, and the skills it follows (clean-eval's own, copied into the run's context, where the prompt
+points it).
 
 The sandbox, in layers, since the agent reads untrusted text (PR diffs and bodies, commit messages, comments):
 - `claude --restricted --strict-mcp-config`: no shell, no web, no repository or user settings, hooks or MCP servers;
@@ -12,13 +13,12 @@ The sandbox, in layers, since the agent reads untrusted text (PR diffs and bodie
 - file tools confined to the workspace and the context (read) and the agent's folders (write): by restricted mode, by
   Edit() rules, and independently by the `clean_eval guard` PreToolUse hook (real paths), which denies on any failure.
 
-Credentials, from the run's Settings: an API key or an OAuth token, Bedrock or Vertex, or keyless workload identity
-federation. With
-Claude Code trades this GitHub Actions job's OIDC token, read from a file, for a short-lived credential, and
-trades a new one before that expires. GitHub's tokens last five minutes and are good for one trade, so this gateway
-fetches the job's token outside the sandbox, writes a new one every OIDC_REFRESH_SECONDS while the agent runs, and
-removes the file after. The file sits outside every folder the agent can reach, and the agent never gets the request
-token that mints new ones (it isn't PASSED_THROUGH).
+Credentials come from the run's Settings: an API key or an OAuth token, Bedrock or Vertex, or keyless workload identity
+federation. With federation, Claude Code trades this GitHub Actions job's OIDC token, read from a file, for a
+short-lived credential, and trades a new one before that expires. GitHub's tokens last five minutes and serve one trade
+each, so this gateway fetches them outside the sandbox, writes a new one every OIDC_REFRESH_SECONDS while the agent
+runs, and removes the file after. The file sits outside every folder the agent can reach, and the agent never gets the
+request token that mints new ones (it isn't PASSED_THROUGH).
 """
 
 import json
@@ -33,6 +33,7 @@ from typing import Optional
 from clean_eval.domain.errors import HeatmapError
 from clean_eval.domain.review import (
     AgentRun,
+    AgentTask,
     RunFolders,
 )
 from clean_eval.settings import (
@@ -44,6 +45,7 @@ from clean_eval.use_cases.interfaces import (
     Agent,
     FileSystem,
 )
+from clean_eval.use_cases.store import clear_path
 
 PACKAGE = "@anthropic-ai/claude-code"
 # Only what Claude Code needs to authenticate and reach the API: never GH_TOKEN or a runner's token.
@@ -69,6 +71,12 @@ CLAUDE_SETTINGS = frozendict(
         ),
         "permissions": frozendict({"deny": ("Skill",)}),
     }
+)
+# A task's prompt: what to do, then the skill to follow (its SKILL.md in the context, with a section for CI), what to
+# read and what to write; and the settings' extra prompt.
+TASK_PROMPT = (
+    "%(goal)s Read %(context)s/skills/%(skill)s/SKILL.md and follow its 'CI mode' section. Precomputed context: "
+    "%(inputs)s. Write %(outputs)s. %(extra)s"
 )
 CI_CONTEXT = (
     "You are running non-interactively in CI (GitHub Actions) via the clean-eval action. There is no human: never ask "
@@ -107,6 +115,35 @@ def github_oidc_token(
             "could not get the job's OIDC token: GitHub sent none",
         )
     return token
+
+
+def task_prompt(
+    task: AgentTask,
+    folders: RunFolders,
+    extra: str,
+) -> str:
+    """claude's prompt for `task` in `folders` (TASK_PROMPT), with the settings' `extra` prompt at its end."""
+    prompt = TASK_PROMPT % {
+        "goal": task.goal,
+        "context": folders.context,
+        "skill": task.skill,
+        "inputs": ", ".join("%s/%s" % (folders.context, name) for name in task.inputs),
+        "outputs": " and ".join("%s/%s" % (folders.agent, name) for name in task.outputs),
+        "extra": extra,
+    }
+    return prompt.strip()
+
+
+def copy_skills(
+    fs: FileSystem,
+    skills: str,
+    folders: RunFolders,
+) -> None:
+    """Put the skills (`skills`, their folder in the clean-eval checkout) into the run's context, where the prompt sends
+    claude to the one it follows; a copy already there is replaced."""
+    copy = fs.join(folders.context, "skills")
+    clear_path(fs, copy)
+    fs.copy_tree(skills, copy)
 
 
 def write_claude_settings(
@@ -182,8 +219,8 @@ def identity_token_file(
     fs: FileSystem,
     folders: RunFolders,
 ) -> str:
-    """Where a federated run keeps the job's OIDC token: in the output folder, beside the context and the agent's folder.
-    HeatmapError when the output folder is in the checkout, where the agent could read the token."""
+    """Where a federated run keeps the job's OIDC token: in the output folder, beside the context and the agent's
+    folder. HeatmapError when the output folder is in the checkout, where the agent could read the token."""
     token = fs.join(folders.out, *IDENTITY_TOKEN)
     workspace = folders.workspace.rstrip(fs.sep) + fs.sep
     if fs.real_path(token).startswith(workspace):
@@ -230,12 +267,14 @@ class ClaudeCodeGateway(Agent):
         variables: dict[str, str],
         guard_command: str,
         install_dir: str,
+        skills: str,
     ) -> None:
-        self.fs = fs  # writes Claude Code's settings into the run's context, and a federated run's identity token
-        self.settings = settings  # the run's: its credentials, and the Claude Code, model and turn limit it asks for
+        self.fs = fs  # writes the skills, Claude Code's settings and a federated run's identity token
+        self.settings = settings  # the run's: its credentials, the Claude Code, model and turn limit, the extra prompt
         self.variables = variables  # this process's environment, which the agent gets only the PASSED_THROUGH part of
         self.guard_command = guard_command  # the PreToolUse hook: clean_eval's guard, denying on any failure
         self.install_dir = install_dir  # where npm runs, away from the checkout's .npmrc
+        self.skills = skills  # the skills' folder in the clean-eval checkout, never the checkout under review
 
     def require(
         self,
@@ -276,13 +315,16 @@ class ClaudeCodeGateway(Agent):
 
     def run(
         self,
-        prompt: str,
+        task: AgentTask,
         folders: RunFolders,
         writable: list[str],
     ) -> AgentRun:
         write_roots = [folders.agent, *writable]
+        clear_path(self.fs, self.fs.join(folders.out, IDENTITY_TOKEN[0]))  # what a run that crashed may have left
+        copy_skills(self.fs, self.skills, folders)
         settings_file = write_claude_settings(self.fs, folders, self.guard_command)
         environment = agent_environment(self.variables, folders, write_roots)
+        prompt = task_prompt(task, folders, self.settings.agent.extra_prompt)
         command = claude_command(prompt, settings_file, folders, write_roots, self.settings.agent)
         token = None
         if self.settings.federation.rule_id:

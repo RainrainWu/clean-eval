@@ -44,8 +44,8 @@ class Contents:
 
 
 class CommandLine:
-    """The command line as the skills and the action run it, `python -I <package> <arguments>`, in a subprocess, with the
-    package at the path `package` (`run`)."""
+    """The command line as the skills and the action run it, `python -I <package> <arguments>`, in a subprocess, with
+    the package at the path `package` (`run`)."""
 
     def __init__(
         self,

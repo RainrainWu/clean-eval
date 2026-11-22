@@ -1,13 +1,20 @@
 """The git CLI: every git command clean-eval runs, as the use cases' Git interface: the sources of a working tree or of
-any revision, the history, diffs and patches. Paths are passed raw (NUL-delimited output, literal pathspecs), so any
+any revision, the history, diffs and patches. Everything about git's formats stays here too: a unified diff read into
+FileDiffs, and the ids git gives files' contents. Paths are passed raw (NUL-delimited output, literal pathspecs), so any
 filename survives; nothing in the repository is executed."""
 
+import hashlib
 import re
 import subprocess
 from typing import Optional
 
 from clean_eval.domain.errors import HeatmapError
+from clean_eval.domain.review import FileDiff
 from clean_eval.use_cases.interfaces import Git
+
+# A hunk's header in a unified diff: where the hunk starts in the new file, and how many of its lines it shows (1 when
+# left out).
+HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
 def run_git(
@@ -27,6 +34,62 @@ def run_git(
             "git %s failed: %s" % (" ".join(args[:3]), completed.stderr.strip()[-300:]),
         )
     return completed.stdout
+
+
+def split_patch(
+    full: str,
+) -> list[str]:
+    """Split a `git diff` into one patch per file (each starts with 'diff --git ')."""
+    chunks, cur = [], []
+    for line in full.splitlines(keepends=True):
+        if line.startswith("diff --git ") and cur:
+            chunks.append("".join(cur))
+            cur = []
+        cur.append(line)
+    if cur:
+        chunks.append("".join(cur))
+    return chunks
+
+
+def line_counts(
+    patch: str,
+) -> tuple[int, int]:
+    """(lines added, lines removed) by a patch."""
+    lines = patch.splitlines()
+    return (
+        sum(1 for line in lines if line.startswith("+") and not line.startswith("+++")),
+        sum(1 for line in lines if line.startswith("-") and not line.startswith("---")),
+    )
+
+
+def hunk_lines(
+    patch: str,
+) -> list[tuple[int, int]]:
+    """The lines of the new file each hunk of a file's patch shows, as (first, last): its added and unchanged lines. A
+    hunk that shows none (the file removed) has none."""
+    ranges = []
+    for line in patch.splitlines():
+        hunk = HUNK.match(line)
+        if hunk:
+            first, shown = int(hunk.group(1)), int(hunk.group(2) or "1")
+            if shown:
+                ranges.append((first, first + shown - 1))
+    return ranges
+
+
+def file_diff(
+    path: str,
+    patch: str,
+) -> FileDiff:
+    """The FileDiff of `path`, from its patch."""
+    added, removed = line_counts(patch)
+    return FileDiff(
+        path=path,
+        patch=patch,
+        added=added,
+        removed=removed,
+        hunks=hunk_lines(patch),
+    )
 
 
 class GitGateway(Git):
@@ -174,16 +237,25 @@ class GitGateway(Git):
                 "commit %s is not available locally (checkout with fetch-depth: 0)" % sha,
             )
 
-    def diff(
+    def file_diffs(
         self,
         base: str,
         head: str,
-        path: Optional[str] = None,
+        paths: list[str],
+    ) -> list[FileDiff]:
+        """One diff of every path, renames detected, split per file; when that doesn't give one patch per path (git
+        shows a rename as one section for two paths), the diff of each path (taken literally) on its own."""
+        patches = split_patch(run_git(self.root, "diff", "-M", base, head))
+        if len(patches) != len(paths):
+            patches = [run_git(self.root, "--literal-pathspecs", "diff", base, head, "--", path) for path in paths]
+        return [file_diff(path, patch) for path, patch in zip(paths, patches)]
+
+    def blob_id(
+        self,
+        text: str,
     ) -> str:
-        """The patch base..head of one path (taken literally), or of every path with renames detected."""
-        if path is None:
-            return run_git(self.root, "diff", "-M", base, head)
-        return run_git(self.root, "--literal-pathspecs", "diff", base, head, "--", path)
+        data = text.encode("utf-8", "surrogateescape")
+        return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
     def file_log(
         self,

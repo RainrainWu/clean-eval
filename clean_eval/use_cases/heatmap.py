@@ -1,7 +1,6 @@
-"""Use cases of the risk heat map: rate a working tree or a revision (read through Git and the FileSystem, with the
-built-in graph), apply a reviewer's levels, summarize it, and put it into the README."""
+"""Use cases of the risk heat map: rate a working tree (with its coverage report) or a revision, apply a reviewer's
+levels, summarize the heat map, put it into the README, and run the skill in CI."""
 
-import hashlib
 import json
 import re
 from collections import (
@@ -29,7 +28,9 @@ from clean_eval.domain.rating import (
     TopFile,
 )
 from clean_eval.domain.review import (
+    AgentTask,
     RunFolders,
+    Skill,
     StepOutputs,
 )
 from clean_eval.settings import Settings
@@ -40,12 +41,14 @@ from clean_eval.use_cases.ci import (
 from clean_eval.use_cases.interfaces import (
     Agent,
     Clock,
+    CoverageReport,
     DiagramPresenter,
     Environment,
     FileSystem,
     Git,
     ReportPresenter,
     RunLog,
+    Runner,
 )
 from clean_eval.use_cases.rules import analysis
 from clean_eval.use_cases.rules.analysis import (
@@ -67,13 +70,11 @@ from clean_eval.use_cases.rules.heatmap import (
 )
 from clean_eval.use_cases.rules.review import (
     redact,
-    secret_values,
 )
 from clean_eval.use_cases.store import (
     load_policy,
     save_heatmap,
     write_run_output,
-    write_step_outputs,
 )
 
 # The sources to rate, through the Git and FileSystem interfaces: the Python files of a working tree, or of any revision
@@ -93,14 +94,6 @@ def is_python_source(
     path: str,
 ) -> bool:
     return path.endswith(".py") and not GENERATED.search("/" + path)
-
-
-def content_id(
-    text: str,
-) -> str:
-    """Same id as `git hash-object` for UTF-8 text, so working-tree and revision reads share caches."""
-    data = text.encode("utf-8", "surrogateescape")
-    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
 def working_tree_snapshot(
@@ -132,7 +125,8 @@ def read_working_tree(
     fs: FileSystem,
     policy: Policy,
 ) -> tuple[Snapshot, list[SourceFile]]:
-    """(Snapshot, the tracked Python files of the working tree as they are on disk now)."""
+    """(Snapshot, the tracked Python files of the working tree as they are on disk now), each with the id git gives its
+    content, so working-tree and revision reads share caches."""
     snapshot, out = working_tree_snapshot(git), []
     for rel in git.ls_files():
         if not is_python_source(rel):
@@ -151,7 +145,7 @@ def read_working_tree(
                 text=text,
                 loc=count_loc(text),
                 is_test=is_test(rel, policy),
-                blob=content_id(text),
+                blob=git.blob_id(text),
             )
         )
     return snapshot, out
@@ -182,26 +176,9 @@ def read_revision(
     return revision_snapshot(git, rev), files
 
 
-# Line coverage from a Cobertura coverage.xml in a working tree, when there is one (revisions have none), through the
-# FileSystem interface.
-
-CLASS = re.compile(r'<class [^>]*filename="([^"]+)"[^>]*line-rate="([0-9.]+)"')
-
-
-def coverage_line_rates(
-    fs: FileSystem,
-    root: str,
-) -> dict[str, float]:
-    """{file path: line rate 0-1} from the first coverage.xml at or below `root` (one level), or {}."""
-    for report in fs.glob(root, "coverage.xml") + fs.glob(root, "*/coverage.xml"):
-        if fs.is_link(report):
-            continue
-        return {m.group(1): float(m.group(2)) for m in CLASS.finditer(fs.read_text(report))}
-    return {}
-
-
 # Use cases: rate every sub-module of a repository on the four aspects. The working tree is read through the Git and
-# FileSystem interfaces, with the built-in graph; a revision is read straight from git objects. The rating date comes from the Clock.
+# FileSystem interfaces, with the built-in graph and the line coverage of its CoverageReport; a revision (which has no
+# coverage report) is read straight from git objects. The rating date comes from the Clock.
 
 
 def rated_sources(
@@ -392,12 +369,13 @@ def rate(
 def rate_working_tree(
     git: Git,
     fs: FileSystem,
+    coverage: CoverageReport,
     clock: Clock,
     policy: Policy,
     depth: Optional[int] = None,
     max_modules: Optional[int] = None,
 ) -> Heatmap:
-    """The Heatmap of the working tree as it is on disk."""
+    """The Heatmap of the working tree as it is on disk, with the line coverage its report holds."""
     snapshot, files = read_working_tree(git, fs, policy)
     if not rated_sources(files, policy):
         raise no_python_error(snapshot)
@@ -407,7 +385,7 @@ def rate_working_tree(
         builtin_graph(files),
         policy,
         clock.today(),
-        coverage_line_rates(fs, snapshot.root),
+        coverage.line_rates(snapshot.root),
         depth=depth,
         max_modules=max_modules,
     )
@@ -511,7 +489,7 @@ def finalize_heatmap_report(
 ) -> tuple[None, StepOutputs]:
     """The heat map's run in CI: its report is the deterministic summary (`out`/heatmap.md, redacted: the agent only
     levels), written to `out`/report.md. No result and no step outputs."""
-    write_run_output(fs, out, fs.join(out, "heatmap.md"), None, secret_values(env.variables()))
+    write_run_output(fs, out, fs.join(out, "heatmap.md"), None, env.secrets())
     return None, StepOutputs(
         {},
     )
@@ -519,13 +497,13 @@ def finalize_heatmap_report(
 
 # Use case: the risk heat map's CI run (the action's risk-heat-map skill): rate every module, let the agent level the
 # four aspects when asked to, publish the heat map into the README and its diagram, and report. Through the Git,
-# FileSystem, Clock, Environment, Agent and RunLog interfaces and the two presenters.
+# FileSystem, CoverageReport, Clock, Environment, Agent, Runner and RunLog interfaces and the two presenters.
 
-LEVEL_PROMPT = (
-    "Level the four risk aspects of every module in the heat map. Read %(context)s/skills/risk-heat-map/SKILL.md and "
-    "follow its 'CI mode' section; the level standards are in %(context)s/skills/risk-heat-map/references/rate.md. "
-    "Input: %(context)s/heatmap/data.json; the repository is checked out in the current directory. Write "
-    "%(agent)s/judgement.json. %(extra)s"
+LEVEL_TASK = AgentTask(
+    skill=Skill.RISK_HEAT_MAP,
+    goal="Level the four risk aspects of every module in the heat map.",
+    inputs=("heatmap/data.json",),
+    outputs=("judgement.json",),
 )
 
 
@@ -542,7 +520,7 @@ def agent_judgement(
     if not fs.is_file(path):
         log.warning("the agent wrote no judgement.json; publishing the static levels")
         return None
-    text, _ = redact(fs.read_text(path), secret_values(env.variables()))
+    text, _ = redact(fs.read_text(path), env.secrets())
     fs.write_text(path, text)
     try:
         levels = json.loads(text)
@@ -562,16 +540,12 @@ def level_with_the_agent(
     folders: RunFolders,
     settings: Settings,
 ) -> Optional[Judgement]:
-    """The levels the agent gives the four aspects of every module, when the settings say `use_claude`; else None."""
+    """The levels the agent gives the four aspects of every module (LEVEL_TASK), when the settings say `use_claude`;
+    else None."""
     if not settings.heatmap.use_claude:
         return None
     agent.require()
-    prompt = LEVEL_PROMPT % {
-        "context": folders.context,
-        "agent": folders.agent,
-        "extra": settings.agent.extra_prompt,
-    }
-    run_agent(agent, fs, env, log, folders, prompt.strip())
+    run_agent(agent, fs, env, log, folders, LEVEL_TASK)
     return agent_judgement(fs, env, log, folders)
 
 
@@ -580,6 +554,7 @@ def publish_heatmap(
     env: Environment,
     diagram: DiagramPresenter,
     report: ReportPresenter,
+    runner: Runner,
     log: RunLog,
     folders: RunFolders,
     settings: Settings,
@@ -587,9 +562,9 @@ def publish_heatmap(
     judgement: Optional[Judgement],
     policy: Policy,
 ) -> None:
-    """Put the heat map into the settings' README and its diagram (both relative to the workspace), and report: the
-    summary as the run's report, the finalized heat map as its result, `readme-changed` as a step output, and the report
-    in the job summary. Each takes its own copy of the heat map: finalizing one applies the levels to it in place."""
+    """Put the heat map into the settings' README and diagram (relative to the workspace) and report it: the summary as
+    the run's report, the finalized heat map as its result, and to the runner `readme-changed` and the job summary.
+    Each gets its own copy of the heat map, since finalizing one applies the levels in place."""
     readme = settings.heatmap.readme
     update = update_readme(
         fs,
@@ -605,24 +580,27 @@ def publish_heatmap(
     fs.write_text(fs.join(folders.out, "heatmap.md"), text)
     save_heatmap(fs, final, fs.join(folders.out, "result.json"))
     finalize_heatmap_report(fs, env, folders.out)
-    write_step_outputs(
+    report_run(
         fs,
-        settings.github.step_outputs,
+        runner,
+        folders,
+        "Risk Heat Map",
         StepOutputs(
             {"readme-changed": "true" if update.changed else "false"},
         ),
     )
-    report_run(fs, settings.github.step_summary, "Risk Heat Map", folders)
 
 
 def run_heatmap_action(
     git: Git,
     fs: FileSystem,
+    coverage: CoverageReport,
     clock: Clock,
     env: Environment,
     agent: Agent,
     diagram: DiagramPresenter,
     report: ReportPresenter,
+    runner: Runner,
     log: RunLog,
     folders: RunFolders,
     settings: Settings,
@@ -631,9 +609,9 @@ def run_heatmap_action(
     the agent level the four aspects (level_with_the_agent); then publish and report the heat map (publish_heatmap)."""
     log.step("Rate every module")
     policy, source = load_policy(fs, folders.workspace)
-    heatmap = rate_working_tree(git, fs, clock, policy)
+    heatmap = rate_working_tree(git, fs, coverage, clock, policy)
     heatmap.notes.append("Policy: %s" % source)
     save_heatmap(fs, heatmap, fs.join(folders.context, "heatmap", "data.json"))
     judgement = level_with_the_agent(agent, fs, env, log, folders, settings)
     log.step("Publish the heat map")
-    publish_heatmap(fs, env, diagram, report, log, folders, settings, heatmap, judgement, policy)
+    publish_heatmap(fs, env, diagram, report, runner, log, folders, settings, heatmap, judgement, policy)

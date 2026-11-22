@@ -1,12 +1,12 @@
-"""The heat map's use cases (use_cases/heatmap.py), with their dependencies mocked: the sources a rating reads,
-coverage, rating a snapshot, a working tree or a revision, summarizing, and refreshing the README."""
+"""The heat map's use cases (use_cases/heatmap.py), with their dependencies mocked: the sources a rating reads, rating
+a snapshot, a working tree (with its coverage) or a revision, the agent's levels, summarizing, and refreshing the
+README."""
 
 from unittest.mock import call
 
 import pytest
 from pytest_lazy_fixtures import (
     lf,
-    lfc,
 )
 
 from clean_eval.domain.errors import NoPythonSource
@@ -14,9 +14,7 @@ from clean_eval.domain.policy import Aspect
 from clean_eval.use_cases.heatmap import (
     GENERATED,
     agent_judgement,
-    content_id,
     count_loc,
-    coverage_line_rates,
     finalize_heatmap,
     rate,
     rate_revision,
@@ -45,11 +43,6 @@ class TestSourceHelpers:
         path,
     ):
         assert GENERATED.search("/" + path)
-
-    def test_the_content_id_is_gits_blob_id(
-        self,
-    ):
-        assert content_id("hi\n") == "45b983be36b73c0788dc9cbcb76cbb80fc7bb057"  # `git hash-object` of "hi\n"
 
 
 @pytest.mark.parametrize("history", [lf("sources_history")], indirect=True)
@@ -109,53 +102,6 @@ class TestSources:
                 ]
             ),
         ]
-
-
-class TestCoverageLineRates:
-    """Line coverage from a working tree's Cobertura coverage.xml, at its root or one level below."""
-
-    @pytest.mark.parametrize(
-        ("files", "report"),
-        [
-            ({"/repo/coverage.xml": lf("coverage_report")}, "/repo/coverage.xml"),
-            (
-                {
-                    "/repo/build/coverage.xml": lf("coverage_report"),
-                    "/repo/deep/er/coverage.xml": lf("coverage_report"),
-                },
-                "/repo/build/coverage.xml",
-            ),
-        ],
-        indirect=["files"],
-        ids=["at the root", "one level below"],
-    )
-    def test_the_report_at_or_one_level_below_the_root(
-        self,
-        fs,
-        report,
-    ):
-        assert coverage_line_rates(fs, "/repo") == {"src/a.py": 0.75}
-        fs.read_text.assert_called_once_with(report)
-
-    @pytest.mark.parametrize("files", [{"/repo/deep/er/coverage.xml": lf("coverage_report")}], indirect=True)
-    def test_a_report_two_levels_down_is_not_looked_at(
-        self,
-        fs,
-    ):
-        assert coverage_line_rates(fs, "/repo") == {}
-        fs.read_text.assert_not_called()
-
-    @pytest.mark.parametrize(
-        ("files", "links"),
-        [({"/elsewhere.xml": lf("coverage_report")}, {"/repo/coverage.xml": "/elsewhere.xml"})],
-        indirect=True,
-    )
-    def test_a_symlinked_report_is_not_read(
-        self,
-        fs,
-    ):
-        assert coverage_line_rates(fs, "/repo") == {}
-        fs.read_text.assert_not_called()
 
 
 class TestRate:
@@ -227,31 +173,25 @@ class TestRate:
 
 
 class TestRateWorkingTree:
-    """A working tree is read through Git and the FileSystem, and rated with the built-in graph."""
+    """A working tree is read through Git and the FileSystem, and rated with the built-in graph and the line coverage of
+    its CoverageReport."""
 
     @pytest.mark.parametrize(
-        ("history", "files"),
-        [
-            (
-                lf("core_history"),
-                lfc(
-                    lambda checkout, report: {**checkout, "/repo/coverage.xml": report},
-                    lf("core_checkout"),
-                    lf("core_coverage_report"),
-                ),
-            )
-        ],
+        ("history", "files", "coverage"),
+        [(lf("core_history"), lf("core_checkout"), lf("core_line_rates"))],
         indirect=True,
     )
     def test_with_the_builtin_graph_and_coverage(
         self,
         git,
         fs,
+        coverage,
         clock,
         policy,
         today,
     ):
-        rated = rate_working_tree(git, fs, clock, policy)
+        rated = rate_working_tree(git, fs, coverage, clock, policy)
+        coverage.line_rates.assert_called_once_with("/repo")
         assert (rated.generated_at, [module.name for module in rated.modules]) == (today, ["src"])
         module_facts = rated.modules[0].facts
         assert module_facts is not None
@@ -263,11 +203,12 @@ class TestRateWorkingTree:
         self,
         git,
         fs,
+        coverage,
         clock,
         policy,
     ):
         with pytest.raises(NoPythonSource):
-            rate_working_tree(git, fs, clock, policy)
+            rate_working_tree(git, fs, coverage, clock, policy)
 
 
 class TestRateRevision:

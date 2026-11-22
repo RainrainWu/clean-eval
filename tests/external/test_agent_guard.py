@@ -1,13 +1,14 @@
-"""The CI agent's PreToolUse guard (external/agent_guard.py): an allowlist that resolves real paths and fails closed.
-Paths resolve on the real file system, among the agent's folders of the `sandbox` fixture: in a tool call, "<ws>" stands
-for the workspace (the read root holding the checkout), "<ctx>" for the context (the other read root) and "<agent>" for
-the agent's output (the write root). The hook reads its roots from a mocked Environment (`guard_env`), and its stdin and
-stderr are in memory."""
+"""The CI agent's PreToolUse guard (external/agent_guard.py): the tool call it reads, and an allowlist that resolves
+real paths and fails closed. Paths resolve on the real file system, among the agent's folders of the `sandbox` fixture:
+in a tool call, "<ws>" stands for the workspace (the read root holding the checkout), "<ctx>" for the context (the other
+read root) and "<agent>" for the agent's output (the write root). The hook reads its roots from a mocked Environment
+(`guard_env`), and its stdin and stderr are in memory."""
 
 from pathlib import Path
 from unittest.mock import call
 
 import pytest
+from pydantic import ValidationError
 
 from clean_eval.external import agent_guard as guard
 
@@ -262,3 +263,26 @@ class TestHookFailsClosed:
     ):
         assert guard.hook(stdin, stderr, guard_env) == 2
         assert "outside" in stderr.getvalue()
+
+
+class TestToolCall:
+    """A tool call the CI agent asks to make, as Claude Code hands it to the hook: what is missing reads as empty, and
+    malformed JSON is refused."""
+
+    def test_a_null_input_is_empty_and_unknown_keys_are_ignored(
+        self,
+    ):
+        call = guard.ToolCall.model_validate_json('{"tool_name": "Read", "tool_input": null, "session_id": "s"}')
+        assert (call.tool_name, call.tool_input, call.cwd) == ("Read", {}, None)
+
+    @pytest.mark.parametrize(
+        "text",
+        ['{"tool_name": ["Read"]}', '{"tool_input": "x"}', "[1, 2]", "not json"],
+        ids=["a list for a name", "a string for an input", "not an object", "not JSON"],
+    )
+    def test_malformed_tool_calls_are_refused(
+        self,
+        text,
+    ):
+        with pytest.raises(ValidationError):
+            guard.ToolCall.model_validate_json(text)
