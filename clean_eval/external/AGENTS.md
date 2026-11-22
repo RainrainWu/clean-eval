@@ -34,4 +34,4 @@ The only code that touches anything outside the process.
 - Pair any change to `agent_guard.py` with a test in `tests/external/test_agent_guard.py`.
 
 **Tests** go in `tests/external/test_<module>.py`. They run against the real dependency (throwaway repositories, temp
-folders) or a fake executable (`tests.helpers.FakeBin` for `gh` and `claude`).
+folders) or a fake executable (the `fake_bin` fixture for `gh` and `claude`).

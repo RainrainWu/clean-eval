@@ -1,4 +1,5 @@
 """What crosses into and out of GitHub Actions around the CI agent: the tool calls it asks to make, and step outputs."""
+
 from typing import Annotated, Any, Optional
 
 from pydantic import BaseModel, Field, RootModel, field_validator
@@ -13,6 +14,7 @@ class StepOutputs(RootModel[dict[OutputName, OutputValue]]):
 
 class ToolCall(BaseModel):
     """One tool call the CI agent wants to make, as Claude Code hands it to the PreToolUse hook."""
+
     tool_name: str = ""
     tool_input: dict[str, Any] = {}
     cwd: Optional[str] = None

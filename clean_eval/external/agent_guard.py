@@ -20,6 +20,7 @@ through the file-system gateway):
 Protocol: the tool call as JSON on stdin; exit 0 = allow, exit 2 = deny (stderr is shown to the agent). Anything
 unexpected denies; action.sh also turns any other exit status of the hook command into a denial.
 """
+
 import sys
 
 from clean_eval.domain.ci import ToolCall
@@ -78,8 +79,14 @@ def hook(stdin=None, stderr=None, env=ENV, fs=FS):
     stdin, stderr = stdin or sys.stdin, stderr or sys.stderr
     try:
         call = ToolCall.model_validate_json(stdin.read())
-        reason = decide(call.tool_name, call.tool_input, call.cwd or fs.cwd(), roots(env.paths("CE_GUARD_READ_ROOTS"), fs),
-                        roots(env.paths("CE_GUARD_WRITE_ROOTS"), fs), fs)
+        reason = decide(
+            call.tool_name,
+            call.tool_input,
+            call.cwd or fs.cwd(),
+            roots(env.paths("CE_GUARD_READ_ROOTS"), fs),
+            roots(env.paths("CE_GUARD_WRITE_ROOTS"), fs),
+            fs,
+        )
     except Exception as e:  # fail closed on anything unexpected, a ToolCall that doesn't validate included
         reason = "unreadable hook input (%s)" % str(e).splitlines()[0]
     if reason:

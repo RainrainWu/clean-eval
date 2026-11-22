@@ -1,6 +1,7 @@
 """The GitHub CLI (`gh`): every call clean-eval makes to GitHub, for the repository in the current folder. It is the use
 cases' CodeHost interface: what it reads is validated into domain models. Failures raise RemoteError, classified as
 "not_found" (no such PR) or "error" (anything else, e.g. auth, rate limits, the network)."""
+
 import json
 import re
 import subprocess
@@ -35,7 +36,9 @@ class GitHubGateway(CodeHost):
         r = subprocess.run(["gh", *args], input=stdin, capture_output=True, text=True)
         if r.returncode != 0:
             err = (r.stderr or r.stdout).strip()[:300]
-            raise RemoteError("gh %s failed: %s" % (" ".join(args[:2]), err), kind="not_found" if NOT_FOUND.search(err) else "error")
+            raise RemoteError(
+                "gh %s failed: %s" % (" ".join(args[:2]), err), kind="not_found" if NOT_FOUND.search(err) else "error"
+            )
         return r.stdout
 
     def _json(self, *args, stdin=None):
@@ -67,8 +70,15 @@ class GitHubGateway(CodeHost):
         return view, inline if isinstance(inline, list) else []
 
     def post_review(self, number, post):
-        out = self._run("api", "-X", "POST", self._reviews(number), "--input", "-",
-                        stdin=post.model_dump_json(exclude_defaults=True))
+        out = self._run(
+            "api",
+            "-X",
+            "POST",
+            self._reviews(number),
+            "--input",
+            "-",
+            stdin=post.model_dump_json(exclude_defaults=True),
+        )
         try:  # posted: never retried, even when the reply can't be read
             return HostReview.model_validate_json(out)
         except ValidationError:
@@ -85,5 +95,13 @@ class GitHubGateway(CodeHost):
         return out
 
     def dismiss_review(self, number, review_id, message):
-        self._run("api", "-X", "PUT", "%s/%s/dismissals" % (self._reviews(number), review_id),
-                  "-f", "message=" + message, "-f", "event=DISMISS")
+        self._run(
+            "api",
+            "-X",
+            "PUT",
+            "%s/%s/dismissals" % (self._reviews(number), review_id),
+            "-f",
+            "message=" + message,
+            "-f",
+            "event=DISMISS",
+        )

@@ -7,10 +7,12 @@ class HeatmapError(Exception):
         """This error, telling what a pydantic ValidationError found: one `where: what` per problem."""
         problems = []
         for e in error.errors():
-            where = "".join("[%d]" % p if isinstance(p, int) else ("." if i else "") + str(p) for i, p in enumerate(e["loc"]))
+            where = "".join(
+                "[%d]" % p if isinstance(p, int) else ("." if i else "") + str(p) for i, p in enumerate(e["loc"])
+            )
             what = "unknown key" if e["type"] == "extra_forbidden" else e["msg"]
             for prefix in ("Value error, ", "Assertion failed, "):
-                what = what[len(prefix):] if what.startswith(prefix) else what
+                what = what[len(prefix) :] if what.startswith(prefix) else what
             problems.append("%s: %s" % (where, what) if where else what)
         text = "; ".join(problems)
         return cls("%s: %s" % (subject, text) if subject else text)

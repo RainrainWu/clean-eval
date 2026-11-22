@@ -1,5 +1,6 @@
 """The file system: every file and folder clean-eval reads, writes, copies, compares or resolves, and the path strings it
 builds. Text is read with undecodable bytes replaced; a read that fails raises HeatmapError."""
+
 import filecmp
 import os
 import shutil

@@ -1,25 +1,27 @@
 """The CI models (domain/ci.py): step outputs that carry only enums and numbers, and the tool calls the guard decides."""
-import unittest
 
+import pytest
 from pydantic import ValidationError
 
 from clean_eval.domain.ci import StepOutputs, ToolCall
 
 
-class CiModels(unittest.TestCase):
-    def test_step_outputs_are_single_lines(self):
-        self.assertEqual(StepOutputs({"max-tier": "High", "auc": ""}).root, {"max-tier": "High", "auc": ""})
-        for bad in ({"verdict": "approve\nresult=/etc/passwd"}, {"Bad Name": "x"}, {"auc": 0.5}):
-            with self.assertRaises(ValidationError, msg=repr(bad)):
-                StepOutputs(bad)
-
-    def test_tool_calls(self):
-        call = ToolCall.model_validate_json('{"tool_name": "Read", "tool_input": null, "session_id": "s"}')
-        self.assertEqual((call.tool_name, call.tool_input, call.cwd), ("Read", {}, None))
-        for bad in ('{"tool_name": ["Read"]}', '{"tool_input": "x"}', '[1, 2]', 'not json'):
-            with self.assertRaises(ValidationError, msg=bad):
-                ToolCall.model_validate_json(bad)
+def test_step_outputs_are_names_and_values():
+    assert StepOutputs({"max-tier": "High", "auc": ""}).root == {"max-tier": "High", "auc": ""}
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.mark.parametrize("bad", [{"verdict": "approve\nresult=/etc/passwd"}, {"Bad Name": "x"}, {"auc": 0.5}], ids=repr)
+def test_step_outputs_are_single_lines(bad):
+    with pytest.raises(ValidationError):
+        StepOutputs(bad)
+
+
+def test_tool_calls():
+    call = ToolCall.model_validate_json('{"tool_name": "Read", "tool_input": null, "session_id": "s"}')
+    assert (call.tool_name, call.tool_input, call.cwd) == ("Read", {}, None)
+
+
+@pytest.mark.parametrize("bad", ['{"tool_name": ["Read"]}', '{"tool_input": "x"}', "[1, 2]", "not json"])
+def test_malformed_tool_calls_are_refused(bad):
+    with pytest.raises(ValidationError):
+        ToolCall.model_validate_json(bad)

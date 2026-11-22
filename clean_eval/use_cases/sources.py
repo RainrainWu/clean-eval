@@ -1,5 +1,6 @@
 """The sources to rate, through the Git and FileSystem interfaces: the Python files of a working tree, or of any revision
 read straight from git objects. Files are only read as text; nothing from the repository is imported or run."""
+
 import hashlib
 import re
 
@@ -48,7 +49,9 @@ def read_working_tree(git, fs, policy):
             text = fs.read_text(path)
         except HeatmapError:
             continue
-        out.append(SourceFile(path=rel, text=text, loc=count_loc(text), is_test=is_test(rel, policy), blob=content_id(text)))
+        out.append(
+            SourceFile(path=rel, text=text, loc=count_loc(text), is_test=is_test(rel, policy), blob=content_id(text))
+        )
     return snapshot, out
 
 
@@ -58,6 +61,9 @@ def read_revision(git, rev, policy, blobs=None):
     blobs = {} if blobs is None else blobs
     entries = [(p, b) for p, b, size in git.ls_tree(rev) if _wanted(p) and size <= MAX_FILE_BYTES]
     blobs.update(git.read_blobs([b for _, b in entries if b not in blobs]))
-    files = [SourceFile(path=p, text=blobs[b], loc=count_loc(blobs[b]), is_test=is_test(p, policy), blob=b)
-             for p, b in entries if b in blobs]
+    files = [
+        SourceFile(path=p, text=blobs[b], loc=count_loc(blobs[b]), is_test=is_test(p, policy), blob=b)
+        for p, b in entries
+        if b in blobs
+    ]
     return revision_snapshot(git, rev), files

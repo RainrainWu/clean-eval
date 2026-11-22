@@ -1,13 +1,13 @@
 """Test infrastructure for every layer's tests, and nothing from the package: throwaway git repositories, fake `gh` and
-`claude` executables, and file helpers. (The tests' git ignores the developer's config: see tests/__init__.py.)"""
+`claude` executables, and file helpers. The fixtures that hand them out (`repo`, `fake_bin`) and the hermetic git config
+are in tests/conftest.py."""
+
 import datetime as dt
 import json
 import os
-import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import textwrap
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -18,15 +18,17 @@ def days_ago(n):
 
 
 class Repo:
-    """A throwaway git repository with dated commits."""
+    """A git repository at `path` (made if missing) with dated commits."""
 
-    def __init__(self, path=None):
-        self.path = path or tempfile.mkdtemp(prefix="clean-eval-repo-")
+    def __init__(self, path):
+        self.path = str(path)
+        os.makedirs(self.path, exist_ok=True)
         self.git("init", "-q")
 
     def git(self, *args, env=None):
-        r = subprocess.run(["git", "-C", self.path, *args], capture_output=True, text=True,
-                           env={**os.environ, **(env or {})})
+        r = subprocess.run(
+            ["git", "-C", self.path, *args], capture_output=True, text=True, env={**os.environ, **(env or {})}
+        )
         if r.returncode != 0:
             raise RuntimeError(f"git {args}: {r.stderr}")
         return r.stdout.strip()
@@ -43,12 +45,10 @@ class Repo:
             self.write(rel, content)
         self.git("add", "-A")
         stamp = (when or days_ago(1)).isoformat()
-        self.git("commit", "-q", "--allow-empty", "-m", message,
-                 env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp})
+        self.git(
+            "commit", "-q", "--allow-empty", "-m", message, env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}
+        )
         return self.git("rev-parse", "HEAD")
-
-    def cleanup(self):
-        shutil.rmtree(self.path, ignore_errors=True)
 
 
 def make_executable(path, source):
@@ -57,7 +57,7 @@ def make_executable(path, source):
     os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-FAKE_GH = r'''
+FAKE_GH = r"""
 import json, os, sys
 d = os.environ.get("FAKE_GH_DIR") or os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(d, "gh.json")) as f:
@@ -99,9 +99,9 @@ if args[0] == "api":
     if path.endswith("/comments"):
         reply("inline_comments")
 sys.exit(0)
-'''
+"""
 
-FAKE_CLAUDE = r'''
+FAKE_CLAUDE = r"""
 import json, os, sys
 d = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(d, "claude.json")) as f:
@@ -118,14 +118,15 @@ for rel, content in plan.get("workspace_files", {}).items():
         f.write(content if isinstance(content, str) else json.dumps(content))
 print(plan.get("say", "done"))
 sys.exit(plan.get("exit", 0))
-'''
+"""
 
 
 class FakeBin:
-    """A bin dir with fake `gh` and `claude`, configured through JSON files next to them."""
+    """A bin folder `path` (made if missing) with fake `gh` and `claude`, configured through JSON files next to them."""
 
-    def __init__(self):
-        self.dir = tempfile.mkdtemp(prefix="clean-eval-bin-")
+    def __init__(self, path):
+        self.dir = str(path)
+        os.makedirs(self.dir, exist_ok=True)
         make_executable(os.path.join(self.dir, "gh"), FAKE_GH)
         make_executable(os.path.join(self.dir, "claude"), FAKE_CLAUDE)
         self.gh({})
@@ -142,7 +143,7 @@ class FakeBin:
         if not os.path.exists(p):
             return []
         with open(p) as f:
-            return [json.loads(l) for l in f]
+            return [json.loads(line) for line in f]
 
     def claude_invocation(self):
         p = os.path.join(self.dir, "claude-invocation.json")
@@ -150,9 +151,6 @@ class FakeBin:
 
     def env(self):
         return {"PATH": self.dir + os.pathsep + os.environ["PATH"], "FAKE_GH_DIR": self.dir}
-
-    def cleanup(self):
-        shutil.rmtree(self.dir, ignore_errors=True)
 
 
 def _dump(path, obj):

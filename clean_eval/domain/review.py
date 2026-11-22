@@ -1,5 +1,6 @@
 """A PR review: the rules it applies, the findings the review agent proposes (untrusted, checked field by field), the
 review CI trusts and posts, and the PR and change it is about."""
+
 from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, computed_field, field_validator, model_validator
@@ -16,6 +17,7 @@ MAX_FINDINGS = 50
 
 class ReviewRule(BaseModel):
     """One row of a rules table: `| ID | severity | min tier | rule |`."""
+
     id: RuleId
     severity: Severity
     min_tier: Band
@@ -28,6 +30,7 @@ class ReviewRule(BaseModel):
 
 class RulesTable(BaseModel):
     """The rules of a rules file, as a review reads them (a later row with the same ID wins)."""
+
     rules: list[ReviewRule] = []
 
     @property
@@ -44,12 +47,15 @@ class CheckedRules(RulesTable):
             raise ValueError("review-rules.md has no rule rows")
         ids = [r.id for r in self.rules]
         if len(ids) != len(set(ids)):
-            raise ValueError("review-rules.md has duplicate rule IDs: %s" % ", ".join(sorted({i for i in ids if ids.count(i) > 1})))
+            raise ValueError(
+                "review-rules.md has duplicate rule IDs: %s" % ", ".join(sorted({i for i in ids if ids.count(i) > 1}))
+            )
         return self
 
 
 class AgentFinding(BaseModel):
     """One finding as the review agent proposed it. Text is cut to size; anything malformed refuses the whole result."""
+
     rule: FindingRule
     severity: Severity
     file: Optional[OneLine] = None
@@ -85,6 +91,7 @@ class AgentFinding(BaseModel):
 
 class AgentReview(BaseModel):
     """The review agent's result.json. Only the findings are read; a verdict, a band or a count it writes is ignored."""
+
     findings: list[AgentFinding] = []
 
     @field_validator("findings", mode="before")
@@ -97,6 +104,7 @@ class AgentReview(BaseModel):
 
 class Finding(BaseModel):
     """A finding CI trusts: its rule is a known rule ID or NEW, its severity at least its rule's, its text redacted."""
+
     rule: FindingRule
     severity: Severity
     file: Optional[str] = None
@@ -108,6 +116,7 @@ class Finding(BaseModel):
 
 class PullRequest(BaseModel):
     """A pull request as the code host describes it. Its text is untrusted; its commits are checked to be object ids."""
+
     number: int
     title: str = ""
     body: Optional[str] = None
@@ -127,6 +136,7 @@ class PullRequest(BaseModel):
 
 class ChangeHeader(BaseModel):
     """Which change a review is about, how risky it is (from the heat map of its base), and where its config came from."""
+
     pr: int
     base: Sha
     head: Sha
@@ -141,12 +151,14 @@ class ChangeHeader(BaseModel):
 
 class ReviewContext(ChangeHeader):
     """context.json of a PR review."""
+
     diff_patches: Count = 0
     diff_truncated: bool = False
 
 
 class RiskReport(ChangeHeader):
     """risk.json of a PR review: every module the change touches, with its band, scores and evidence at the base."""
+
     modules: list[ModuleRisk]
     files: dict[str, Optional[str]]
     ignored: list[str]
@@ -155,6 +167,7 @@ class RiskReport(ChangeHeader):
 
 class PatchEntry(BaseModel):
     """One changed file of a PR and its patch (diff/index.json)."""
+
     file: str
     module: Optional[str]
     patch: str  # path of the patch, relative to the context folder
@@ -171,6 +184,7 @@ class DiffIndex(RootModel[list[PatchEntry]]):
 class Review(BaseModel):
     """The review CI trusts and posts. The verdict and the counts are derived from the findings, never taken from agent
     text; the band and score come from the precomputed risk."""
+
     model_config = ConfigDict(extra="ignore")  # a stored review's derived fields are recomputed, not read back
 
     pr: Optional[int] = None
@@ -208,6 +222,7 @@ class InlineComment(BaseModel):
 
 class ReviewPost(BaseModel):
     """One review as it is sent to the code host."""
+
     commit_id: Sha
     body: str
     event: Literal["COMMENT", "REQUEST_CHANGES"]
@@ -216,6 +231,7 @@ class ReviewPost(BaseModel):
 
 class HostReview(BaseModel):
     """A review as the code host lists it."""
+
     id: Optional[int] = None
     state: Optional[str] = None
     user: Optional[str] = None
@@ -234,5 +250,6 @@ class HostReview(BaseModel):
 
 class PostOutcome(BaseModel):
     """What posting a review did: whether it went up, and a log of each step ("info" or "warning")."""
+
     posted: bool = False
     log: list[tuple[Literal["info", "warning"], str]] = []

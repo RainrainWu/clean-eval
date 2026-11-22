@@ -4,6 +4,7 @@ Links are imports between repository files, resolved by path; functions and meth
 to a function when it imports the function's file (following one package `__init__` re-export) and names the function.
 It cannot see execution flows (`Graph.has_flows` is False), so Business Impact leaves its flow terms out. Per-file
 syntax is cached by content, so many revisions of one repository parse each version of a file once."""
+
 import ast
 import sys
 from collections import defaultdict
@@ -18,7 +19,7 @@ def parse_syntax(text):
     """The FileSyntax of a Python file (empty when it doesn't parse)."""
     try:
         tree = ast.parse(text)
-    except (SyntaxError, ValueError, RecursionError):
+    except SyntaxError, ValueError, RecursionError:
         return FileSyntax()
     defs, imports, refs = [], [], set()
 
@@ -101,6 +102,7 @@ def lookup(index, dotted, importer):
                 break
             n += 1
         return n
+
     return max(cands, key=lambda c: (shared(c), -len(c)))
 
 

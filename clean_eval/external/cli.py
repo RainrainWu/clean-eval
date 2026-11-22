@@ -12,6 +12,7 @@ outcome.
 
 The GitHub Action also runs prepare, finalize, post, redact and guard around its agent (see ci.py).
 """
+
 import argparse
 import json
 import sys
@@ -49,20 +50,43 @@ def rate(args):
     if args.rev:
         if args.graph != "builtin":
             raise HeatmapError("--rev reads git objects; only --graph builtin works there")
-        heatmap = rate_revision(wiring.git(args.repo), CLOCK, args.rev, policy, RatingCache(), args.depth, args.max_modules)
+        heatmap = rate_revision(
+            wiring.git(args.repo), CLOCK, args.rev, policy, RatingCache(), args.depth, args.max_modules
+        )
     elif args.graph == "code-review-graph":
-        heatmap = rate_working_tree(wiring.git(args.repo), FS, CLOCK, policy, wiring.knowledge_graph(),
-                                    FS.join(args.out, "graph"), args.depth, args.max_modules)
+        heatmap = rate_working_tree(
+            wiring.git(args.repo),
+            FS,
+            CLOCK,
+            policy,
+            wiring.knowledge_graph(),
+            FS.join(args.out, "graph"),
+            args.depth,
+            args.max_modules,
+        )
     else:
-        heatmap = rate_working_tree(wiring.git(args.repo), FS, CLOCK, policy, depth=args.depth, max_modules=args.max_modules)
+        heatmap = rate_working_tree(
+            wiring.git(args.repo), FS, CLOCK, policy, depth=args.depth, max_modules=args.max_modules
+        )
     heatmap.notes.append("Policy: %s" % source)
     save_heatmap(FS, heatmap, FS.join(args.out, "data.json"))
-    print("%s @ %s (%s): %d modules, %d source lines -> %s"
-          % (heatmap.repo, heatmap.ref, heatmap.sha, len(heatmap.modules), heatmap.loc_total, FS.join(args.out, "data.json")))
+    print(
+        "%s @ %s (%s): %d modules, %d source lines -> %s"
+        % (
+            heatmap.repo,
+            heatmap.ref,
+            heatmap.sha,
+            len(heatmap.modules),
+            heatmap.loc_total,
+            FS.join(args.out, "data.json"),
+        )
+    )
     for m in sorted(heatmap.modules, key=lambda m: -m.scores.overall)[:10]:
         s = m.scores
-        print("%-45s loc %-7d overall %-3d biz %-3d effects %-3d entropy %-3d unverified %-3s"
-              % (m.name, m.loc, s.overall, s.biz, s.effects, s.entropy, "N/A" if s.unverified is None else s.unverified))
+        print(
+            "%-45s loc %-7d overall %-3d biz %-3d effects %-3d entropy %-3d unverified %-3s"
+            % (m.name, m.loc, s.overall, s.biz, s.effects, s.entropy, "N/A" if s.unverified is None else s.unverified)
+        )
     for note in heatmap.notes:
         print("note:", note)
 
@@ -70,11 +94,27 @@ def rate(args):
 def readme(args):
     heatmap, judgement = _loaded(args)
     root = FS.absolute(args.repo)
-    result = update_readme(FS, wiring.diagram_presenter(), FS.join(root, args.readme), FS.join(root, args.svg), heatmap,
-                           judgement, _policy(args)[0])
+    result = update_readme(
+        FS,
+        wiring.diagram_presenter(),
+        FS.join(root, args.readme),
+        FS.join(root, args.svg),
+        heatmap,
+        judgement,
+        _policy(args)[0],
+    )
     if args.status_json:
-        FS.write_text(args.status_json, json.dumps({"readme_changed": result.changed, "action": result.action,
-                                                 "fingerprint": result.fingerprint, "modules": len(result.heatmap.modules)}))
+        FS.write_text(
+            args.status_json,
+            json.dumps(
+                {
+                    "readme_changed": result.changed,
+                    "action": result.action,
+                    "fingerprint": result.fingerprint,
+                    "modules": len(result.heatmap.modules),
+                }
+            ),
+        )
     if result.changed:
         verb = {"ADD": "added", "UPDATE": "updated"}[result.action]
         print("%s the heat map in %s and %s (%d modules)" % (verb, args.readme, args.svg, len(result.heatmap.modules)))
@@ -101,8 +141,10 @@ def assess(args):
     text = json.dumps(out, indent=1)
     if args.out:
         FS.write_text(args.out, text)
-        print("%s..%s: %s (max score %d) across %d modules -> %s" % (args.base[:8], args.head[:8], risk.max_band, risk.max_score,
-                                                                   len(risk.modules), args.out))
+        print(
+            "%s..%s: %s (max score %d) across %d modules -> %s"
+            % (args.base[:8], args.head[:8], risk.max_band, risk.max_score, len(risk.modules), args.out)
+        )
     else:
         print(text)
 
@@ -117,13 +159,22 @@ def history(args):
             collected = EvalHistory.model_validate(read_json(FS, args.from_history))
         except ValidationError as e:
             raise HeatmapError.from_validation(e, "%s is not a collected history" % args.from_history)
-        out = replay(collected, load_policy(FS, root, args.replay)[0]) if args.replay else sensitivity(collected, policy)
+        out = (
+            replay(collected, load_policy(FS, root, args.replay)[0]) if args.replay else sensitivity(collected, policy)
+        )
     else:
         if not args.since:
             raise InvalidRequest("--since is required (or --from-history with --replay/--sensitivity)")
-        out = collect_history(wiring.git(root), CLOCK, policy, wiring.period(args.since, args.until, args.defect_window_days),
-                              host=wiring.github() if args.with_gh else None, branch=args.branch, model_source=source,
-                              reviewer_logins=args.reviewer_login)
+        out = collect_history(
+            wiring.git(root),
+            CLOCK,
+            policy,
+            wiring.period(args.since, args.until, args.defect_window_days),
+            host=wiring.github() if args.with_gh else None,
+            branch=args.branch,
+            model_source=source,
+            reviewer_logins=args.reviewer_login,
+        )
         warning = rules_warning(out.rules) if out.rules else None
         if warning:
             print("warning: " + warning, file=sys.stderr)
@@ -133,16 +184,23 @@ def history(args):
         return
     FS.write_text(args.out, text)
     if isinstance(out, EvalHistory):
-        print("wrote %s: %d PRs, %d with escaped defects" % (args.out, out.totals.prs, out.totals.defective_prs), file=sys.stderr)
+        print(
+            "wrote %s: %d PRs, %d with escaped defects" % (args.out, out.totals.prs, out.totals.defective_prs),
+            file=sys.stderr,
+        )
 
 
 def parser():
-    ap = argparse.ArgumentParser(prog="clean_eval", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        prog="clean_eval", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = ap.add_subparsers(dest="command", required=True)
 
     def common(p):
         p.add_argument("--repo", default=".", help="repository root (default: current folder)")
-        p.add_argument("--model", help="risk-model overrides (default: <repo>/.clean-eval/risk-model.json when present)")
+        p.add_argument(
+            "--model", help="risk-model overrides (default: <repo>/.clean-eval/risk-model.json when present)"
+        )
 
     def data(p):
         p.add_argument("data", help="data.json from rate")
@@ -151,9 +209,15 @@ def parser():
     p = sub.add_parser("rate", help="rate every module on the four aspects")
     common(p)
     p.add_argument("--rev", help="rate this revision, read from git objects (default: the working tree)")
-    p.add_argument("--graph", default="builtin", choices=wiring.GRAPHS,
-                   help="builtin: imports and test links from ast; code-review-graph: calls and execution flows (must be installed)")
-    p.add_argument("--depth", type=int, help="levels of modules: 1 is the top-level folders (default from the policy: 3)")
+    p.add_argument(
+        "--graph",
+        default="builtin",
+        choices=wiring.GRAPHS,
+        help="builtin: imports and test links from ast; code-review-graph: calls and execution flows (must be installed)",
+    )
+    p.add_argument(
+        "--depth", type=int, help="levels of modules: 1 is the top-level folders (default from the policy: 3)"
+    )
     p.add_argument("--max-modules", type=int, help="at most this many modules (default from the policy: 60)")
     p.add_argument("--out", required=True, help="folder for data.json")
     p.set_defaults(run=rate)
@@ -180,17 +244,24 @@ def parser():
     p.add_argument("--out", help="write the JSON here instead of stdout")
     p.set_defaults(run=assess)
 
-    p = sub.add_parser("history", help="merged PRs of a period, rated at their bases, with escaped defects (for the eval)")
+    p = sub.add_parser(
+        "history", help="merged PRs of a period, rated at their bases, with escaped defects (for the eval)"
+    )
     common(p)
     p.add_argument("--since", help="YYYY-MM-DD (required unless --from-history)")
     p.add_argument("--until", default=wiring.today(), help="YYYY-MM-DD (default today)")
     p.add_argument("--branch", help="default: origin/HEAD, origin/main|master, or HEAD")
     p.add_argument("--defect-window-days", type=int, default=30)
     p.add_argument("--with-gh", action="store_true", help="fetch review comments with gh (rule metrics)")
-    p.add_argument("--reviewer-login", action="append",
-                   help="login whose clean-eval markers count (repeatable; default: any [bot] login)")
+    p.add_argument(
+        "--reviewer-login",
+        action="append",
+        help="login whose clean-eval markers count (repeatable; default: any [bot] login)",
+    )
     p.add_argument("--from-history", help="reuse a collected history JSON instead of walking git")
-    p.add_argument("--replay", metavar="OVERRIDES_JSON", help="calibration of candidate risk-model overrides on --from-history")
+    p.add_argument(
+        "--replay", metavar="OVERRIDES_JSON", help="calibration of candidate risk-model overrides on --from-history"
+    )
     p.add_argument("--sensitivity", action="store_true", help="one-knob replays of the policy on --from-history")
     p.add_argument("--out", help="write the JSON here instead of stdout")
     p.set_defaults(run=history)

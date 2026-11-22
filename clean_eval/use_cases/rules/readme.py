@@ -1,5 +1,6 @@
 """The README convention: the heat map lives in a `## Risk Heat Map` section, between two markers, so the next run can
 replace it. A fingerprint of the ratings inside the block tells whether a new run changes anything."""
+
 import hashlib
 import json
 import re
@@ -34,9 +35,9 @@ def merge_readme(existing, block):
     text = existing or ""
     m = re.search(r"^%s[ \t]*$" % re.escape(SECTION_HEADING), text, re.M)
     if m:
-        nxt = re.search(r"^## ", text[m.end():], re.M)
+        nxt = re.search(r"^## ", text[m.end() :], re.M)
         stop = m.end() + nxt.start() if nxt else len(text)
         tail = text[stop:].lstrip("\n")
-        return text[:m.end()] + "\n\n" + block.rstrip("\n") + "\n" + ("\n" + tail if tail else ""), "UPDATE"
+        return text[: m.end()] + "\n\n" + block.rstrip("\n") + "\n" + ("\n" + tail if tail else ""), "UPDATE"
     prefix = text.rstrip("\n") + "\n\n" if text.strip() else ""
     return prefix + SECTION_HEADING + "\n\n" + block.rstrip("\n") + "\n", "ADD"

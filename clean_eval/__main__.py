@@ -3,6 +3,7 @@ dependencies will do).
 
 `-I` keeps the current folder (the repository being rated) and PYTHONPATH off sys.path; only the checkout that holds
 this package is added back, so nothing from the rated repository can be imported."""
+
 import sys
 from pathlib import Path
 

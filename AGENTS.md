@@ -14,8 +14,11 @@ This file is the big picture. Each layer's own rules are in its `AGENTS.md`: `cl
 
 ```bash
 uv sync                                                  # Python 3.15 and the locked dependencies (pydantic) in .venv
-uv run python -m unittest discover -s tests -t .         # the whole suite, ~30 s; no network (fake gh and claude)
-uv run python -m unittest tests.use_cases.test_sources   # one module (append .SourcesTest.test_helpers for one test)
+uv run pytest                                            # the whole suite, ~30 s; no network (fake gh and claude)
+uv run pytest -m "not e2e"                               # without the subprocess end-to-end tests, ~5 s
+uv run pytest tests/use_cases/test_sources.py            # one module (::test_helpers for one test, -k to filter)
+uv run ruff check --fix .                                # lint: pycodestyle, pyflakes, isort's import order
+uv run ruff format .                                     # format: Black's style, 120 columns
 uv run python -I clean_eval rate --out <dir>             # rate this repository -> <dir>/data.json
 uv run python -I clean_eval report <dir>/data.json       # the summary table
 uv run python -I clean_eval assess --base master --head HEAD   # the risk a change carries
@@ -24,8 +27,8 @@ uv run python -I clean_eval history --since 2026-01-01 --until 2026-02-01   # me
 
 - **Other commands:** the action also runs `prepare`, `finalize`, `post`, `redact` and `guard`; see `clean_eval --help`.
 - **From another repository:** `uv run --frozen --no-config --project <checkout> python -I <checkout>/clean_eval ...`.
-- **No linter:** none is configured. `tests/test_architecture.py` enforces structure and imports. Wrap lines at 120
-  columns.
+- **Lint and format with ruff** before committing; CI fails on either check. Its settings are in `pyproject.toml`.
+  `tests/test_architecture.py` enforces structure and imports.
 
 ## Architecture
 

@@ -4,6 +4,7 @@ and the base's config. Through the CodeHost, Git, FileSystem and Clock interface
 
 Config always comes from the PR's *base* commit (or the defaults), so a PR can't relax the rules or the risk model it is
 judged by."""
+
 from clean_eval.domain.errors import InvalidPolicy
 from clean_eval.domain.policy import REPO_POLICY, REPO_RULES, Policy
 from clean_eval.domain.review import DiffIndex, PatchEntry, ReviewContext, RiskReport
@@ -42,8 +43,17 @@ def write_split_diff(git, fs, ctx, base, head, files, file_modules):
         name = "diff/%03d.patch" % i
         fs.write_text(fs.join(ctx, name), text)
         added, removed = line_counts(chunk)
-        index.append(PatchEntry(file=f, module=file_modules.get(f), patch=name, patch_lines=text.count("\n"),
-                                added=added, removed=removed, truncated=cut))
+        index.append(
+            PatchEntry(
+                file=f,
+                module=file_modules.get(f),
+                patch=name,
+                patch_lines=text.count("\n"),
+                added=added,
+                removed=removed,
+                truncated=cut,
+            )
+        )
     write_json(fs, fs.join(ctx, "diff", "index.json"), DiffIndex(index))
     return index
 
@@ -66,13 +76,25 @@ def prepare_review(host, git, fs, clock, ctx, pr, default_rules):
 
     heatmap, risk = assess_change(git, clock, base, head, policy)
     files = list(risk.files)
-    header = dict(pr=pr, base=base, head=head, max_tier=risk.max_band, max_score=risk.max_score, model_source=model_src,
-                  model_version=policy.version, rules_source=rules_src, rules_version=rules_version(rules),
-                  files_changed=len(files))
+    header = dict(
+        pr=pr,
+        base=base,
+        head=head,
+        max_tier=risk.max_band,
+        max_score=risk.max_score,
+        model_source=model_src,
+        model_version=policy.version,
+        rules_source=rules_src,
+        rules_version=rules_version(rules),
+        files_changed=len(files),
+    )
     modules = [m.model_copy(update={"facts": None}) for m in risk.modules]  # the reviewer reads evidence, not facts
     notes = heatmap.notes + ([model_note] if model_note else [])
-    write_json(fs, fs.join(ctx, "risk.json"), RiskReport(**header, modules=modules, files=risk.files, ignored=risk.ignored,
-                                                         notes=notes))
+    write_json(
+        fs,
+        fs.join(ctx, "risk.json"),
+        RiskReport(**header, modules=modules, files=risk.files, ignored=risk.ignored, notes=notes),
+    )
     write_json(fs, fs.join(ctx, "pr.json"), {**info.model_dump(include=PR_META), "files": files})
 
     index = write_split_diff(git, fs, ctx, base, head, files, risk.files)

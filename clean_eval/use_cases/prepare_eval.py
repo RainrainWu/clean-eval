@@ -2,6 +2,7 @@
 with its escaped defects, one-knob sensitivity replays, the patches of the defects most worth verifying, and the tuning
 files as they are now (snapshotted, so finalizing can restore whatever it doesn't accept). Through the Git, FileSystem
 and Clock interfaces (and a CodeHost for review signals)."""
+
 from clean_eval.domain.history import DefectPatch, EvalContext
 from clean_eval.domain.policy import Policy
 from clean_eval.use_cases.collect_history import collect_history
@@ -37,14 +38,34 @@ def prepare_eval(git, fs, clock, ctx, workspace, policy, model_source, period, d
         for kind, sha in (("pr", u.sha), ("fix", d.fix_sha)):
             patch, _ = truncate(git.commit_patch(sha, d.overlap_files), MAX_PATCH_CHARS)
             fs.write_text(fs.join(ctx, "defects", "%s-%s.patch" % (stem, kind)), patch)
-        index.append(DefectPatch(file_stem=stem, pr=u.pr, pr_sha=u.sha, pr_band=u.max_tier, fix_sha=d.fix_sha,
-                                 fix_subject=d.subject, kind=d.kind, confidence=d.confidence, overlap_files=d.overlap_files))
+        index.append(
+            DefectPatch(
+                file_stem=stem,
+                pr=u.pr,
+                pr_sha=u.sha,
+                pr_band=u.max_tier,
+                fix_sha=d.fix_sha,
+                fix_subject=d.subject,
+                kind=d.kind,
+                confidence=d.confidence,
+                overlap_files=d.overlap_files,
+            )
+        )
     write_json(fs, fs.join(ctx, "defects", "index.json"), index)
 
-    context = EvalContext(since=period.since, until=period.until, prs=hist.totals.prs, defective_prs=hist.totals.defective_prs,
-                          auc=hist.calibration.auc_max_score, model_source=model_source, model_existed=model is not None,
-                          rules_existed=rules is not None, with_gh=hist.rules is not None,
-                          rules_reliable=hist.rules.reliable if hist.rules else None, defect_patches=len(index),
-                          defect_links=len(links))
+    context = EvalContext(
+        since=period.since,
+        until=period.until,
+        prs=hist.totals.prs,
+        defective_prs=hist.totals.defective_prs,
+        auc=hist.calibration.auc_max_score,
+        model_source=model_source,
+        model_existed=model is not None,
+        rules_existed=rules is not None,
+        with_gh=hist.rules is not None,
+        rules_reliable=hist.rules.reliable if hist.rules else None,
+        defect_patches=len(index),
+        defect_links=len(links),
+    )
     write_json(fs, fs.join(ctx, "context.json"), context)
     return context

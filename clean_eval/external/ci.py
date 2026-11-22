@@ -1,11 +1,12 @@
 """The commands the GitHub Action (action.sh) runs around the CI agent. The agent only *proposes*; these decide and act:
 
-  prepare pr-review|eval   precompute what the agent reads, so it runs with no shell, no network and no token
-  finalize --skill S       validate what it proposed and write the result CI trusts, redacted, plus the step outputs
-  post                     post the validated review on the PR
-  redact FILE              scrub secrets from a file in place (e.g. the agent transcript)
-  guard                    the agent's PreToolUse hook: allow or deny one tool call
+prepare pr-review|eval   precompute what the agent reads, so it runs with no shell, no network and no token
+finalize --skill S       validate what it proposed and write the result CI trusts, redacted, plus the step outputs
+post                     post the validated review on the PR
+redact FILE              scrub secrets from a file in place (e.g. the agent transcript)
+guard                    the agent's PreToolUse hook: allow or deny one tool call
 """
+
 import sys
 
 from clean_eval.domain.errors import InvalidOutput
@@ -23,11 +24,24 @@ def prepare(args):
     repo = wiring.repository_root(args.repo)
     FS.make_dirs(args.ctx)
     if args.skill == "pr-review":
-        context = prepare_review(wiring.github(), wiring.git(repo), FS, CLOCK, args.ctx, args.pr, wiring.default_rules())
+        context = prepare_review(
+            wiring.github(), wiring.git(repo), FS, CLOCK, args.ctx, args.pr, wiring.default_rules()
+        )
     else:
         policy, source = load_policy(FS, repo)
-        context = prepare_eval(wiring.git(repo), FS, CLOCK, args.ctx, repo, policy, source, wiring.period(args.since, args.until),
-                               wiring.default_rules(), host=wiring.github() if args.with_gh else None, branch=args.branch)
+        context = prepare_eval(
+            wiring.git(repo),
+            FS,
+            CLOCK,
+            args.ctx,
+            repo,
+            policy,
+            source,
+            wiring.period(args.since, args.until),
+            wiring.default_rules(),
+            host=wiring.github() if args.with_gh else None,
+            branch=args.branch,
+        )
     print(context.model_dump_json())
 
 
@@ -38,8 +52,10 @@ def finalize(args):
         print("::error::clean-eval: invalid agent output: %s" % e, file=sys.stderr)
         return 2
     if result is not None and result.redactions:
-        print("::warning::clean-eval redacted %d secret-looking value(s) from agent output" % result.redactions,
-              file=sys.stderr)
+        print(
+            "::warning::clean-eval redacted %d secret-looking value(s) from agent output" % result.redactions,
+            file=sys.stderr,
+        )
     write_step_outputs(FS, args.gh_output, outputs)
     print(outputs.model_dump_json())
 
@@ -59,8 +75,10 @@ def redact(args):
         text, n = redact_text(FS.read_text(args.path), wiring.secrets())
         if n:
             FS.write_text(args.path, text)
-            print("::warning::clean-eval redacted %d secret-looking value(s) from %s" % (n, FS.name(args.path)),
-                  file=sys.stderr)
+            print(
+                "::warning::clean-eval redacted %d secret-looking value(s) from %s" % (n, FS.name(args.path)),
+                file=sys.stderr,
+            )
 
 
 def guard(args):

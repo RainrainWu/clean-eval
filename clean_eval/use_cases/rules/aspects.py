@@ -1,5 +1,6 @@
 """The four risk aspects. Each is a pure function of one module's Facts and the Policy, and returns
 (score 0-100, evidence lines)."""
+
 import math
 
 from clean_eval.use_cases.rules.scoring import clamp
@@ -28,11 +29,15 @@ def business(f, p):
         score *= p.tooling_factor
         ev.append("Tooling path: business impact x %g" % p.tooling_factor)
     if f.flows_available:
-        ev.append("%d modules depend on it; entry point of %d flows (top criticality %.2f); on %d%% of flow weight; %d%% of repo code"
-                  % (f.fan_in, len(f.entry_flows), entry, round(f.flow_touch * 100), round(f.share * 100)))
+        ev.append(
+            "%d modules depend on it; entry point of %d flows (top criticality %.2f); on %d%% of flow weight; %d%% of repo code"
+            % (f.fan_in, len(f.entry_flows), entry, round(f.flow_touch * 100), round(f.share * 100))
+        )
     else:
-        ev.append("%d modules depend on it; %d%% of repo code; no execution-flow data, so dependents, name and size carry the score"
-                  % (f.fan_in, round(f.share * 100)))
+        ev.append(
+            "%d modules depend on it; %d%% of repo code; no execution-flow data, so dependents, name and size carry the score"
+            % (f.fan_in, round(f.share * 100))
+        )
     if f.keyword:
         ev.append("Name matches a core-flow keyword (pipeline, api, agent, ...)")
     return score, ev
@@ -41,10 +46,14 @@ def business(f, p):
 def effects(f, p):
     points = sum(p.effect_points.get(k, 0) * v for k, v in f.effect_counts.items()) + p.migration_points * f.migrations
     mix = p.effects_mix
-    score = 100 * (mix["points"] * (1 - math.exp(-points / p.effects_scale))
-                   + mix["dependents"] * clamp(f.fan_in / p.effects_dependents_saturation))
-    ev = ["%d %s call sites (e.g. %s)" % (v, k.replace("_", " "), f.effect_examples.get(k, "?"))
-          for k, v in f.effect_counts.most_common(3)]
+    score = 100 * (
+        mix["points"] * (1 - math.exp(-points / p.effects_scale))
+        + mix["dependents"] * clamp(f.fan_in / p.effects_dependents_saturation)
+    )
+    ev = [
+        "%d %s call sites (e.g. %s)" % (v, k.replace("_", " "), f.effect_examples.get(k, "?"))
+        for k, v in f.effect_counts.most_common(3)
+    ]
     if f.migrations:
         ev.append("%d migration files (schema changes are hard to reverse)" % f.migrations)
     ev.append("%d other modules import or call it" % f.fan_in)
@@ -62,7 +71,9 @@ def entropy(f, p):
         "long_funcs": clamp(long_share / sat["long_funcs"]),
         "longest_func": clamp((maxfn - p.longest_free) / p.longest_range) if n else p.neutral_no_functions,
         "complex_funcs": clamp(cx_share / sat["complex_funcs"]) if n else p.neutral_no_functions,
-        "avg_complexity": clamp((avg_cx - p.avg_complexity_free) / p.avg_complexity_range) if n else p.neutral_no_functions,
+        "avg_complexity": clamp((avg_cx - p.avg_complexity_free) / p.avg_complexity_range)
+        if n
+        else p.neutral_no_functions,
         "exceptions": clamp((f.broad + 2 * f.swallow) / f.kloc / sat["exceptions_per_k"]),
         "untyped": 1 - f.typed_share if f.typed_share is not None else p.neutral_untyped,
         "coupling": clamp(f.fan_out / sat["coupling"]),
@@ -72,13 +83,20 @@ def entropy(f, p):
     score = 100 * sum(w[k] * parts[k] for k in w)
     ev = []
     if n:
-        ev.append("%d functions: %d%% over %d lines, longest %d lines, %d%% over complexity %d"
-                  % (n, round(long_share * 100), p.long_func_lines, maxfn, round(cx_share * 100), p.complex_func))
-        ev.append("%d broad and %d swallowed exceptions; %d%% of functions fully typed"
-                  % (f.broad, f.swallow, round((f.typed_share or 0) * 100)))
+        ev.append(
+            "%d functions: %d%% over %d lines, longest %d lines, %d%% over complexity %d"
+            % (n, round(long_share * 100), p.long_func_lines, maxfn, round(cx_share * 100), p.complex_func)
+        )
+        ev.append(
+            "%d broad and %d swallowed exceptions; %d%% of functions fully typed"
+            % (f.broad, f.swallow, round((f.typed_share or 0) * 100))
+        )
     else:
         ev.append("No functions to measure (constants, models or empty files); size terms use a neutral value")
-    ev.append("Depends on %d other modules; %d files over %d lines; %d TODO markers" % (f.fan_out, f.big_files, p.big_file_lines, f.todo))
+    ev.append(
+        "Depends on %d other modules; %d files over %d lines; %d TODO markers"
+        % (f.fan_out, f.big_files, p.big_file_lines, f.todo)
+    )
     return score, ev
 
 
@@ -86,8 +104,15 @@ def unverified(f, effects_score, p):
     """Returns (score or None when N/A, evidence, info); info is the per-module test summary."""
     ratio = f.linked_test_loc / max(f.loc, 1)
     coverage = f.linked_functions / f.graph_functions if f.graph_functions else None
-    info = {"functions": f.graph_functions, "tested": f.linked_functions, "coverage": round(coverage * 100) if coverage is not None else None,
-            "files": f.linked_test_files, "loc": round(f.linked_test_loc), "ratio": round(ratio, 2), "scales": dict(f.test_scales)}
+    info = {
+        "functions": f.graph_functions,
+        "tested": f.linked_functions,
+        "coverage": round(coverage * 100) if coverage is not None else None,
+        "files": f.linked_test_files,
+        "loc": round(f.linked_test_loc),
+        "ratio": round(ratio, 2),
+        "scales": dict(f.test_scales),
+    }
     if f.na_reason:
         return None, ["Not applicable: %s; not rated and left out of the overall score" % f.na_reason], info
     ev = []
@@ -96,10 +121,14 @@ def unverified(f, effects_score, p):
         ev.append("No functions in the graph; nothing to test")
     else:
         mix = p.unverified_mix
-        score = mix["links"] * 100 * (1 - coverage) + mix["ratio"] * 100 * (1 - clamp(ratio / p.unverified_ratio_target))
+        score = mix["links"] * 100 * (1 - coverage) + mix["ratio"] * 100 * (
+            1 - clamp(ratio / p.unverified_ratio_target)
+        )
         ev.append("%d of %d functions are linked to tests in the graph" % (f.linked_functions, f.graph_functions))
-        ev.append("%d lines in the linked test files, shared across the modules they cover (ratio %.2f to %d source lines)"
-                  % (round(f.linked_test_loc), ratio, f.loc))
+        ev.append(
+            "%d lines in the linked test files, shared across the modules they cover (ratio %.2f to %d source lines)"
+            % (round(f.linked_test_loc), ratio, f.loc)
+        )
     if f.line_rate is not None:
         score = 0.5 * score + 0.5 * 100 * (1 - f.line_rate)
         ev.append("Coverage report: %d%% line rate" % round(f.line_rate * 100))

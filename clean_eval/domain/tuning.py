@@ -1,5 +1,6 @@
 """An eval's outcome: the recommendations the eval agent proposes (untrusted), the edits of the tuning files it may make,
 and what was kept. Which edits are kept is decided by the validators here (shape) and the use case (evidence)."""
+
 import datetime as dt
 from typing import Any, Literal, Optional, Union
 
@@ -16,13 +17,17 @@ MAX_TEXT = 2000
 class PolicyEdit(BaseModel):
     """An edit of the risk-model overrides: still a valid policy, and different only in tunable knobs (weights, mixes,
     saturations, points, standards), never in what is measured (module shape, path conventions)."""
+
     new: dict[str, Any]
     orig: dict[str, Any] = {}
 
     @property
     def changed_keys(self):
-        return {k for k in set(self.new) | set(self.orig)
-                if not (k.startswith("_") or k == "notes") and self.new.get(k) != self.orig.get(k)}
+        return {
+            k
+            for k in set(self.new) | set(self.orig)
+            if not (k.startswith("_") or k == "notes") and self.new.get(k) != self.orig.get(k)
+        }
 
     @model_validator(mode="after")
     def _tunable_and_valid(self):
@@ -38,6 +43,7 @@ class PolicyEdit(BaseModel):
 
 class ModelChange(BaseModel):
     """An accepted edit of the risk model, with the replay AUC before and after."""
+
     accepted: Literal[True] = True
     changed_keys: list[str]
     auc_before: Fraction
@@ -50,6 +56,7 @@ class RulesChange(BaseModel):
 
 class Rejection(BaseModel):
     """An edit that was restored, and why."""
+
     accepted: Literal[False] = False
     reason: str
 
@@ -67,6 +74,7 @@ class Recommendation(BaseModel):
 
 class AgentEvalResult(BaseModel):
     """The eval agent's result.json: its recommendations (as text, cut to size). Counts and AUC it writes are ignored."""
+
     recommendations: list[Recommendation] = []
 
     @field_validator("recommendations", mode="before")
@@ -79,6 +87,7 @@ class AgentEvalResult(BaseModel):
 
 class EvalResult(BaseModel):
     """The eval CI trusts: counts and AUC from the collected history, the recommendations, and which edits were kept."""
+
     since: dt.date
     until: dt.date
     prs: Count

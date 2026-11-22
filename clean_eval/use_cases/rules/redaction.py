@@ -2,15 +2,23 @@
 and hidden instructions, so everything posted or written out is cleaned first: values of secret-looking environment
 variables and their base64 forms, well-known token formats and authorization headers become [REDACTED], and HTML
 comments are defanged, so nothing hidden or marker-like reaches GitHub."""
+
 import base64
 import re
 
 REDACTED = "[REDACTED]"
 SECRET_NAME = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|CREDENTIAL", re.I)
-TOKEN_PATTERNS = [re.compile(p) for p in (
-    r"gh[pousr]_[A-Za-z0-9]{30,}", r"github_pat_[A-Za-z0-9_]{40,}", r"sk-ant-[A-Za-z0-9_\-]{20,}",
-    r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", r"xox[abpr]-[A-Za-z0-9-]{10,}",
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----")]
+TOKEN_PATTERNS = [
+    re.compile(p)
+    for p in (
+        r"gh[pousr]_[A-Za-z0-9]{30,}",
+        r"github_pat_[A-Za-z0-9_]{40,}",
+        r"sk-ant-[A-Za-z0-9_\-]{20,}",
+        r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
+        r"xox[abpr]-[A-Za-z0-9-]{10,}",
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+    )
+]
 AUTH_HEADER = re.compile(r"(?i)(authorization:\s*(?:basic|bearer|token)\s+)[A-Za-z0-9+/=._\-]{8,}")
 MARKER_RE = re.compile(r"<!--\s*clean-eval:[^>]*-->")
 MAX_REPORT_CHARS = 60_000  # GitHub caps review bodies at 65,536

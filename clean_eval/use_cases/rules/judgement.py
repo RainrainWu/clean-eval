@@ -1,4 +1,5 @@
 """Apply a reviewer's levels to a rated heatmap: the level fixes each aspect's band, the static score places it inside."""
+
 from clean_eval.domain.policy import ASPECTS
 from clean_eval.use_cases.rules.scoring import overall, place_in_level
 

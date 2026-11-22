@@ -1,6 +1,7 @@
 """How well the risk scores predicted escaped defects (AUC, escape rate per band, per aspect), and replays of a candidate
 policy on an already-collected history: every rated module is re-scored from its stored facts, so a change of weights,
 mixes or thresholds is evaluated in milliseconds without touching git. Module shape (depth, paths) needs a re-collect."""
+
 from collections import defaultdict
 
 from clean_eval.domain.history import AspectMeans, BandStats, Calibration, Replay, SensitivityRow
@@ -35,21 +36,30 @@ def calibration(prs):
     for key in SCORE_KEYS:
         sp, sn = [_aspect(u, key) for u in bad], [_aspect(u, key) for u in good]
         aspect_auc[key] = auc(sp, sn)
-        aspect_means[key] = AspectMeans(defective=round(sum(sp) / len(sp), 1) if sp else None,
-                                        clean=round(sum(sn) / len(sn), 1) if sn else None)
+        aspect_means[key] = AspectMeans(
+            defective=round(sum(sp) / len(sp), 1) if sp else None, clean=round(sum(sn) / len(sn), 1) if sn else None
+        )
     bands = [b for b in BAND_NAMES if b in by_band]
-    return Calibration(auc_max_score=auc([u.max_score for u in bad], [u.max_score for u in good]),
-                       by_band={b: by_band[b] for b in bands},
-                       band_mix={b: round(by_band[b].prs / len(prs), 3) for b in bands} if prs else {},
-                       aspect_auc=aspect_auc, aspect_means=aspect_means)
+    return Calibration(
+        auc_max_score=auc([u.max_score for u in bad], [u.max_score for u in good]),
+        by_band={b: by_band[b] for b in bands},
+        band_mix={b: round(by_band[b].prs / len(prs), 3) for b in bands} if prs else {},
+        aspect_auc=aspect_auc,
+        aspect_means=aspect_means,
+    )
 
 
 def summarise(u, mods):
     """Copy of PR `u` touching `mods`: its band is the most severe one, its score the highest (an unrated module counts
     at the floor of its band)."""
     scores = [m.score for m in mods if m.score is not None] + [band_floor(m.band) for m in mods if m.score is None]
-    return u.model_copy(update={"modules": mods, "max_tier": max([m.band for m in mods] or ["Low"], key=severity),
-                                "max_score": max(scores, default=0)})
+    return u.model_copy(
+        update={
+            "modules": mods,
+            "max_tier": max([m.band for m in mods] or ["Low"], key=severity),
+            "max_score": max(scores, default=0),
+        }
+    )
 
 
 def rescore(prs, policy):
@@ -81,8 +91,12 @@ def sensitivity(history, policy, step=0.1):
     for nv in (policy.overall_peak_share + step, policy.overall_peak_share - step):
         if 0 <= nv <= 1:
             variant = policy.model_copy(update={"overall_peak_share": round(nv, 3)})
-            rows.append(SensitivityRow(change="overall_peak_share %g→%g" % (policy.overall_peak_share, round(nv, 3)),
-                                       **replay(history, variant).model_dump()))
+            rows.append(
+                SensitivityRow(
+                    change="overall_peak_share %g→%g" % (policy.overall_peak_share, round(nv, 3)),
+                    **replay(history, variant).model_dump(),
+                )
+            )
     for group in WEIGHT_GROUPS:
         weights = getattr(policy, group)
         for key, w in weights.items():
@@ -93,6 +107,9 @@ def sensitivity(history, policy, step=0.1):
                     continue
                 seen.add(nw)
                 variant = policy.model_copy(update={group: {**weights, key: nw}})
-                rows.append(SensitivityRow(change="%s.%s %g→%g (%s)" % (group, key, w, nw, label),
-                                           **replay(history, variant).model_dump()))
+                rows.append(
+                    SensitivityRow(
+                        change="%s.%s %g→%g (%s)" % (group, key, w, nw, label), **replay(history, variant).model_dump()
+                    )
+                )
     return rows
