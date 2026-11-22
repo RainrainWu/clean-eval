@@ -208,7 +208,7 @@ class TestReviewOf:
         host.review_threads.assert_called_once_with(8)
 
 
-class TestRunEvalAction:
+class TestRunRetroAction:
     """The retro's CI run refuses what it can't run on before it asks the code host or runs the agent. (The settings
     refuse a date that isn't one: tests/test_settings.py.)"""
 
@@ -227,7 +227,7 @@ class TestRunEvalAction:
         run_folders,
     ):
         with pytest.raises(RunFailed, match=r"the retro's period: since \(2026-02-01\) is after until"):
-            run_retro_action(git, fs, clock, env, host, agent, runner, run_log, run_folders, settings, "")
+            run_retro_action(git, fs, clock, env, host, agent, runner, run_log, run_folders, settings, {})
         host.require_auth.assert_not_called()
 
     @pytest.mark.parametrize("environ", [{"CE_APPLY": "true"}], indirect=True)
@@ -246,5 +246,5 @@ class TestRunEvalAction:
         run_folders,
     ):
         with pytest.raises(RunFailed, match="symlink"):
-            run_retro_action(git, fs, clock, env, host, agent, runner, run_log, run_folders, settings, "")
+            run_retro_action(git, fs, clock, env, host, agent, runner, run_log, run_folders, settings, {})
         agent.run.assert_not_called()

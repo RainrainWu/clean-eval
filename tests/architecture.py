@@ -22,8 +22,10 @@ REVIEW_RULES = (
     )
     / "skills"
     / "pr-review"
-    / "review-rules.md"
-)  # the default review rules
+    / "references"
+    / "rules"
+    / "policy.md"
+)  # the default review rules' policy, which maps paths to layers
 
 
 class Codebase:
@@ -568,8 +570,8 @@ class Codebase:
     def review_rules_layers(
         self,
     ):
-        """{rules layer: [path globs]}, from the `## Layers` table of the default review rules."""
+        """{rules layer: [path globs]}, from the Layers table of the default review rules."""
         text = (self.root / REVIEW_RULES).read_text()
-        section = text.split("## Layers", 1)[1].split("\n## ", 1)[0]
+        section = text.split("## Layers\n", 1)[1].split("\n## ", 1)[0]
         rows = [line for line in section.splitlines() if line.startswith("| ") and "`" in line]
         return {row.split("|")[1].strip(): re.findall(r"`([^`]+)`", row.split("|")[2]) for row in rows}

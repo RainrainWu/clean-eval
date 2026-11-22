@@ -1,5 +1,5 @@
-"""The presenters: the README's SVG treemap and the block around it (a DiagramPresenter), and the Markdown summary
-(a ReportPresenter). Rendering only, never I/O."""
+"""The presenters: the README's SVG treemap and the block around it (a DiagramPresenter), and the Markdown summary and
+review comment (a ReportPresenter). Rendering only, never I/O."""
 
 from collections.abc import Sequence
 from typing import Optional
@@ -10,7 +10,16 @@ from clean_eval.domain.policy import (
     Aspect,
     Band,
 )
-from clean_eval.domain.rating import Heatmap
+from clean_eval.domain.rating import (
+    Heatmap,
+    ModuleRisk,
+)
+from clean_eval.domain.review import (
+    Finding,
+    ReviewComment,
+    RuleViolation,
+    Verdict,
+)
 from clean_eval.use_cases.interfaces import (
     DiagramPresenter,
     ReportPresenter,
@@ -206,6 +215,71 @@ def markdown_name(
     return "`%s`" % name.replace("`", "'").replace("|", "\\|")
 
 
+# A review's comment: the one layout every review comment has (the pr-review skill's references/comment.md shows it).
+
+VERDICT_LABELS = frozendict(
+    {
+        Verdict.APPROVE: "Approve",
+        Verdict.COMMENT: "Approve with comments",
+        Verdict.REQUEST_CHANGES: "Request changes",
+    }
+)
+MODULES_SHOWN = 5  # the riskiest modules a comment names; it counts the rest
+SUMMARY_COLUMNS = ("Risk", "Modules", "Rules checked", "Findings")
+VIOLATION_COLUMNS = ("Rule", "Severity", "Where", "Finding", "Fix")
+UNCOVERED_COLUMNS = ("Severity", "Where", "Finding", "Fix")
+
+
+def table_cell(
+    text: str,
+) -> str:
+    """Text as a Markdown table's cell holds it: on one line, with its pipes escaped."""
+    return " ".join(text.split()).replace("|", "\\|")
+
+
+def table(
+    columns: Sequence[str],
+    rows: list[list[str]],
+) -> list[str]:
+    """A Markdown table's lines: its header, then a line per row."""
+    return [
+        "| %s |" % " | ".join(columns),
+        "|%s" % ("---|" * len(columns)),
+        *("| %s |" % " | ".join(row) for row in rows),
+    ]
+
+
+def finding_cells(
+    finding: Finding,
+) -> list[str]:
+    """A finding's cells in a comment's table: its severity, where it is, what is wrong (and what the checks changed),
+    and the fix."""
+    where = markdown_name(finding.file + (":%d" % finding.line if finding.line else "")) if finding.file else "—"
+    notes = " _(%s)_" % table_cell("; ".join(finding.notes)) if finding.notes else ""
+    return [str(finding.severity), where, table_cell(finding.summary) + notes, table_cell(finding.fix) or "—"]
+
+
+def violation_rows(
+    violation: RuleViolation,
+) -> list[list[str]]:
+    """A violated rule's rows in a comment's table: one per finding that cites it, each naming the rule."""
+    rule = "**%s** %s" % (violation.rule, table_cell(violation.title)) if violation.title else "**%s**" % violation.rule
+    return [[rule, *finding_cells(f)] for f in violation.findings]
+
+
+def modules_cell(
+    modules: list[ModuleRisk],
+) -> str:
+    """The modules a change touches, the riskiest first, each with its band and score (or as unrated)."""
+    named = [
+        "%s %s %s"
+        % (markdown_name(m.module), BAND_STYLE[m.band][1], m.score if m.rated and m.score is not None else "unrated")
+        for m in modules[:MODULES_SHOWN]
+    ]
+    more = [" and %d more" % (len(modules) - MODULES_SHOWN)] if len(modules) > MODULES_SHOWN else []
+    return " · ".join(named) + "".join(more) if named else "none"
+
+
 class MarkdownReportPresenter(ReportPresenter):
     def report(
         self,
@@ -243,3 +317,34 @@ class MarkdownReportPresenter(ReportPresenter):
         tail += ["", legend()]
         notes = ["", "Notes: " + "; ".join(heatmap.notes) + "."] if heatmap.notes else []
         return "\n".join(head + rows + tail + notes) + "\n"
+
+    def comment(
+        self,
+        comment: ReviewComment,
+    ) -> str:
+        summary = [
+            "%s %s, score %d" % (BAND_STYLE[comment.max_tier][1], comment.max_tier, comment.max_score),
+            modules_cell(comment.modules),
+            "%d of %d (min tier up to %s)" % (comment.rules_checked, comment.rules_total, comment.max_tier),
+            " · ".join("%d %s" % (count, severity) for severity, count in comment.severity_counts.items()),
+        ]
+        violated = [row for violation in comment.violations for row in violation_rows(violation)]
+        uncovered = [finding_cells(f) for f in comment.uncovered]
+        lines = [
+            "## clean-eval review: %s" % VERDICT_LABELS[comment.verdict],
+            "",
+            *table(SUMMARY_COLUMNS, [summary]),
+            "",
+            "### Rules violated",
+            "",
+            *(table(VIOLATION_COLUMNS, violated) if violated else ["None."]),
+            "",
+            "### Not covered by a rule",
+            "",
+            *(table(UNCOVERED_COLUMNS, uncovered) if uncovered else ["None."]),
+            "",
+            "### Notes",
+            "",
+            comment.notes.strip() or "_No notes._",
+        ]
+        return "\n".join(lines) + "\n"

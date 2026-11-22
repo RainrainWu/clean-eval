@@ -8,7 +8,7 @@ Claude Code skills in `.claude/skills/` form a feedback loop:
 | Skill | What it does | Reads / writes |
 |---|---|---|
 | `/risk-heat-map` | Rates every module on four aspects (Business Impact, Side Effects & Reversibility, Entropy, Unverified) from static analysis plus a levelling read-through, and draws the treemap in the section below. | code → README + `docs/risk-heatmap.svg` |
-| `/pr-review [PR#\|branch]` | Reviews a change against `pr-review/review-rules.md`, with depth scaled by the most severe band it touches in the heat map of its base. Every finding cites a rule ID. | heat map + rules → review |
+| `/pr-review [PR#\|branch]` | Reviews a change against the rules in `pr-review/references/rules/` (a file per category), with depth scaled by the most severe band it touches in the heat map of its base, and comments the verdict and the rules violated on the PR, always in the layout of `pr-review/references/comment.md`. It needs the heat map the README publishes at the base, and is blocked without one. | heat map + rules → review |
 | `/retro [period]` | Looks back on the PRs merged in a period: links later fixes/reverts to the PRs that caused them, measures how well risk scores and rules predicted them, and recommends refinements to weights, thresholds and rules, with the cases behind them. | history → advice for model + rules |
 
 Requires [uv](https://docs.astral.sh/uv/), which provides Python 3.15 and the locked dependencies, and git; an
@@ -23,7 +23,7 @@ dependencies point inward. The GitHub Action runs the same package: `action.yml`
 |---|---|---|
 | `domain/` | data models (pydantic) and the enumerations of their closed value sets; every invariant is a validator | stdlib computation modules, pydantic |
 | `use_cases/` | the business logic, in business terms only: `interfaces.py` (the abstract classes of every outside utility it uses), the use cases as functions over those interfaces, and `rules/`, the pure business rules | `domain` |
-| `adaptor/` | the presenters (SVG treemap, Markdown summary); rendering only | `domain`, `use_cases` |
+| `adaptor/` | the presenters (SVG treemap, Markdown summary, review comment); rendering only | `domain`, `use_cases` |
 | `external/` | one gateway per external dependency (git, GitHub, GitHub Actions, Claude Code, the coverage report, files, the environment), holding all there is to know about it; the command line, which is also the composition root; and the agent's guard hook | everything |
 
 Beside the layers, `clean_eval/settings.py` holds `Settings` (pydantic-settings): everything a run reads from its
@@ -35,9 +35,10 @@ and never read the clock, the domain holds only data models, each interface has 
 more, each constant has one home, only the gateways reach outside the process (bar `Settings`, which reads the
 environment, and the command line's console), and the code style of `AGENTS.md` holds.
 
-Run it as `uv run python -I clean_eval <rate|readme|report|assess|history> ...` from this checkout, or from another
-repository as `uv run --frozen --no-config --project <clean-eval> python -I <clean-eval>/clean_eval ...`. `-I` keeps
-the rated repository off `sys.path`, so none of its code can be imported, and `--no-config` keeps its uv settings out.
+Run it as `uv run python -I clean_eval <rate|readme|report|assess|rules|history> ...` from this checkout, or from
+another repository as `uv run --frozen --no-config --project <clean-eval> python -I <clean-eval>/clean_eval ...`. `-I`
+keeps the rated repository off `sys.path`, so none of its code can be imported, and `--no-config` keeps its uv settings
+out.
 The GitHub Action runs `clean_eval action <skill>`, which runs the CI steps in-process; `prepare`, `finalize`, `post`,
 `redact` and `guard` (the agent's hook) are commands of their own too.
 
@@ -48,9 +49,18 @@ recommendations it applies there:
 
 - `.clean-eval/risk-model.json`: overrides of the risk policy (weights, saturations, standards, module splitting); its
   contract is in `.claude/skills/risk-heat-map/references/rate.md`.
-- `.clean-eval/review-rules.md`: the layers, the tier policy and the rules.
+- `.clean-eval/rules/<name>.md`: rule files of the repository's own. The bundled ones are in
+  `.claude/skills/pr-review/references/rules/`: `policy.md` (the rule fields, the layers and the tier policy), then a
+  file per category of rules, `architecture.md`, `data.md`, `quality.md` and `risk.md`. A file replaces the bundled file
+  of its name, and a new name adds one; its Markdown tables hold the rules, one row each. Only these folders hold rules:
+  the skill's other references (such as its CI instructions) are never read as rules.
+- `.clean-eval/review.json`: which rules the reviews apply, by rule ID or glob:
+  `{"include": ["CA-*"], "exclude": ["CA-06"]}`. `include` keeps only the rules it names and supersedes `exclude`;
+  `exclude` drops the rules it names.
 
-CI reads both from the PR's base commit, so a PR can't relax the rules it is judged by.
+CI reads them from the PR's base commit, so a PR can't relax the rules it is judged by. A selection it can't use
+(invalid, or leaving no rule) is ignored with a warning rather than failing every review.
+`clean_eval rules --rev <rev>` prints the rules a review based at `<rev>` applies.
 
 ## GitHub Actions
 
@@ -70,7 +80,7 @@ Use the skills from any repository's workflow through the composite action in th
 | Skill | Needs Claude credentials | Key inputs | Outputs |
 |---|---|---|---|
 | `risk-heat-map` | no (static scores; `use-claude: true` adds the levelling read-through) | `readme`, `diagram` | `readme-changed`, `result` |
-| `pr-review` | yes | `pr` (defaults to the triggering PR), `post`, `fail-on: never\|request_changes\|blocker` | `verdict`, `max-tier`, `blockers`, `result` |
+| `pr-review` | yes | `pr` (defaults to the triggering PR), `post`, `fail-on: never\|request_changes\|blocker`, `readme` | `verdict`, `max-tier`, `blockers`, `result` |
 | `retro` | yes | `since`, `until`, `apply` | `auc`, `result` |
 
 Common inputs: `model`, `max-turns`, `claude-code-version`, `extra-prompt`, `working-directory`, `github-token`. Every
@@ -89,6 +99,8 @@ its commit SHA (`@<sha> # v1.2.0`).
   keyless.
 - **Forks:** trigger reviews on `pull_request`, never `pull_request_target`, and skip fork and Dependabot PRs (they get
   no secrets and no OIDC token); the example workflow shows how.
+- **A published heat map first:** `pr-review` fails, before its agent runs, when the README (`readme`) publishes no
+  heat map at the PR's base. Run `risk-heat-map` on the default branch and merge its README change first.
 
 ### Keyless credentials
 

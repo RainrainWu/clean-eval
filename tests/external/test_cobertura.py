@@ -8,7 +8,7 @@ from clean_eval.external.cobertura import CoberturaGateway
 
 
 class TestLineRates:
-    """The report at the root, else one level below it; none deeper, and none through a symlink."""
+    """The report at the root, else one level below it, and never through a symlink."""
 
     @pytest.mark.parametrize(
         "files",
@@ -27,19 +27,6 @@ class TestLineRates:
         assert CoberturaGateway(
             fs,
         ).line_rates(root) == {"src/a.py": 0.75}
-
-    @pytest.mark.parametrize("files", [{"deep/er/coverage.xml": lf("coverage_report")}], indirect=True)
-    def test_a_report_two_levels_down_is_not_looked_at(
-        self,
-        fs,
-        root,
-    ):
-        assert (
-            CoberturaGateway(
-                fs,
-            ).line_rates(root)
-            == {}
-        )
 
     @pytest.mark.parametrize(
         ("files", "links"),

@@ -281,6 +281,15 @@ class TestPrReviewEndToEnd:
         risk = json.loads((action.out / "context" / "risk.json").read_text())
         post = [json.loads(call["stdin"]) for call in fake_bin.gh_calls() if "POST" in call["args"]][0]
         assert post["event"] == "REQUEST_CHANGES"
+        # the comment's layout, rendered from the findings the action trusts, whatever the agent wrote
+        assert post["body"].startswith("## clean-eval review: Request changes\n")
+        rows = post["body"].splitlines()
+        assert (
+            "| **CA-01** Dependency rule | blocker | `src/billing/a.py:1` | inward"
+            " _(severity raised from minor to the rule's blocker)_ | — |"
+        ) in rows
+        assert "| major | — | unknown rule _(cited unknown rule XX-99)_ | — |" in rows
+        assert "### Notes\n\n## Review" in post["body"]  # the agent's report, as the notes
         assert post["commit_id"] == workspace.git("rev-parse", "feature")
         assert GH_TOKEN not in post["body"]
         assert post["body"].count("clean-eval:pr-review") == 1
@@ -328,6 +337,7 @@ class TestPrReviewJudgesByTheBase:
         assert action_run.returncode == 0, action_run.stderr
         risk = json.loads((action.out / "context" / "risk.json").read_text())
         assert risk["model_source"] == "clean-eval default"
+        assert "risk-heat-map:fingerprint=0123456789ab" in (action.out / "context" / "heat-map.md").read_text()
         assert any(
             "ignored .clean-eval/risk-model.json at the base" in note and "v1 model" in note for note in risk["notes"]
         )
@@ -344,9 +354,61 @@ class TestPrReviewJudgesByTheBase:
     ):
         assert action_run.returncode == 0
         rules = (action.out / "context" / "review-rules.md").read_text()
-        assert "base rule" in rules
+        assert "base rule" in rules  # the base's own pack, not the branch's
         assert "nothing to see" not in rules
+        assert ("| CA-01 |" in rules, "| Q-01 |" in rules) == (True, False)  # the base's selection, not the branch's
         assert not any("POST" in call["args"] for call in fake_bin.gh_calls())  # post=false
+
+
+@pytest.mark.parametrize("workspace", [lf("unpublished_heat_map_workspace")], indirect=True)
+@pytest.mark.parametrize("pull_request", [{"number": 5}], indirect=True)
+@pytest.mark.parametrize("action_run", [{"skill": "pr-review", "pr": "5"}], indirect=True)
+class TestPrReviewNeedsAPublishedHeatMap:
+    """pr-review is scaled by the heat map the README publishes at the PR's base: without one there, the review is
+    blocked before the agent runs, even when the PR adds one."""
+
+    def test_a_base_without_a_published_heat_map_blocks_the_review(
+        self,
+        action_run,
+        fake_bin,
+    ):
+        assert action_run.returncode == 1
+        assert "::error::clean-eval: no risk heat map in README.md at" in action_run.stderr
+        assert fake_bin.claude_invocation() is None
+        assert not any("POST" in call["args"] for call in fake_bin.gh_calls())
+
+
+@pytest.mark.parametrize("workspace", [lf("selection_at_base_workspace")], indirect=True)
+@pytest.mark.parametrize("pull_request", [{"number": 4}], indirect=True)
+@pytest.mark.parametrize("action_run", [{"skill": "pr-review", "pr": "4", "post": "false"}], indirect=True)
+class TestRuleSelection:
+    """pr-review applies only the rules the base's .clean-eval/review.json selects, an include list superseding an
+    exclude list with a warning; a selection that leaves no rule is ignored with a warning, rather than failing every
+    review."""
+
+    def test_only_the_included_rules_reach_the_agent(
+        self,
+        action_run,
+        action,
+    ):
+        assert action_run.returncode == 0, action_run.stderr
+        rules = (action.out / "context" / "review-rules.md").read_text()
+        assert "| CA-06 |" in rules  # included, though excluded too
+        assert "| Q-01 |" not in rules
+        assert "| R-03 |" not in rules
+        assert "::warning::review rules: the excluded rules (CA-06) are ignored" in action_run.stderr
+
+    @pytest.mark.parametrize("selection_at_base_workspace", ['{"include": ["ZZ-01"]}'], indirect=True)
+    def test_a_selection_that_leaves_no_rule_is_ignored(
+        self,
+        selection_at_base_workspace,
+        action_run,
+        action,
+    ):
+        assert action_run.returncode == 0, action_run.stderr
+        rules = (action.out / "context" / "review-rules.md").read_text()
+        assert ("| CA-01 |" in rules, "| Q-01 |" in rules) == (True, True)
+        assert "::warning::review rules: ignored the rule selection: it leaves none of the rules" in action_run.stderr
 
 
 @pytest.mark.parametrize("workspace", [lf("billing_change_workspace")], indirect=True)
@@ -378,7 +440,7 @@ class TestModulesPlantedInTheCheckout:
 
 @pytest.mark.parametrize("workspace", [lf("feature_and_fix_workspace")], indirect=True)
 @pytest.mark.parametrize("gh_replies", [lf("not_logged_in_replies")], indirect=True)
-class TestEval:
+class TestRetro:
     """retro: the agent may edit .clean-eval/ only with apply, and only through a real folder; the action reverts an
     edit it doesn't accept."""
 
@@ -425,6 +487,46 @@ class TestEval:
         )
         for name in ("retro-history.json", "sensitivity.json", "defects/index.json"):
             assert (action.out / "context" / name).exists(), name
+        defaults = sorted(path.name for path in (action.out / "context" / "rules.defaults").iterdir())
+        assert defaults == ["architecture.md", "data.md", "policy.md", "quality.md", "risk.md"]  # clean-eval's
+        assert not any((action.out / "context" / "rules.orig").iterdir())  # none of the repository's own
+
+    @pytest.mark.parametrize(
+        "claude_plan",
+        [
+            lfc(
+                lambda plan: {
+                    **plan,
+                    "workspace_files": {".clean-eval/rules/house.md": "| H-01 | blocker | Low | house rule |\n"},
+                },
+                lf("retro_report_plan"),
+            )
+        ],
+        indirect=True,
+    )
+    @pytest.mark.parametrize(
+        "action_run", [{"skill": "retro", "since": lf("retro_since"), "apply": "true"}], indirect=True
+    )
+    def test_a_new_rule_pack_is_kept(
+        self,
+        action_run,
+        action,
+        workspace,
+    ):
+        assert action_run.returncode == 0, action_run.stderr
+        assert json.loads((action.out / "result.json").read_text())["rules_change"] == {
+            "accepted": True,
+            "packs": ["house.md"],
+        }
+        assert (
+            Path(
+                workspace.path,
+            )
+            / ".clean-eval"
+            / "rules"
+            / "house.md"
+        ).exists()
+        assert action.outputs()["applied"] == "true"
 
     @pytest.mark.parametrize("workspace_links", [{".clean-eval": ".."}], indirect=True)
     @pytest.mark.parametrize(

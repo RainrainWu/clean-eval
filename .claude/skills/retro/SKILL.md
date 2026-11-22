@@ -1,6 +1,6 @@
 ---
 name: retro
-description: Look back on the PRs merged over a period (e.g. "last 90 days", "since 2026-08-01"), link later fixes and reverts to the PRs that caused them, measure how well the risk heat map and each review rule did, and propose concrete refinements to risk-model.json weights/thresholds and review-rules.md, with the cases behind them. Use when asked for a retrospective of the reviews, or to evaluate, calibrate or tune the risk model or review rules.
+description: Look back on the PRs merged over a period (e.g. "last 90 days", "since 2026-08-01"), link later fixes and reverts to the PRs that caused them, measure how well the risk heat map and each review rule did, and propose concrete refinements to risk-model.json weights/thresholds and the review rules, with the cases behind them. Use when asked for a retrospective of the reviews, or to evaluate, calibrate or tune the risk model or review rules.
 ---
 
 # Retro — look back on the reviews, refine the rules
@@ -15,7 +15,9 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
 - Tuning targets — always the repo-specific files:
   - `.clean-eval/risk-model.json` — overrides of the heat map's policy (`clean_eval/domain/policy.py`; contract in the
     risk-heat-map skill's `references/rate.md`, "Policy overrides"). Absent means the defaults; add only the keys you change.
-  - `.clean-eval/review-rules.md` ← copy `$SK/pr-review/review-rules.md` first if missing.
+  - `.clean-eval/rules/<name>.md` — the repository's own rule files. To change a bundled one, copy
+    `$SK/pr-review/references/rules/<name>.md` there first: it then replaces the bundled file. A new name adds a file. Rule
+    IDs stay unique across all files.
 
 ## Steps
 
@@ -76,7 +78,7 @@ Output is **advice with evidence**; nothing changes without approval (interactiv
    Findings …
    ### Recommended changes
    1. risk-model.json: business_weights.dependents 0.30 → 0.40 — biz AUC 0.67 (best); replay AUC 0.64 → 0.66
-   2. review-rules.md: add Q-13 "…" (major, Moderate) — would have caught #478 → #502, #511 → #530
+   2. rules/quality.md: add Q-13 "…" (major, Moderate) — would have caught #478 → #502, #511 → #530
    ### Caveats (sample size, heuristic links, incomplete look-ahead)
    ```
    Every recommendation cites its evidence. Interactive: ask which to apply. When applying: edit the
@@ -94,24 +96,26 @@ named in the prompt:
 | `retro-history.json` | the step-2 output |
 | `sensitivity.json` | replays of every one-knob change (`overall_peak_share` ±0.1; every weight in `business_weights`, `effects_mix`, `entropy_weights`, `unverified_mix` ±0.1 and → 0): AUC, band escape rates and band mix — use these instead of running replays |
 | `defects/index.json` + `defects/NN-prX-{pr,fix}.patch` | the PR and fix diffs (overlapping files) for up to 30 defect links, highest-risk first — use these for step 3 |
-| `risk-model.orig.json`, `review-rules.orig.md` | the repository's current overrides (`{}` when none) and rules |
-| `risk-model.defaults.json` | every policy field with its default, for reference |
+| `risk-model.orig.json`, `rules.orig/` | the repository's current overrides (`{}` when none) and its own rule files (none when it has none) |
+| `risk-model.defaults.json`, `rules.defaults/` | every policy field with its default, and clean-eval's rule files (a file in `rules.orig/` replaces the one of its name) |
 
 **Coverage:** do step 3 from the patches — read the PR and fix patch for at least the first 10 links in
 `defects/index.json` (all of them if fewer), say how many you read and how many links you dropped as false, and
 base AUC/escape-rate conclusions on the verified set. Don't ask anything. With `apply=false`, write nothing outside
 the agent directory. With `apply=true` you may
-edit `.clean-eval/risk-model.json` (overrides: start from `risk-model.orig.json`, add only what you change) and
-`.clean-eval/review-rules.md` (from the `.orig` copy). The action then accepts a model edit only if it is a valid policy
+edit `.clean-eval/risk-model.json` (overrides: start from `risk-model.orig.json`, add only what you change) and the
+rule files in `.clean-eval/rules/`: edit one of the repository's (from `rules.orig/`), copy one of clean-eval's from
+`rules.defaults/` to change it, or add one. The action then accepts a model edit only if it is a valid policy
 that changes nothing but tunable knobs (weights, mixes, saturations, points, standards, `overall_peak_share`,
 `unrated_band`; never `depth`, `exclude` or the path patterns), and only if its replay AUC
-is not below the baseline — otherwise it restores the file. A rules edit must still parse into unique rule rows.
+is not below the baseline — otherwise it restores the file. It keeps the rule files you changed only if the rules of
+all files, over clean-eval's, still parse into unique rule IDs; otherwise it restores them all.
 Any other file you create or change under `.clean-eval/` is restored to its previous state.
 The action also refuses model edits when the sample is under 20 PRs or 5 defective PRs, or AUC is undefined.
 Then write to the agent directory:
 - `report.md` — the step-6 report, saying which recommendations you applied.
 - `result.json` — exactly:
   ```json
-  {"recommendations": [{"target": "risk-model.json|review-rules.md", "change": "…", "evidence": "…"}]}
+  {"recommendations": [{"target": "risk-model.json|rules/<pack>.md", "change": "…", "evidence": "…"}]}
   ```
   The action takes PR counts and AUC from the history itself and reports whether each edit was accepted.

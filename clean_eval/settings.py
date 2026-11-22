@@ -10,8 +10,8 @@ variables. Settings come from environment variables only, never from a .env file
 working directory is the checkout under review, which a PR controls.
 
 Not settings, on purpose:
-- a repository's own tuning (.clean-eval/risk-model.json and review-rules.md), which CI reads from the PR's base commit
-  so that a PR can't relax the rules it is judged by;
+- a repository's own tuning (.clean-eval/: its risk model, its rule packs and which rules its reviews apply), which CI
+  reads from the PR's base commit so that a PR can't relax the rules it is judged by;
 - the variables that redaction scans (every one: a secret's name isn't known in advance) and the ones the agent gets
   (patterns, since Bedrock's and Vertex's are open-ended);
 - the guard's two roots, which the Claude Code gateway sets for its own hook."""
@@ -134,14 +134,15 @@ class RetroSettings(BaseModel):
 
 
 class HeatmapSettings(BaseModel):
-    """The risk heat map's inputs: where its README and diagram go, and whether the agent levels the aspects."""
+    """The risk heat map's inputs: where its README and diagram go (a PR review requires the heat map that README
+    publishes), and whether the agent levels the aspects."""
 
     model_config = GROUP
 
     readme: str = Field(
         "README.md",
         alias="CE_README",
-        description="risk-heat-map: the README, in the workspace",
+        description="risk-heat-map: the README, in the workspace; pr-review: the README whose heat map it requires",
     )
     diagram: str = Field(
         DIAGRAM_PATH,

@@ -93,6 +93,9 @@ from clean_eval.use_cases.review import (
     finalize_pr_review,
     post_review,
     prepare_review,
+    published_heat_map,
+    rule_selection,
+    rules_at,
     run_review_action,
 )
 from clean_eval.use_cases.rules.retro import (
@@ -100,6 +103,7 @@ from clean_eval.use_cases.rules.retro import (
     rules_warning,
     sensitivity,
 )
+from clean_eval.use_cases.rules.review import parse_rules
 from clean_eval.use_cases.rules.review import redact as redact_text
 from clean_eval.use_cases.store import (
     load_heatmap,
@@ -112,8 +116,8 @@ from clean_eval.use_cases.store import (
 # The stateless gateways, shared; git is per repository, gh per use.
 FS, ENV, CLOCK = FileSystemGateway(), EnvironmentGateway(), ClockGateway()
 CHECKOUT = FS.parent(FS.parent(FS.parent(FS.real_path(__file__))))  # the clean-eval checkout: package and skills
-DEFAULT_RULES = FS.join(CHECKOUT, ".claude", "skills", "pr-review", "review-rules.md")
 SKILLS_DIR = FS.join(CHECKOUT, ".claude", "skills")  # the skills the CI agent follows
+RULE_PACKS_DIR = FS.join(SKILLS_DIR, "pr-review", "references", "rules")  # clean-eval's review rules: only these
 PACKAGE_DIR = FS.join(CHECKOUT, "clean_eval")
 HELP = """Rate how risky each sub-module of a repository is to change, put the heat map into its README, and assess and
 review changes by that risk.
@@ -166,8 +170,9 @@ def secrets() -> Secrets:
     return ENV.secrets()
 
 
-def default_rules() -> str:
-    return FS.read_text(DEFAULT_RULES)
+def default_rule_packs() -> dict[str, str]:
+    """clean-eval's own rule packs: {file name: text}."""
+    return {FS.name(path): FS.read_text(path) for path in FS.glob(RULE_PACKS_DIR, "*.md")}
 
 
 def runner_for(
@@ -331,11 +336,12 @@ def run_pr_review(
         CLOCK,
         ENV,
         agent,
+        report_presenter(),
         runner,
         log,
         folders,
         settings,
-        default_rules(),
+        default_rule_packs(),
     )
 
 
@@ -358,7 +364,7 @@ def run_retro(
         log,
         folders,
         settings,
-        default_rules(),
+        default_rule_packs(),
     )
 
 
@@ -591,19 +597,24 @@ def report(
 
 @clean_eval.command(
     short_help="The risk a change carries.",
-    help="The risk a change (base..head) carries, from the heat map of its base.",
+    help="The risk a change (base..head) carries, from the heat map of its base. With --readme, only when that README "
+    "publishes a heat map at the base, as a PR review requires.",
 )
 @repository_options
 @click.option("--base", required=True)
 @click.option("--head", required=True)
+@click.option("--readme", help="require the heat map this README (from the repository root) publishes at the base")
 @click.option("--out", help="write the JSON here instead of stdout")
 def assess(
     repo: str,
     model: Optional[str],
     base: str,
     head: str,
+    readme: Optional[str],
     out: Optional[str],
 ) -> None:
+    if readme:
+        published_heat_map(git(repo), base, readme)
     policy, source = load_policy(FS, repo, model)
     heatmap, risk = assess_change(git(repo), CLOCK, base, head, policy)
     result = risk.model_dump(mode="json")
@@ -617,6 +628,34 @@ def assess(
         )
     else:
         print(text)
+
+
+@clean_eval.command(
+    short_help="The review rules at a revision.",
+    help="The rules a review of a change based at REV applies, as one text: clean-eval's rule packs, the repository's "
+    "own packs in .clean-eval/rules/ over them, and only the rules its .clean-eval/review.json selects (or --include and "
+    "--exclude, instead). Notes on them go to stderr.",
+)
+@click.option("--repo", default=".", help="repository root (default: current folder)")
+@click.option("--rev", default="HEAD", show_default=True, help="the revision the repository's packs are read from")
+@click.option("--include", multiple=True, help="apply only this rule: an ID, or a glob of IDs (CA-*); repeatable")
+@click.option("--exclude", multiple=True, help="skip this rule (ignored with --include); repeatable")
+@click.option("--out", help="write them here instead of stdout")
+def rules(
+    repo: str,
+    rev: str,
+    include: tuple[str, ...],
+    exclude: tuple[str, ...],
+    out: Optional[str],
+) -> None:
+    text, source, notes = rules_at(git(repo), rev, default_rule_packs(), rule_selection(include, exclude))
+    for note in notes:
+        print("clean_eval: %s" % note, file=sys.stderr)
+    if out:
+        FS.write_text(out, text)
+        print("%d rules from %s -> %s" % (len(parse_rules(text).rules), source, out))
+    else:
+        sys.stdout.write(text)
 
 
 @clean_eval.command(
@@ -702,14 +741,16 @@ def prepare() -> None:
 @click.option("--repo", default=".", help="repository root (default: current folder)")
 @click.option("--ctx", "context_dir", required=True, help="folder for the context")
 @click.option("--pr", type=int, required=True)
+@click.option("--readme", default="README.md", show_default=True, help="the README that publishes the heat map")
 def prepare_pr_review(
     repo: str,
     context_dir: str,
     pr: int,
+    readme: str,
 ) -> None:
     root = repository_root(repo)
     FS.make_dirs(context_dir)
-    context = prepare_review(github(), git(root), FS, CLOCK, context_dir, pr, default_rules())
+    context = prepare_review(github(), git(root), FS, CLOCK, context_dir, pr, default_rule_packs(), readme)
     print(context.model_dump_json())
 
 
@@ -743,7 +784,7 @@ def prepare_retro_context(
         policy,
         source,
         period(since, until),
-        default_rules(),
+        default_rule_packs(),
         with_reviews=with_gh,
         branch=branch,
     )
@@ -780,7 +821,7 @@ def finalize(
 ) -> None:
     try:
         if skill == Skill.PR_REVIEW:
-            result, outputs = finalize_pr_review(FS, ENV, context_dir, agent, out)
+            result, outputs = finalize_pr_review(FS, ENV, report_presenter(), context_dir, agent, out)
         elif skill == Skill.RETRO:
             result, outputs = finalize_retro(FS, ENV, context_dir, agent, out, apply_edits, workspace)
         else:

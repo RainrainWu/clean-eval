@@ -3,7 +3,9 @@
 This layer holds only the presenters, in `presenters.py`. They implement `DiagramPresenter` and `ReportPresenter` from
 `clean_eval/use_cases/interfaces.py`:
 - `SvgDiagramPresenter` renders the README's SVG treemap and the block between the heat-map markers.
-- `MarkdownReportPresenter` renders the Markdown summary.
+- `MarkdownReportPresenter` renders the Markdown summary, and a review's comment in the one layout every review
+  comment has. The pr-review skill's `references/comment.md` shows that layout with an example the presenter renders;
+  a test keeps the two the same, so change both together.
 - The colors and bands they share, and the squarified treemap layout (`squarify`), sit beside them.
 
 Rules:

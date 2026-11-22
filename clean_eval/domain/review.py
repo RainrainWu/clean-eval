@@ -51,6 +51,12 @@ LineNumber = Annotated[
         strict=True,
     ),
 ]
+RulePattern = Annotated[
+    str,
+    Field(
+        pattern=r"^[A-Z0-9?*\[\]!-]+$",
+    ),
+]  # a rule ID (CA-01), or a glob of IDs (CA-*, Q-0?)
 LEGACY_BANDS = frozendict({"Medium": Band.MODERATE})  # "Medium" is the pre-v2 name of the Moderate band
 MAX_FINDINGS = 50
 
@@ -71,11 +77,12 @@ class LogLevel(StrEnum):
 
 
 class ReviewRule(BaseModel):
-    """One row of a rules table: `| ID | severity | min tier | rule |`."""
+    """One row of a rules table: `| ID | severity | min tier | rule |`, with the rule's title (its bold lead)."""
 
     id: RuleId
     severity: Severity
     min_tier: Band
+    title: str = ""
 
     @field_validator("min_tier", mode="before")
     @classmethod
@@ -100,7 +107,7 @@ class RulesTable(BaseModel):
 
 
 class CheckedRules(RulesTable):
-    """A rules file an unattended retro may keep: at least one rule row, and no ID twice."""
+    """Rules an unattended retro may keep: at least one rule row, and no ID twice."""
 
     @model_validator(mode="after")
     def check_usable(
@@ -108,14 +115,27 @@ class CheckedRules(RulesTable):
     ) -> Self:
         if not self.rules:
             raise ValueError(
-                "review-rules.md has no rule rows",
+                "the rules have no rule rows",
             )
         ids = [r.id for r in self.rules]
         if len(ids) != len(set(ids)):
             raise ValueError(
-                "review-rules.md has duplicate rule IDs: %s" % ", ".join(sorted({i for i in ids if ids.count(i) > 1}))
+                "duplicate rule IDs: %s" % ", ".join(sorted({i for i in ids if ids.count(i) > 1})),
             )
         return self
+
+
+class RuleSelection(BaseModel):
+    """Which rules a review applies (`.clean-eval/review.json`): only those `include` names, else every rule but those
+    `exclude` names (include supersedes exclude). Each name is a rule ID (`CA-01`) or a glob of IDs (`CA-*`)."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+    )
+
+    include: tuple[RulePattern, ...] = ()
+    exclude: tuple[RulePattern, ...] = ()
 
 
 class AgentFinding(BaseModel):
@@ -197,6 +217,39 @@ class Finding(BaseModel):
     notes: list[str] = []  # what the checks changed (an unknown rule, a raised severity)
 
 
+class RuleViolation(BaseModel):
+    """A rule a change violates: its ID and title, the most severe of the findings that cite it, and those findings."""
+
+    rule: RuleId
+    title: str = ""
+    severity: Severity
+    findings: list[Finding]
+
+
+class ReviewComment(BaseModel):
+    """What a review's comment says, in the one layout every review comment has: the verdict; the risk the review was
+    scaled by (the max band and score, and the modules touched); how many of the rules it checked; the rules violated,
+    most severe first, then by ID; the problems no rule covers; and the reviewer's notes."""
+
+    verdict: Verdict
+    max_tier: Band
+    max_score: Score
+    modules: list[ModuleRisk] = []
+    rules_checked: Count = 0
+    rules_total: Count = 0
+    violations: list[RuleViolation] = []
+    uncovered: list[Finding] = []
+    notes: str = ""
+
+    @property
+    def severity_counts(
+        self,
+    ) -> dict[Severity, int]:
+        """How many findings of each severity, the most severe first."""
+        found = [f for violation in self.violations for f in violation.findings] + self.uncovered
+        return {severity: sum(f.severity == severity for f in found) for severity in reversed(Severity)}
+
+
 class PullRequest(BaseModel):
     """A pull request as the code host describes it: its title, body and author (untrusted text), its URL, its base and
     head branches and commits, whether its head is in another repository, and the ref its head is fetched from
@@ -231,10 +284,12 @@ class ChangeHeader(BaseModel):
 
 
 class ReviewContext(ChangeHeader):
-    """context.json of a PR review."""
+    """context.json of a PR review, with notes on its rules (a file or selection ignored, a rule ID defined twice, a
+    selected name that matches no rule)."""
 
     diff_patches: Count = 0
     diff_truncated: bool = False
+    rules_notes: list[str] = []
 
 
 class RiskReport(ChangeHeader):

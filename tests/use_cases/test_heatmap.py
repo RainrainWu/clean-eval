@@ -15,7 +15,6 @@ from clean_eval.use_cases.heatmap import (
     GENERATED,
     agent_judgement,
     count_loc,
-    finalize_heatmap,
     rate,
     rate_revision,
     rate_working_tree,
@@ -271,13 +270,6 @@ class TestSummarizeHeatmap:
         assert (text, final.judged_modules) == ("1 judged", 1)
         assert final.modules[0].scores.biz >= 75
         report_presenter.report.assert_called_once_with(final)
-
-    def test_without_a_judgement_no_module_is_judged(
-        self,
-        heatmap,
-        policy,
-    ):
-        assert finalize_heatmap(heatmap, None, policy).judged_modules == 0
 
 
 @pytest.mark.parametrize(

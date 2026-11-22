@@ -11,6 +11,7 @@ from clean_eval.domain.review import (
     PullRequest,
     Review,
     ReviewRule,
+    RuleSelection,
     StepOutputs,
 )
 
@@ -130,7 +131,7 @@ class TestReviewRule:
 
 
 class TestCheckedRules:
-    """A rules file an unattended retro may keep: at least one rule row, and no ID twice."""
+    """Rules an unattended retro may keep: at least one rule row, and no ID twice."""
 
     def test_a_rules_file_with_distinct_rows_is_kept(
         self,
@@ -146,6 +147,29 @@ class TestCheckedRules:
     ):
         with pytest.raises(ValidationError):
             CheckedRules.model_validate({"rules": [review_rule] * copies})
+
+
+class TestRuleSelection:
+    """Which rules a review applies (.clean-eval/review.json): lists of rule IDs or globs of IDs. A name that is
+    neither, a name that isn't in a list, and a key the selection doesn't have are refused."""
+
+    @pytest.mark.parametrize(
+        "selection",
+        [
+            {"include": ["CA-01;rm"]},
+            {"include": ["CA_01"]},
+            {"exclude": ["$(x)"]},
+            {"include": "CA-*"},
+            {"excludes": ["Q-10"]},
+        ],
+        ids=["a command", "an underscore", "a substitution", "a name outside a list", "an unknown key"],
+    )
+    def test_a_selection_of_no_rules_or_globs_is_refused(
+        self,
+        selection,
+    ):
+        with pytest.raises(ValidationError):
+            RuleSelection.model_validate(selection)
 
 
 class TestPullRequest:

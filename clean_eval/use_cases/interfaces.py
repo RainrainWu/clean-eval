@@ -22,6 +22,7 @@ from clean_eval.domain.review import (
     FileDiff,
     HostReview,
     PullRequest,
+    ReviewComment,
     ReviewPost,
     ReviewPosting,
     RunFolders,
@@ -531,6 +532,14 @@ class ReportPresenter(ABC):
         heatmap: Heatmap,
     ) -> str:
         """A short Markdown summary: the riskiest modules and what drives them."""
+
+    @abstractmethod
+    def comment(
+        self,
+        comment: ReviewComment,
+    ) -> str:
+        """A review's comment on the change, in Markdown, in the one layout every review comment has (the pr-review
+        skill's references/comment.md): the verdict, the risk, the rules violated, what no rule covers, the notes."""
 
 
 class RunLog(ABC):
