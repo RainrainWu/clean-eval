@@ -74,6 +74,10 @@ Common inputs: `model`, `max-turns`, `claude-code-version`, `extra-prompt`, `wor
 Every run writes `report.md`, `result.json` and `claude.log` to `outputs.output-dir` and a job summary.
 The action never commits — pair it with a create-PR step. Ready-to-copy workflows: [`examples/workflows/`](examples/workflows).
 
+**Versions:** `@v1` follows the latest 1.x [release](https://github.com/RainrainWu/clean-eval/releases), so fixes and
+features arrive without breaking changes. To change versions only on purpose, pin a release (`@v1.2.0`) or, safest,
+its commit SHA (`@<sha> # v1.2.0`).
+
 - **Credentials:** `anthropic-api-key` or `claude-code-oauth-token`; for Bedrock/Vertex set
   `CLAUDE_CODE_USE_BEDROCK=1` / `CLAUDE_CODE_USE_VERTEX=1` and cloud credentials in the step's `env`.
 - **Permissions:** `pull-requests: write` to post reviews; `contents: read` otherwise.
@@ -113,6 +117,22 @@ uv run python -m unittest discover -s tests            # fake gh/claude, no netw
 ```
 
 The `tests` workflow runs the same suite on every push to a pull request and to `master`.
+
+### Releasing
+
+Releases are [semver](https://semver.org) tags on `master`, `vMAJOR.MINOR.PATCH`: MAJOR when the action's inputs or
+outputs, the `.clean-eval/` files or the command line change incompatibly, MINOR for backward-compatible features,
+PATCH for fixes.
+
+1. In a PR, bump the version with `uv version --bump minor` (or `major`, `patch`; `uv version 1.3.0-rc.1` for a
+   pre-release). It updates `pyproject.toml` and `uv.lock`.
+2. Once it is merged, tag the merge commit and push the tag: `git tag v1.3.0 <merge commit> && git push origin v1.3.0`.
+3. The `release` workflow checks the tag ([`.github/scripts/check_release.py`](.github/scripts/check_release.py):
+   semver, on `master`, equal to the version in `pyproject.toml`, newer than every release), runs the tests at it,
+   publishes the GitHub Release with generated notes and moves the major tag (`v1`) to it. A pre-release
+   (`-alpha.N`, `-beta.N`, `-rc.N`) is published as one and leaves `v1` alone.
+
+If a check fails, nothing is published: delete the tag (`git push origin :refs/tags/v1.3.0`), fix, and tag again.
 
 ## Risk Heat Map
 
