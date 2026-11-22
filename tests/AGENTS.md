@@ -40,7 +40,7 @@ uv run pytest tests/use_cases/test_heatmap.py            # one module; ::TestCla
 | `tests/domain/` | Raw field dicts of a valid example per model (`scores`, `module_record`, `stored_review`, `review_rule`, `period`, `merged_pr`, `eval_result`), which a test validates itself, so a refused input fails inside `pytest.raises`. |
 | `tests/use_cases/` | The interfaces as MagicMocks (`fs`, `git`, `clock`, `env`, `host`, `agent`, `run_log`, `diagram_presenter`, `report_presenter`) and the data they answer from (`files`, `links`, `history`, `shas`, `environ`); `graph`, `rating_cache`, `period`; the class-scoped `collected` history. |
 | `tests/use_cases/rules/` | The rules' inputs as models: `aspect_scores`, `inline_comment`, `merged_prs`. |
-| `tests/external/` | The real gateways and repositories of the contract tests (`git`, `fs`, `repo`, `history`, `files`); the mocked CLIs (`gh`, and `claude_runs` for the Claude Code gateway); the guard's `sandbox`, `stdin`, `guard_env`; the command line's `run_cli` (a subprocess), `cli_runner` (click, in-process), `host` and the CI commands' files and arguments. |
+| `tests/external/` | The real gateways and repositories of the contract tests (`git`, `fs`, `repo`, `history`, `files`); the mocked CLIs (`gh`; and for the Claude Code gateway `claude_runs`, `npm_installs` and `oidc_tokens`, GitHub's token endpoint); the guard's `sandbox`, `stdin`, `guard_env`; the command line's `run_cli` (a subprocess), `cli_runner` (click, in-process), `host` and the CI commands' files and arguments. |
 
 ## Writing tests
 

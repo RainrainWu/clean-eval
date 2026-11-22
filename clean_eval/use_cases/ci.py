@@ -12,7 +12,7 @@ from clean_eval.use_cases.store import clear_path, write_step_outputs
 
 TRANSCRIPT = "claude.log"  # the agent's transcript, redacted, in the output folder
 # What an earlier run leaves in the output folder, besides the context and the agent's folder.
-LEFT_BEHIND = ("result.json", "report.md", TRANSCRIPT, "heatmap.md")
+LEFT_BEHIND = ("result.json", "report.md", TRANSCRIPT, "heatmap.md", "identity")  # identity: a federation token
 
 
 def start_run(

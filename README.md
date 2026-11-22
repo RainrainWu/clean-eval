@@ -78,11 +78,66 @@ The action never commits — pair it with a create-PR step. Ready-to-copy workfl
 features arrive without breaking changes. To change versions only on purpose, pin a release (`@v1.2.0`) or, safest,
 its commit SHA (`@<sha> # v1.2.0`).
 
-- **Credentials:** `anthropic-api-key` or `claude-code-oauth-token`; for Bedrock/Vertex set
-  `CLAUDE_CODE_USE_BEDROCK=1` / `CLAUDE_CODE_USE_VERTEX=1` and cloud credentials in the step's `env`.
-- **Permissions:** `pull-requests: write` to post reviews; `contents: read` otherwise.
+- **Credentials:** [keyless](#keyless-credentials) workload identity federation, `anthropic-api-key` or
+  `claude-code-oauth-token`; for Bedrock/Vertex set `CLAUDE_CODE_USE_BEDROCK=1` / `CLAUDE_CODE_USE_VERTEX=1` and
+  cloud credentials in the step's `env`.
+- **Permissions:** `pull-requests: write` to post reviews; `contents: read` otherwise; `id-token: write` to sign in
+  keyless.
 - **Forks:** trigger reviews on `pull_request`, never `pull_request_target`, and skip fork/Dependabot PRs
-  (they get no secrets) — see the example workflow.
+  (they get no secrets and no OIDC token) — see the example workflow.
+
+### Keyless credentials
+
+Workload identity federation signs the agent in without a stored key. The job's GitHub OIDC token, which names the
+repository, the event and the branch, is traded for a short-lived credential of an Anthropic service account, under a
+federation rule that decides which jobs may. Register GitHub as an issuer
+(`https://token.actions.githubusercontent.com`) and add a service account and a rule in the Claude Console
+([Anthropic's guide](https://platform.claude.com/docs/en/manage-claude/wif-providers/github-actions)). Then give the job
+`id-token: write`, and give the action the IDs, which aren't secret:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write                  # lets the job request its OIDC token
+steps:
+  - uses: RainrainWu/clean-eval@v1
+    with:
+      skill: pr-review
+      anthropic-federation-rule-id: ${{ vars.ANTHROPIC_PR_FEDERATION_RULE_ID }}
+      anthropic-organization-id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+      anthropic-service-account-id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+```
+
+The action requests the job's token outside the agent's sandbox. While the agent runs, it writes a new one every four
+minutes, since GitHub's tokens last five minutes and each serves one trade. The token goes to a file the agent can't
+read, and the agent never gets the runner's means to request more. Don't set an API key or OAuth token as well: Claude
+Code would sign in with it instead, so the action refuses the mix.
+
+**Scoping the rules.** A rule matches the token's subject (`sub`) and claims. Give each kind of job a rule of its own,
+as narrow as the job allows:
+
+| Rule for | `subject_prefix` | Who can sign in |
+|---|---|---|
+| PR reviews | `repo:OWNER/REPO:pull_request` | a run for any PR from a branch of the repository |
+| Scheduled runs (`eval`; `risk-heat-map` with `use-claude`) | `repo:OWNER/REPO:ref:refs/heads/main` | only the workflows on the default branch |
+| A job in a GitHub environment | `repo:OWNER/REPO:environment:NAME` | only the runs the environment's protection rules admit |
+
+- **Exact subjects.** A `subject_prefix` matches exactly unless it ends in `*`. `repo:OWNER/REPO:*` admits every
+  branch, event and environment of the repository.
+- **Immutable IDs.** Add `claims` such as `{"repository_id": "…", "repository_owner_id": "…"}`, so that a repository
+  renamed, or deleted and re-created under the same name, doesn't inherit the rule. Repositories created after
+  July 15, 2026 use GitHub's immutable `sub` format (`repo:OWNER@ID/REPO@ID:…`) by default. Copy the subject from a
+  token of your own ([actions-oidc-debugger](https://github.com/github/actions-oidc-debugger) prints one) rather than
+  writing it from memory.
+- **Who a PR rule trusts.** A `pull_request` run uses the workflow file as the PR's branch has it, so the rule trusts
+  everyone who can push a branch. A repository secret gets the same trust, but here there is no long-lived key to
+  leak. Fork PRs get no OIDC token under `pull_request`, unless the repository sends write tokens to fork workflows.
+  To trust fewer people, run the review in an environment with required reviewers, and scope its rule to that
+  environment.
+- **A workspace of its own.** Point the rules at a service account and a workspace kept for clean-eval, with a spend
+  limit, so that a misused credential can't reach other work. A rule for one workspace needs no
+  `anthropic-workspace-id`; a rule for all workspaces needs it.
 
 ### Trust model
 
@@ -93,9 +148,10 @@ The agent reads untrusted text (PR diffs and descriptions, commit messages, comm
    base commit, and the `.clean-eval/` config **from the base commit** (a PR can't relax the rules it's judged by);
    for `eval`, the history (every PR rated against its base), defect patches and one-knob sensitivity replays.
 2. **Sandboxed agent** (the Claude Code gateway, `clean_eval/external/claude_code.py`): `claude --restricted --strict-mcp-config` — no shell, no web, no MCP, and
-   no user/project settings or hooks from the checkout — with a scrubbed environment (no `GH_TOKEN` or runner
-   tokens) and stdin from `/dev/null`. It takes no instructions from the checkout either: no `CLAUDE.md`,
-   `AGENTS.md` or `.claude/rules/`, and no skills, which a PR could otherwise edit to steer its own review.
+   no user/project settings or hooks from the checkout — with a scrubbed environment (no `GH_TOKEN`, runner
+   tokens or the runner's means to request an OIDC token) and stdin from `/dev/null`. It takes no instructions from
+   the checkout either: no `CLAUDE.md`, `AGENTS.md` or `.claude/rules/`, and no skills, which a PR could otherwise edit
+   to steer its own review.
    Restricted mode skips them (verified with Claude Code 2.1.328), and the agent's settings exclude them explicitly
    (`CLAUDE_CODE_DISABLE_CLAUDE_MDS`, `claudeMdExcludes`, the AGENTS.md setting, and a deny rule for the Skill tool,
    which the guard denies too). File tools are confined to the checkout and the precomputed context

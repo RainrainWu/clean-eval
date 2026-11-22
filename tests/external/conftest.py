@@ -4,8 +4,10 @@ call out to, and the CI commands' arguments over real folders.
 
 - `git` and `fs` are the real gateways, holding `history` and `files` / `links`. The contract tests parametrize them
   with the in-memory fakes of tests/use_cases/fakes.py too, so each check runs on each.
-- `gh` and `claude_runs` replace subprocess.run where the GitHub and Claude Code gateways call it. `host` is the
-  CodeHost the command line's cli.github() hands out, and `guard_env` the Environment the guard's hook reads.
+- `gh` replaces subprocess.run where the GitHub gateway calls it. For the Claude Code gateway, `claude_runs` replaces
+  subprocess.Popen (claude), `npm_installs` subprocess.run (npm) and `oidc_tokens` urllib's urlopen (the job's OIDC
+  token). `host` is the CodeHost the command line's cli.github() hands out, and `guard_env` the Environment the
+  guard's hook reads.
 - `run_cli` runs `python -I <checkout>/clean_eval ...` in a subprocess, for the end-to-end tests, and `cli_runner`
   runs a command in-process through click, with the CI commands' arguments (argv lists) over real folders.
 
@@ -19,6 +21,8 @@ import json
 import os
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -593,25 +597,88 @@ GUARD = "python -I /action/clean_eval guard || exit 2"  # the PreToolUse hook th
 
 
 @pytest.fixture
+def npm_installs(
+    request,
+):
+    """subprocess.run as the Claude Code gateway calls it to install the CLI with npm: an autospecced MagicMock, which
+    `claude_runs` patches in. Every call finishes with `request.param`: {"exit": status, "out": stdout, "err": stderr}
+    (by default 0, "added 1 package", "")."""
+    reply = getattr(request, "param", {})
+    run = create_autospec(subprocess.run)
+    run.return_value = subprocess.CompletedProcess(
+        ["npm"], reply.get("exit", 0), reply.get("out", "added 1 package"), reply.get("err", "")
+    )
+    return run
+
+
+@pytest.fixture
 def claude_runs(
     request,
     monkeypatch,
+    npm_installs,
 ):
-    """subprocess.run as the Claude Code gateway calls it (npm, and claude itself): an autospecced MagicMock patched into
-    clean_eval.external.claude_code only. Every call finishes with `request.param`: {"exit": status, "out": what it
-    printed, "err": its stderr} (by default 0, "done", ""), or raises it when it is an exception."""
-    run = create_autospec(subprocess.run)
-    reply = getattr(request, "param", {})
-    if isinstance(reply, BaseException):
-        run.side_effect = reply
+    """subprocess.Popen as the Claude Code gateway starts claude: an autospecced MagicMock, patched into
+    clean_eval.external.claude_code only, with `npm_installs` as its subprocess.run. `request.param` is how the run
+    goes: {"exit": status, "out": its transcript, "timeouts": how many of the gateway's waits for it time out first,
+    "interrupted": an exception the wait then raises instead, claude still running} (by default 0, "done", 0, None); or
+    an exception, which starting claude raises. The process is `claude_runs.return_value`, and
+    `claude_runs.identity_tokens` collects what the identity-token file held at each wait (nothing without one)."""
+    outcome = getattr(request, "param", {})
+    popen = create_autospec(subprocess.Popen)
+    popen.identity_tokens = []
+    if isinstance(outcome, BaseException):
+        popen.side_effect = outcome
     else:
-        run.return_value = subprocess.CompletedProcess(
-            ["claude"], reply.get("exit", 0), reply.get("out", "done"), reply.get("err", "")
-        )
+        process = popen.return_value
+
+        def communicate(
+            timeout=None,
+        ):
+            token = popen.call_args.kwargs["env"].get("ANTHROPIC_IDENTITY_TOKEN_FILE")
+            if token:
+                popen.identity_tokens.append(Path(token).read_text())
+            if process.communicate.call_count <= outcome.get("timeouts", 0):
+                raise subprocess.TimeoutExpired("claude", timeout or 0)
+            if outcome.get("interrupted"):
+                raise outcome["interrupted"]
+            process.returncode = process.poll.return_value = outcome.get("exit", 0)
+            return outcome.get("out", "done"), None
+
+        process.communicate.side_effect = communicate
+        process.returncode = process.poll.return_value = None  # running, until the wait ends
     monkeypatch.setattr(
-        "clean_eval.external.claude_code.subprocess", SimpleNamespace(**{**vars(subprocess), "run": run})
+        "clean_eval.external.claude_code.subprocess",
+        SimpleNamespace(**{**vars(subprocess), "run": npm_installs, "Popen": popen}),
     )
-    return run
+    return popen
+
+
+@pytest.fixture
+def oidc_tokens(
+    request,
+    monkeypatch,
+):
+    """GitHub's OIDC token endpoint as the Claude Code gateway calls it (urllib.request.urlopen): an autospecced
+    MagicMock patched into clean_eval.external.claude_code only. `request.param` lists its replies to successive calls,
+    each a token it issues (a str), a raw body (bytes) or an exception it raises; past them, or unparametrized, the
+    n-th call issues "jwt-<n>". Each call holds the Request the gateway made."""
+    replies = list(getattr(request, "param", []))
+
+    def respond(
+        url_request,
+        **options,
+    ):
+        reply = replies.pop(0) if replies else "jwt-%d" % urlopen.call_count
+        if isinstance(reply, BaseException):
+            raise reply
+        return io.BytesIO(reply if isinstance(reply, bytes) else json.dumps({"value": reply}).encode())
+
+    urlopen = create_autospec(urllib.request.urlopen, side_effect=respond)
+    monkeypatch.setattr(
+        "clean_eval.external.claude_code.urllib",
+        SimpleNamespace(parse=urllib.parse, request=SimpleNamespace(**{**vars(urllib.request), "urlopen": urlopen})),
+    )
+    return urlopen
 
 
 @pytest.fixture
@@ -628,16 +695,19 @@ def claude_installed(
 
 @pytest.fixture
 def run_folders(
+    request,
     tmp_path,
 ):
-    """The folders of a CI run, made under tmp_path (resolved): the workspace, and the output folder with the context
-    and the agent's folder in it."""
+    """The folders of a CI run, made under tmp_path (resolved): the workspace `ws`, and the output folder with the
+    context and the agent's folder in it. The output folder is `request.param`, relative to tmp_path: "out" by default,
+    "ws/out" for one inside the workspace."""
     base = tmp_path.resolve()
+    out = base / getattr(request, "param", "out")
     folders = RunFolders(
         workspace=str(base / "ws"),
-        out=str(base / "out"),
-        context=str(base / "out" / "context"),
-        agent=str(base / "out" / "agent"),
+        out=str(out),
+        context=str(out / "context"),
+        agent=str(out / "agent"),
     )
     for folder in (folders.workspace, folders.context, folders.agent):
         Path(folder).mkdir(parents=True)
@@ -650,10 +720,12 @@ def claude_code(
     run_folders,
     claude_runs,
     claude_installed,
+    oidc_tokens,
 ):
     """The Claude Code gateway of a run in `run_folders`, writing its settings with FileSystemGateway, with
-    `claude_runs` and `claude_installed` in place of the CLI and the PATH. `request.param` replaces any of its
-    constructor's keywords: `variables` (AGENT_VARIABLES by default), `version`, `model`, `max_turns`."""
+    `claude_runs` (and its `npm_installs`), `claude_installed` and `oidc_tokens` in place of the CLI, the PATH and
+    GitHub's token endpoint. `request.param` replaces any of its constructor's keywords: `variables` (AGENT_VARIABLES
+    by default), `version`, `model`, `max_turns`."""
     keywords: dict[str, Any] = {
         "variables": AGENT_VARIABLES,
         "guard_command": GUARD,

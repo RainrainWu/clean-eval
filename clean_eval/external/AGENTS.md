@@ -4,7 +4,8 @@ The only code that touches anything outside the process.
 
 **Gateways:** one public `*Gateway` class per external dependency.
 - **Modules:** `git.py` (the git CLI), `github.py` (the gh CLI), `claude_code.py` (the CI agent: the claude CLI, run
-  sandboxed, and its npm install), `filesystem.py`, and `environment.py` (environment variables, and the clock).
+  sandboxed, its npm install, and the job's OIDC token for keyless sign-in), `filesystem.py`, and `environment.py`
+  (environment variables, and the clock).
 - **One interface each.** A gateway implements exactly one interface from `clean_eval/use_cases/interfaces.py` and
   exposes nothing beyond it.
 - **Failures** map to the domain's errors: `HeatmapError`, or `RemoteError` with `kind` `not_found` or `error`.
@@ -41,5 +42,6 @@ The only code that touches anything outside the process.
 **Tests** go in `tests/external/test_<module>.py`; their fixtures are in `tests/external/conftest.py`.
 - The git and file-system gateways run against real throwaway repositories and folders, in contract tests that the
   in-memory fakes pass too.
-- The `gh` and Claude Code gateways get a MagicMock of `subprocess.run` (the `gh` and `claude_runs` fixtures).
+- The `gh` gateway gets a MagicMock of `subprocess.run` (the `gh` fixture). The Claude Code gateway gets them of
+  `subprocess.Popen`, `subprocess.run` and `urlopen` (`claude_runs`, `npm_installs`, `oidc_tokens`).
 - The guard resolves real paths; the command line gets its code host as a mock (the `host` fixture).

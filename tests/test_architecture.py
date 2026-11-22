@@ -75,7 +75,7 @@ GATEWAYS = {
     "external/github.py": ({"subprocess"}, {"GitHubGateway"}),  # the gh CLI
     "external/filesystem.py": ({"os", "shutil", "filecmp", "pathlib"}, {"FileSystemGateway"}),  # files and folders
     "external/environment.py": ({"os", "datetime"}, {"EnvironmentGateway", "ClockGateway"}),  # variables, today's date
-    "external/claude_code.py": ({"subprocess", "shutil", "os"}, {"ClaudeCodeGateway"}),  # the CI agent: its CLI and npm
+    "external/claude_code.py": ({"subprocess", "shutil", "os", "urllib"}, {"ClaudeCodeGateway"}),  # the CI agent
 }
 # The interfaces (use_cases/interfaces.py) and the one class implementing each: a gateway or a presenter.
 INTERFACES = "use_cases/interfaces.py"
