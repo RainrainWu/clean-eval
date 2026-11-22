@@ -225,11 +225,11 @@ If a check fails, nothing is published: delete the tag (`git push origin :refs/t
 ## Risk Heat Map
 
 <!-- risk-heat-map:start -->
-<!-- risk-heat-map:fingerprint=801b34699227 -->
+<!-- risk-heat-map:fingerprint=64f271a71644 -->
 
-![Risk heat map of clean-eval at ee84f6c](docs/risk-heatmap.svg)
+![Risk heat map of clean-eval at 8c9258e](docs/risk-heatmap.svg)
 
-Tile area is module size (lines of code, tests excluded); colour is the overall risk of changing it. Heuristics from static analysis of `chore/readme-only-heat-map` at `ee84f6c` (2026-11-22), not a verdict. Regenerate with the `risk-heat-map` skill.
+Tile area is module size (lines of code, tests excluded); colour is the overall risk of changing it. Heuristics from static analysis of `master` at `8c9258e` (2026-11-23), not a verdict. Regenerate with the `risk-heat-map` skill.
 
 🟢 Low 0-24 · 🟡 Moderate 25-49 · 🟠 High 50-74 · 🔴 Critical 75-100
 <!-- risk-heat-map:end -->
