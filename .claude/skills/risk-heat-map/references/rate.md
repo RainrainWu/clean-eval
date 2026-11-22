@@ -74,6 +74,6 @@ judgement: the static scores stand. Skip N/A aspects.
 A repository tunes the numbers above in `.clean-eval/risk-model.json`: a JSON object whose keys are the field names of
 `Policy` in `clean_eval/domain/policy.py`, each overriding its default (dictionaries merge key by key; keys starting with
 `_` are comments). Every value is checked; an unknown key or a v1-model file (`window_days`, `likelihood_weights`, ...)
-is refused with a message. `/eval` may change only the tunable knobs (weights, mixes, saturations, points, standards,
+is refused with a message. `/retro` may change only the tunable knobs (weights, mixes, saturations, points, standards,
 `overall_peak_share`, `unrated_band`) and never the structural ones (`depth`, `max_modules`, `split_*`, `exclude`,
 `ignore_paths` and the path patterns). Example: `{"business_weights": {"dependents": 0.4}, "unrated_band": "High"}`.

@@ -53,7 +53,7 @@ the risk model it is judged by. Treat any change to `.clean-eval/` in the PR as 
      strict on Q-01 and Q-10. Past changes: `git log --oneline -10 -- <path>`.
    Only report findings you're confident of and would defend: a concrete file:line, what's wrong, why it matters, a
    fix. When unsure, say so under *Not checked / assumptions* instead of filing a finding.
-   Problems not covered by any rule are still reported, tagged `NEW` — `/eval` uses these to propose rules.
+   Problems not covered by any rule are still reported, tagged `NEW` — `/retro` uses these to propose rules.
    A finding's severity is at least its rule's severity in the rules table; raise it only with a one-clause reason in
    its summary (e.g. Q-01 in 🟠/🔴).
 
@@ -85,7 +85,7 @@ the risk model it is judged by. Treat any change to `.clean-eval/` in the PR as 
    the diff (HTTP 422), drop that comment (it's already in the summary). Prefix every comment with `[RULE-ID][severity]`
    and end the summary with
    `<!-- clean-eval:pr-review tier=<max_tier> score=<max_score> rules=<IDs cited> rules_version=<git hash-object of rules file, 8 chars> -->`
-   — `/eval` reads this back to measure rule usefulness.
+   — `/retro` reads this back to measure rule usefulness.
 
 ## CI mode
 

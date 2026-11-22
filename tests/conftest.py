@@ -274,8 +274,8 @@ def review_run():
 
 
 @pytest.fixture
-def eval_run():
-    """The variables an eval's run sets besides a review's: its period, and whether it applies its edits."""
+def retro_run():
+    """The variables a retro's run sets besides a review's: its period, and whether it applies its edits."""
     return {"CE_SINCE": "2026-01-01", "CE_UNTIL": "2026-02-01", "CE_APPLY": "true"}
 
 
@@ -972,12 +972,12 @@ NAMES = frozenset({"a"})
 
 
 # test_action.py: the workspaces the action runs on, the pull request and the replies of the fake `gh`, what the fake
-# `claude` writes, and the start of the period an eval reads.
+# `claude` writes, and the start of the period a retro reads.
 
 
 @pytest.fixture
-def eval_since():
-    """The start of the period an eval reads, as the action's `since` input takes it: the date 90 days ago."""
+def retro_since():
+    """The start of the period a retro reads, as the action's `since` input takes it: the date 90 days ago."""
     return Dates.days_ago(90).date().isoformat()
 
 
@@ -1058,7 +1058,7 @@ def rules_weakened_workspace():
 
 @pytest.fixture
 def feature_and_fix_workspace():
-    """A workspace of merged PRs for eval to read: a feature of billing (#1), then a fix of it (#2)."""
+    """A workspace of merged PRs for the retro to read: a feature of billing (#1), then a fix of it (#2)."""
     return [
         {"message": "init", "files": {"src/billing/a.py": "a\n" * 10}, "days_ago": 60},
         {"message": "feat: billing (#1)", "files": {"src/billing/a.py": "b\n" * 10}, "days_ago": 40},
@@ -1146,9 +1146,9 @@ def every_output_plan():
 
 
 @pytest.fixture
-def eval_report_plan():
-    """What the fake `claude` writes for eval: a report, and a result.json without recommendations."""
-    return {"agent_files": {"report.md": "## Eval", "result.json": {"recommendations": []}}}
+def retro_report_plan():
+    """What the fake `claude` writes for the retro: a report, and a result.json without recommendations."""
+    return {"agent_files": {"report.md": "## Retro", "result.json": {"recommendations": []}}}
 
 
 # test_release.py: release tags in precedence order, and the steps the `released` repository takes after release 1.0.0.

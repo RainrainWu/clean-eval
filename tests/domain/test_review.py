@@ -130,7 +130,7 @@ class TestReviewRule:
 
 
 class TestCheckedRules:
-    """A rules file an unattended eval may keep: at least one rule row, and no ID twice."""
+    """A rules file an unattended retro may keep: at least one rule row, and no ID twice."""
 
     def test_a_rules_file_with_distinct_rows_is_kept(
         self,

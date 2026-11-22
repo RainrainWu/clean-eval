@@ -1,7 +1,7 @@
 # AGENTS.md
 
 clean-eval checks that agent-written code follows clean architecture. It has three parts:
-- the Claude Code skills in `.claude/skills/` (`/risk-heat-map`, `/pr-review`, `/eval`);
+- the Claude Code skills in `.claude/skills/` (`/risk-heat-map`, `/pr-review`, `/retro`);
 - a composite GitHub Action (`action.yml` → `clean_eval action`) that runs those skills in CI;
 - the `clean_eval/` Python package, which holds all the logic.
 
@@ -38,7 +38,7 @@ The package is in four layers. Imports point inward only: domain ← use_cases �
 | Layer | Holds |
 |---|---|
 | `domain/` | pydantic data models, and the enumerations (`StrEnum`) of their closed value sets; every invariant is a validator |
-| `use_cases/` | `interfaces.py` (the abstract classes of every external utility), plus module-level functions that take implementations of them: `heatmap.py`, `review.py`, `evaluation.py` and the shared `store.py` and `ci.py`; `rules/` holds the pure business rules, by the same features plus `analysis.py`. Business logic only: no external tool's formats or conventions |
+| `use_cases/` | `interfaces.py` (the abstract classes of every external utility), plus module-level functions that take implementations of them: `heatmap.py`, `review.py`, `retro.py` and the shared `store.py` and `ci.py`; `rules/` holds the pure business rules, by the same features plus `analysis.py`. Business logic only: no external tool's formats or conventions |
 | `adaptor/` | the presenters (SVG treemap, Markdown summary) |
 | `external/` | one gateway per external dependency (git, GitHub, GitHub Actions, Claude Code, the coverage report, files, the environment and clock), holding all there is to know about it; the click command line `cli.py` (the entry point of every utility, and the composition root) and the CI agent's guard `agent_guard.py` |
 
@@ -60,7 +60,7 @@ The skills chain the commands:
 - **Change risk:** `assess` rates the PR's base commit and returns the risk band of each changed path. The PR review
   scales its depth by the worst band.
 - **History:** `history` rates every merged PR at its base and links later fixes and reverts to it. It scores how well
-  the risk predicted them, and `/eval` tunes `.clean-eval/` from that.
+  the risk predicted them, and `/retro` tunes `.clean-eval/` from that.
 
 The action runs one command, `clean_eval action <skill>`, which runs four steps. The agent only proposes;
 deterministic code decides:

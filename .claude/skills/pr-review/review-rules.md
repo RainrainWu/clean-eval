@@ -1,7 +1,7 @@
 # Review Rules
 
-Rules the `pr-review` skill applies. Every finding cites exactly one rule ID so `/eval` can measure
-which rules catch real problems and which are noise. Edit freely; `/eval` proposes changes with evidence.
+Rules the `pr-review` skill applies. Every finding cites exactly one rule ID so `/retro` can measure
+which rules catch real problems and which are noise. Edit freely; `/retro` proposes changes with evidence.
 
 Rule fields:
 - **Severity** — `blocker` (must fix before merge), `major` (should fix), `minor` (nit / optional).

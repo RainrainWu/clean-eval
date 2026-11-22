@@ -1,4 +1,4 @@
-"""The eval's models (domain/evaluation.py): periods, merged PRs and their review signal, and the tuning edits and
+"""The retro's models (domain/retro.py): periods, merged PRs and their review signal, and the tuning edits and
 their outcome."""
 
 import datetime as dt
@@ -7,14 +7,14 @@ import pytest
 from pydantic import ValidationError
 from pytest_lazy_fixtures import lf
 
-from clean_eval.domain.evaluation import (
-    AgentEvalResult,
-    EvalResult,
+from clean_eval.domain.retro import (
+    AgentRetroResult,
     FetchFailure,
     MergedPR,
     Period,
     PolicyEdit,
     Rejection,
+    RetroResult,
     ReviewSignal,
     RulesChange,
 )
@@ -140,13 +140,13 @@ class TestPolicyEdit:
 
 
 class TestAgentEvalResult:
-    """The eval agent's result.json: its recommendations, as text cut to size, objects only and at most 30; whatever
+    """The retro agent's result.json: its recommendations, as text cut to size, objects only and at most 30; whatever
     else it writes (counts, AUC) is ignored."""
 
     def test_recommendations_are_text(
         self,
     ):
-        result = AgentEvalResult.model_validate(
+        result = AgentRetroResult.model_validate(
             {
                 "recommendations": [{"target": 1, "change": None, "evidence": "e" * 3000}, "junk"]
                 + [{"target": "t"}] * 40,
@@ -159,11 +159,11 @@ class TestAgentEvalResult:
 
 
 class TestEvalResult:
-    """The eval CI trusts: whether it applied an edit is derived from the changes it kept, and a kept change survives
+    """The retro CI trusts: whether it applied an edit is derived from the changes it kept, and a kept change survives
     being stored."""
 
     @pytest.mark.parametrize(
-        ("eval_result", "applied"),
+        ("retro_result", "applied"),
         [
             (
                 {
@@ -176,25 +176,25 @@ class TestEvalResult:
             ({"rules_change": RulesChange()}, True),
             ({"model_change": lf("accepted_model_change")}, True),
         ],
-        indirect=["eval_result"],
+        indirect=["retro_result"],
         ids=["a rejected model change", "an accepted rules change", "an accepted model change"],
     )
     def test_applied_is_derived(
         self,
-        eval_result,
+        retro_result,
         applied,
     ):
-        assert EvalResult.model_validate(eval_result).applied is applied
+        assert RetroResult.model_validate(retro_result).applied is applied
 
     @pytest.mark.parametrize(
-        "eval_result",
+        "retro_result",
         [{"model_change": lf("accepted_model_change")}],
         indirect=True,
         ids=["an accepted model change"],
     )
     def test_an_accepted_model_change_survives_a_dump_and_a_load(
         self,
-        eval_result,
+        retro_result,
     ):
-        accepted = EvalResult.model_validate(eval_result)
-        assert EvalResult.model_validate(accepted.model_dump()).model_change == accepted.model_change
+        accepted = RetroResult.model_validate(retro_result)
+        assert RetroResult.model_validate(accepted.model_dump()).model_change == accepted.model_change

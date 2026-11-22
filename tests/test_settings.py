@@ -24,7 +24,7 @@ class TestFromTheEnvironment:
 
     @pytest.mark.parametrize(
         "environ",
-        [lfc(lambda review, evaluation: {**review, **evaluation}, lf("review_run"), lf("eval_run"))],
+        [lfc(lambda review, retro: {**review, **retro}, lf("review_run"), lf("retro_run"))],
         indirect=True,
     )
     def test_each_setting_reads_its_variable(
@@ -33,7 +33,7 @@ class TestFromTheEnvironment:
     ):
         assert (settings.run.workspace, settings.run.out) == ("/runner/work/repo", "/runner/temp/clean-eval")
         assert (settings.review.pr, settings.review.post, settings.review.fail_on) == (7, False, "blocker")
-        assert (settings.evaluation.since, settings.evaluation.until, settings.evaluation.apply) == (
+        assert (settings.retro.since, settings.retro.until, settings.retro.apply) == (
             dt.date(2026, 1, 1),
             dt.date(2026, 2, 1),
             True,
@@ -54,8 +54,8 @@ class TestFromTheEnvironment:
         )
         assert (
             settings.review.fail_on,
-            settings.evaluation.since,
-            settings.evaluation.apply,
+            settings.retro.since,
+            settings.retro.apply,
             settings.heatmap.use_claude,
         ) == ("never", None, False, False)
         assert (settings.agent.claude_code_version, settings.agent.max_turns) == (CLAUDE_CODE_VERSION, 60)
@@ -72,7 +72,7 @@ class TestFromTheEnvironment:
         settings,
     ):
         assert (settings.review.pr, settings.review.post, settings.review.fail_on) == (None, True, "never")
-        assert (settings.evaluation.since, settings.agent.model, settings.agent.max_turns) == (None, None, 60)
+        assert (settings.retro.since, settings.agent.model, settings.agent.max_turns) == (None, None, 60)
 
     @pytest.mark.parametrize(
         ("environ", "workspace"),
@@ -126,7 +126,7 @@ class TestFromTheEnvironment:
         assert list(groups) == [
             "run",
             "review",
-            "evaluation",
+            "retro",
             "heatmap",
             "agent",
             "github",
@@ -146,7 +146,7 @@ class TestRefusals:
         [
             ({"CE_PR": "1; rm -rf /"}, "review.CE_PR"),
             ({"CE_FAIL_ON": "sometimes"}, "review.CE_FAIL_ON"),
-            ({"CE_SINCE": "yesterday"}, "evaluation.CE_SINCE"),
+            ({"CE_SINCE": "yesterday"}, "retro.CE_SINCE"),
             ({"CE_POST": "maybe"}, "review.CE_POST"),
             ({"CE_MAX_TURNS": "0"}, "agent.CE_MAX_TURNS"),
         ],
@@ -179,7 +179,7 @@ class TestRefusals:
             Settings()
         assert [".".join(str(part) for part in error["loc"]) for error in refused.value.errors()] == [
             "review.CE_PR",
-            "evaluation.CE_SINCE",
+            "retro.CE_SINCE",
             "agent.CE_MAX_TURNS",
         ]
 

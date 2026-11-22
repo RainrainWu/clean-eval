@@ -16,7 +16,7 @@ from clean_eval.domain.errors import (
     RemoteError,
     RemoteFailure,
 )
-from clean_eval.domain.evaluation import ReviewThreads
+from clean_eval.domain.retro import ReviewThreads
 from clean_eval.domain.review import (
     HostReview,
     InlineComment,

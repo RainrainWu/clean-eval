@@ -100,7 +100,7 @@ class RulesTable(BaseModel):
 
 
 class CheckedRules(RulesTable):
-    """A rules file an unattended eval may keep: at least one rule row, and no ID twice."""
+    """A rules file an unattended retro may keep: at least one rule row, and no ID twice."""
 
     @model_validator(mode="after")
     def check_usable(
@@ -405,7 +405,7 @@ class Skill(StrEnum):
     """The skills a CI run runs: what `action` and `finalize --skill` take."""
 
     PR_REVIEW = "pr-review"
-    EVAL = "eval"
+    RETRO = "retro"
     RISK_HEAT_MAP = "risk-heat-map"
 
 

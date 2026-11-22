@@ -12,7 +12,7 @@ from pytest_lazy_fixtures import (
 )
 
 from clean_eval.domain.errors import RemoteError
-from clean_eval.domain.evaluation import ReviewThreads
+from clean_eval.domain.retro import ReviewThreads
 from clean_eval.domain.review import (
     HostReview,
     ReviewPosting,
@@ -83,7 +83,7 @@ class TestReviewThreads:
         self,
         gh,
     ):
-        with pytest.raises(RemoteError) as raised:  # a fetch failure of this PR, not a crash of the whole eval
+        with pytest.raises(RemoteError) as raised:  # a fetch failure of this PR, not a crash of the whole retro
             GitHubGateway().review_threads(7)
         assert raised.value.kind == "error"
 

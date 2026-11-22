@@ -1,5 +1,5 @@
 # Refresh the README "Risk Heat Map" weekly and open a PR when it changes. No Claude credentials needed; with
-# `use-claude: "true"`, sign in as clean-eval-eval.yml does.
+# `use-claude: "true"`, sign in as clean-eval-retro.yml does.
 name: clean-eval risk heat map
 on:
   schedule:

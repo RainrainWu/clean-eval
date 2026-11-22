@@ -1,9 +1,9 @@
-"""The eval's rules (use_cases/rules/evaluation.py): reading the merged-PR history, and calibration."""
+"""The retro's rules (use_cases/rules/retro.py): reading the merged-PR history, and calibration."""
 
 import pytest
 from pytest_lazy_fixtures import lf
 
-from clean_eval.use_cases.rules.evaluation import (
+from clean_eval.use_cases.rules.retro import (
     RULE_ID,
     auc,
     rescore,

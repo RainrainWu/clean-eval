@@ -187,7 +187,7 @@ def change_risk(
 RULE_ROW = re.compile(
     r"^\|\s*([A-Z]{1,4}-\d{2,3})\s*\|\s*(blocker|major|minor)\s*\|\s*(Low|Moderate|Medium|High|Critical)\s*\|", re.M
 )
-# The marker that ends every posted review; the eval reads it back to measure rule usefulness.
+# The marker that ends every posted review; the retro reads it back to measure rule usefulness.
 REVIEW_MARKER = re.compile(r"<!--\s*clean-eval:pr-review\s+([^>]*)-->")
 
 
@@ -212,7 +212,7 @@ def parse_rules(
 def check_rules(
     text: str,
 ) -> CheckedRules:
-    """The rules of a rules file an unattended eval may keep; a ValidationError when it has no rows or repeats an ID."""
+    """The rules of a rules file an unattended retro may keep; a ValidationError when it has no rows or repeats an ID."""
     return CheckedRules(
         rules=rule_rows(text),
     )

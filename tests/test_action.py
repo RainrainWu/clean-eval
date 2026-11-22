@@ -34,8 +34,8 @@ class TestInputsAndCheckout:
                 "invalid settings: review.CE_PR: Input should be a valid integer",
             ),
             (
-                {"skill": "eval", "since": "yesterday"},
-                "invalid settings: evaluation.CE_SINCE: Input should be a valid date",
+                {"skill": "retro", "since": "yesterday"},
+                "invalid settings: retro.CE_SINCE: Input should be a valid date",
             ),
             (
                 {"skill": "pr-review", "pr": "7", "fail_on": "sometimes"},
@@ -361,9 +361,9 @@ class TestModulesPlantedInTheCheckout:
         [
             {"skill": "pr-review", "pr": "9", "post": "false"},
             {"skill": "risk-heat-map", "use_claude": "true"},
-            {"skill": "eval"},
+            {"skill": "retro"},
         ],
-        ids=["pr-review", "risk-heat-map", "eval"],
+        ids=["pr-review", "risk-heat-map", "retro"],
     )
     def test_never_run(
         self,
@@ -379,7 +379,7 @@ class TestModulesPlantedInTheCheckout:
 @pytest.mark.parametrize("workspace", [lf("feature_and_fix_workspace")], indirect=True)
 @pytest.mark.parametrize("gh_replies", [lf("not_logged_in_replies")], indirect=True)
 class TestEval:
-    """eval: the agent may edit .clean-eval/ only with apply, and only through a real folder; the action reverts an
+    """retro: the agent may edit .clean-eval/ only with apply, and only through a real folder; the action reverts an
     edit it doesn't accept."""
 
     @pytest.mark.parametrize(  # an edit of the risk model that changes what is measured: not allowed in CI
@@ -387,14 +387,14 @@ class TestEval:
         [
             lfc(
                 lambda plan: {**plan, "workspace_files": {".clean-eval/risk-model.json": {"depth": 1}}},
-                lf("eval_report_plan"),
+                lf("retro_report_plan"),
             )
         ],
         indirect=True,
         ids=["structural edit"],
     )
     @pytest.mark.parametrize(
-        "action_run", [{"skill": "eval", "since": lf("eval_since"), "apply": "true"}], indirect=True
+        "action_run", [{"skill": "retro", "since": lf("retro_since"), "apply": "true"}], indirect=True
     )
     def test_a_disallowed_edit_is_reverted(
         self,
@@ -423,12 +423,12 @@ class TestEval:
             ).resolve()
             in invocation["argv"]
         )
-        for name in ("eval-history.json", "sensitivity.json", "defects/index.json"):
+        for name in ("retro-history.json", "sensitivity.json", "defects/index.json"):
             assert (action.out / "context" / name).exists(), name
 
     @pytest.mark.parametrize("workspace_links", [{".clean-eval": ".."}], indirect=True)
     @pytest.mark.parametrize(
-        "action_run", [{"skill": "eval", "since": lf("eval_since"), "apply": "true"}], indirect=True
+        "action_run", [{"skill": "retro", "since": lf("retro_since"), "apply": "true"}], indirect=True
     )
     def test_a_symlinked_clean_eval_is_refused(
         self,
@@ -439,8 +439,8 @@ class TestEval:
         assert "symlink" in action_run.stderr
         assert fake_bin.claude_invocation() is None
 
-    @pytest.mark.parametrize("claude_plan", [lf("eval_report_plan")], indirect=True)
-    @pytest.mark.parametrize("action_run", [{"skill": "eval", "since": lf("eval_since")}], indirect=True)
+    @pytest.mark.parametrize("claude_plan", [lf("retro_report_plan")], indirect=True)
+    @pytest.mark.parametrize("action_run", [{"skill": "retro", "since": lf("retro_since")}], indirect=True)
     def test_without_apply_the_agent_gets_no_write_access_to_the_workspace(
         self,
         action_run,

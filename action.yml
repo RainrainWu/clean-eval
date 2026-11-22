@@ -7,7 +7,7 @@ branding:
 
 inputs:
   skill:
-    description: "Which skill to run: risk-heat-map | pr-review | eval"
+    description: "Which skill to run: risk-heat-map | pr-review | retro"
     required: true
 
   # --- Claude credentials (not needed for risk-heat-map unless use-claude: true): one of an API key, an OAuth token,
@@ -53,15 +53,15 @@ inputs:
     required: false
     default: never
 
-  # --- eval
+  # --- retro
   since:
-    description: "eval: period start YYYY-MM-DD (default: 90 days ago)"
+    description: "retro: period start YYYY-MM-DD (default: 90 days ago)"
     required: false
   until:
-    description: "eval: period end YYYY-MM-DD (default: today)"
+    description: "retro: period end YYYY-MM-DD (default: today)"
     required: false
   apply:
-    description: "eval: let the agent edit .clean-eval/risk-model.json and .clean-eval/review-rules.md (true|false). An edit is kept only if it is well-formed, changes only tunable keys and doesn't lower AUC on replay. The action never commits; follow with a create-PR step."
+    description: "retro: let the agent edit .clean-eval/risk-model.json and .clean-eval/review-rules.md (true|false). An edit is kept only if it is well-formed, changes only tunable keys and doesn't lower AUC on replay. The action never commits; follow with a create-PR step."
     required: false
     default: "false"
 
@@ -119,7 +119,7 @@ outputs:
     description: "pr-review: number of blocker findings"
     value: ${{ steps.run.outputs.blockers }}
   auc:
-    description: "eval: AUC of risk score vs escaped defects"
+    description: "retro: AUC of risk score vs escaped defects"
     value: ${{ steps.run.outputs.auc }}
 
 runs:

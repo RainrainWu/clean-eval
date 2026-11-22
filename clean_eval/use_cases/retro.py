@@ -1,5 +1,5 @@
-"""Use cases of the eval: keep or restore the tuning files the CI agent edits, collect the merged-PR history of a
-period, prepare the agent's context, and run the eval in CI."""
+"""Use cases of the retro: keep or restore the tuning files the CI agent edits, collect the merged-PR history of a
+period, prepare the agent's context, and run the retro in CI."""
 
 import datetime as dt
 from collections.abc import (
@@ -20,20 +20,6 @@ from clean_eval.domain.errors import (
     RemoteError,
     RunFailed,
 )
-from clean_eval.domain.evaluation import (
-    DefectPatch,
-    EvalContext,
-    EvalHistory,
-    EvalResult,
-    FetchFailure,
-    HistoryPeriod,
-    MergedPR,
-    Period,
-    Rejection,
-    ReviewSignal,
-    RuleStats,
-    Totals,
-)
 from clean_eval.domain.policy import (
     REPO_DIR,
     Band,
@@ -43,6 +29,20 @@ from clean_eval.domain.rating import (
     Heatmap,
     ModuleRecord,
     RatingCache,
+)
+from clean_eval.domain.retro import (
+    DefectPatch,
+    FetchFailure,
+    HistoryPeriod,
+    MergedPR,
+    Period,
+    Rejection,
+    RetroContext,
+    RetroHistory,
+    RetroResult,
+    ReviewSignal,
+    RuleStats,
+    Totals,
 )
 from clean_eval.domain.review import (
     AgentTask,
@@ -70,18 +70,18 @@ from clean_eval.use_cases.interfaces import (
     RunLog,
     Runner,
 )
-from clean_eval.use_cases.rules.evaluation import (
+from clean_eval.use_cases.rules.retro import (
     MODEL_FILE,
     RULES_FILE,
     TUNING_FILES,
     attribute_defects,
     calibration,
-    eval_recommendations,
-    eval_result,
     in_period,
     judge_model_edit,
     judge_rules_edit,
     module_stats,
+    retro_recommendations,
+    retro_result,
     review_signal,
     rule_stats,
     sensitivity,
@@ -102,7 +102,7 @@ from clean_eval.use_cases.store import (
 )
 
 # The repository's tuning files (`.clean-eval/` in the working tree) and the snapshot of them taken before the CI agent
-# ran, through the FileSystem interface: what an eval may change, and how anything it may not keep is put back.
+# ran, through the FileSystem interface: what a retro may change, and how anything it may not keep is put back.
 
 SNAPSHOT = "clean-eval.orig"  # in the context folder: .clean-eval/ as it was before the agent ran
 
@@ -277,17 +277,17 @@ def rate_at_bases(
         ]
 
 
-def eval_history(
+def retro_history(
     prs: list[MergedPR],
     period: Period,
     branch: str,
     model_source: Optional[str],
     policy: Policy,
     rules: Optional[RuleStats],
-) -> EvalHistory:
-    """The EvalHistory of the period's rated `prs`, their defects attributed (and `rules`, the review rules' stats)."""
+) -> RetroHistory:
+    """The RetroHistory of the period's rated `prs`, their defects attributed (and `rules`, the review rules' stats)."""
     defective = sum(1 for u in prs if u.defects)
-    return EvalHistory(
+    return RetroHistory(
         period=HistoryPeriod(
             since=period.since,
             until=period.until,
@@ -319,8 +319,8 @@ def collect_history(
     model_source: Optional[str] = None,
     reviewer_logins: Optional[list[str]] = None,
     cache: Optional[RatingCache] = None,
-) -> EvalHistory:
-    """The EvalHistory of the PRs merged in `period` on `branch` (default: the repository's default branch), numbered
+) -> RetroHistory:
+    """The RetroHistory of the PRs merged in `period` on `branch` (default: the repository's default branch), numbered
     by the code host; with `with_reviews`, each PR's review signal too. `cache` (a RatingCache) shares the ratings' work
     across bases."""
     if with_reviews:
@@ -336,10 +336,10 @@ def collect_history(
             if u.pr:
                 u.review = review_of(host, u.pr, reviewer_logins)
         rules = rule_stats(prs)
-    return eval_history(prs, period, branch, model_source, policy, rules)
+    return retro_history(prs, period, branch, model_source, policy, rules)
 
 
-# Use case: precompute everything the CI eval needs into the context folder `ctx`: the merged-PR history of the period
+# Use case: precompute everything the CI retro needs into the context folder `ctx`: the merged-PR history of the period
 # with its escaped defects, one-knob sensitivity replays, the patches of the defects most worth verifying, and the
 # tuning files as they are now (snapshotted, so finalizing can restore whatever it doesn't accept). Through the Git,
 # FileSystem, Clock and CodeHost interfaces.
@@ -370,7 +370,7 @@ def write_defect_patches(
     git: Git,
     fs: FileSystem,
     ctx: str,
-    hist: EvalHistory,
+    hist: RetroHistory,
 ) -> tuple[list[DefectPatch], int]:
     """Write the patches of the defect links most worth verifying (DEFECT_ORDER, at most MAX_DEFECT_PATCHES) into
     `ctx`/defects, with their index; the index, and how many links there were."""
@@ -404,7 +404,7 @@ def write_defect_patches(
     return index, len(links)
 
 
-def prepare_eval(
+def prepare_retro(
     git: Git,
     fs: FileSystem,
     clock: Clock,
@@ -417,15 +417,15 @@ def prepare_eval(
     default_rules: str,
     with_reviews: bool = False,
     branch: Optional[str] = None,
-) -> EvalContext:
-    """Write the eval context of `period` into `ctx` (with each PR's review signal when `with_reviews`); its
-    EvalContext."""
+) -> RetroContext:
+    """Write the retro context of `period` into `ctx` (with each PR's review signal when `with_reviews`); its
+    RetroContext."""
     model, rules = snapshot_current_tuning(fs, ctx, workspace, default_rules)
     hist = collect_history(git, host, clock, policy, period, with_reviews, branch, model_source)
-    write_json(fs, fs.join(ctx, "eval-history.json"), hist)
+    write_json(fs, fs.join(ctx, "retro-history.json"), hist)
     write_json(fs, fs.join(ctx, "sensitivity.json"), sensitivity(hist, policy))
     index, links = write_defect_patches(git, fs, ctx, hist)
-    context = EvalContext(
+    context = RetroContext(
         since=period.since,
         until=period.until,
         prs=hist.totals.prs,
@@ -443,7 +443,7 @@ def prepare_eval(
     return context
 
 
-def finalize_eval(
+def finalize_retro(
     fs: FileSystem,
     env: Environment,
     ctx: str,
@@ -451,16 +451,16 @@ def finalize_eval(
     out: str,
     apply: bool = False,
     workspace: str = ".",
-) -> tuple[EvalResult, StepOutputs]:
-    """(the EvalResult CI trusts, its StepOutputs) from what the CI agent proposed in `agent`. An edit of the tuning
-    files is kept only with `apply` on, and only if it passes the checks of the domain and the eval's rules; everything
+) -> tuple[RetroResult, StepOutputs]:
+    """(the RetroResult CI trusts, its StepOutputs) from what the CI agent proposed in `agent`. An edit of the tuning
+    files is kept only with `apply` on, and only if it passes the checks of the domain and the retro's rules; everything
     else is restored. The edits are judged before the agent's output, so an invalid output never leaves an unchecked
     edit behind: when anything fails, every tuning file is restored. report.md and result.json go to `out`, redacted.
     InvalidOutput when the agent's output can't be trusted."""
     secrets = env.secrets()
     snapshot_dir = fs.join(ctx, SNAPSHOT)
     try:
-        history = validated(EvalHistory, fs, ctx, "eval-history.json")
+        history = validated(RetroHistory, fs, ctx, "retro-history.json")
         model_change = judge_tuning_edit(
             fs, workspace, snapshot_dir, MODEL_FILE, apply, lambda new, orig: judge_model_edit(new, orig, history)
         )
@@ -468,8 +468,8 @@ def finalize_eval(
             fs, workspace, snapshot_dir, RULES_FILE, apply, lambda new, orig: judge_rules_edit(new)
         )
         other = restore_other_tuning(fs, workspace, snapshot_dir, TUNING_FILES)
-        recommendations = eval_recommendations(read_json(fs, fs.join(agent, "result.json")), secrets)
-        result, outputs = eval_result(history, recommendations, model_change, rules_change, other)
+        recommendations = retro_recommendations(read_json(fs, fs.join(agent, "result.json")), secrets)
+        result, outputs = retro_result(history, recommendations, model_change, rules_change, other)
     except JUDGING_ERRORS as e:
         for name in sorted(TUNING_FILES):
             restore_tuning(fs, workspace, snapshot_dir, name)
@@ -505,23 +505,23 @@ def judge_tuning_edit[T](
         )
 
 
-# Use case: the eval's CI run (the action's eval skill): collect the history of a period, let the agent evaluate it and,
-# when allowed, edit the tuning files, then keep only the edits that pass the eval's checks. Through the Git,
+# Use case: the retro's CI run (the action's retro skill): collect the history of a period, let the agent evaluate it and,
+# when allowed, edit the tuning files, then keep only the edits that pass the retro's checks. Through the Git,
 # FileSystem, Clock, Environment, CodeHost, Agent, Runner and RunLog interfaces.
 
 
-def eval_task(
+def retro_task(
     period: Period,
     apply: bool,
 ) -> AgentTask:
-    """What the agent is asked to do for the eval of `period`: evaluate the history from the precomputed context, into
+    """What the agent is asked to do for the retro of `period`: evaluate the history from the precomputed context, into
     a report and its recommendations, editing the tuning files only with `apply`."""
     return AgentTask(
-        skill=Skill.EVAL,
+        skill=Skill.RETRO,
         goal="Evaluate the merged PRs from %s to %s with apply=%s." % (period.since, period.until, str(apply).lower()),
         inputs=(
             "context.json",
-            "eval-history.json",
+            "retro-history.json",
             "sensitivity.json",
             "defects/index.json (patches alongside)",
             "risk-model.orig.json",
@@ -531,20 +531,20 @@ def eval_task(
     )
 
 
-def eval_period(
+def retro_period(
     clock: Clock,
     settings: Settings,
 ) -> Period:
-    """The period an eval's run reads: from the settings' `since` (default: LOOKBACK_DAYS ago) to their `until`
+    """The period a retro's run reads: from the settings' `since` (default: LOOKBACK_DAYS ago) to their `until`
     (default: today). RunFailed when it ends before it starts."""
     today = dt.date.fromisoformat(clock.today())
     try:
         return Period(
-            since=settings.evaluation.since or today - dt.timedelta(days=LOOKBACK_DAYS),
-            until=settings.evaluation.until or today,
+            since=settings.retro.since or today - dt.timedelta(days=LOOKBACK_DAYS),
+            until=settings.retro.until or today,
         )
     except ValidationError as error:
-        raise RunFailed.from_validation(error, "the eval's period")
+        raise RunFailed.from_validation(error, "the retro's period")
 
 
 def tuning_the_agent_may_edit(
@@ -552,7 +552,7 @@ def tuning_the_agent_may_edit(
     folders: RunFolders,
     apply: bool,
 ) -> list[str]:
-    """The folders the eval's agent may write besides its own: the workspace's .clean-eval/ with `apply`, else none.
+    """The folders the retro's agent may write besides its own: the workspace's .clean-eval/ with `apply`, else none.
     RunFailed when that folder is a symlink, whose target would be writable for the agent."""
     if not apply:
         return []
@@ -575,7 +575,7 @@ def signed_in(
     return True
 
 
-def report_eval(
+def report_retro(
     fs: FileSystem,
     env: Environment,
     runner: Runner,
@@ -584,22 +584,22 @@ def report_eval(
     settings: Settings,
     period: Period,
 ) -> None:
-    """Finalize what the eval's agent proposed, keeping only the edits that pass the eval's checks, and report the
+    """Finalize what the retro's agent proposed, keeping only the edits that pass the retro's checks, and report the
     result's step outputs and its report in the job summary to the runner. RunFailed on agent output that can't be
     trusted (every edit is reverted then)."""
-    apply = settings.evaluation.apply
+    apply = settings.retro.apply
     try:
-        result, outputs = finalize_eval(fs, env, folders.context, folders.agent, folders.out, apply, folders.workspace)
+        result, outputs = finalize_retro(fs, env, folders.context, folders.agent, folders.out, apply, folders.workspace)
     except InvalidOutput as error:
         raise RunFailed(
             "invalid agent output (any .clean-eval/ edits were reverted): %s" % error,
         )
     if result.redactions:
         log.warning("clean-eval redacted %d secret-looking value(s) from agent output" % result.redactions)
-    report_run(fs, runner, folders, "Eval %s → %s" % (period.since, period.until), outputs)
+    report_run(fs, runner, folders, "Retro %s → %s" % (period.since, period.until), outputs)
 
 
-def run_eval_action(
+def run_retro_action(
     git: Git,
     fs: FileSystem,
     clock: Clock,
@@ -612,16 +612,16 @@ def run_eval_action(
     settings: Settings,
     default_rules: str,
 ) -> None:
-    """The eval's CI run over the PRs merged in the settings' period (eval_period): collect their history (with their
+    """The retro's CI run over the PRs merged in the settings' period (retro_period): collect their history (with their
     review signal when the code host is signed in), let the agent evaluate it and, when the settings say `apply`, edit
-    .clean-eval/; then report what passes the eval's checks (report_eval). RunFailed on a period that ends before it
+    .clean-eval/; then report what passes the retro's checks (report_retro). RunFailed on a period that ends before it
     starts, on a symlinked .clean-eval with `apply`, or on agent output that can't be trusted."""
-    period = eval_period(clock, settings)
-    writable = tuning_the_agent_may_edit(fs, folders, settings.evaluation.apply)
+    period = retro_period(clock, settings)
+    writable = tuning_the_agent_may_edit(fs, folders, settings.retro.apply)
     with_reviews = signed_in(host)
     log.step("Collect the history from %s to %s" % (period.since, period.until))
     policy, source = load_policy(fs, folders.workspace)
-    prepare_eval(
+    prepare_retro(
         git,
         fs,
         clock,
@@ -635,5 +635,5 @@ def run_eval_action(
         with_reviews=with_reviews,
     )
     agent.require()
-    run_agent(agent, fs, env, log, folders, eval_task(period, settings.evaluation.apply), writable)
-    report_eval(fs, env, runner, log, folders, settings, period)
+    run_agent(agent, fs, env, log, folders, retro_task(period, settings.retro.apply), writable)
+    report_retro(fs, env, runner, log, folders, settings, period)

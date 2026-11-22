@@ -57,7 +57,7 @@ class TestSecrets:
 
 
 class TestFinalizeEvalJudgesTheModelEdit:
-    """`finalize --skill eval` keeps the agent's edit of .clean-eval/risk-model.json only with --apply, and only when it
+    """`finalize --skill retro` keeps the agent's edit of .clean-eval/risk-model.json only with --apply, and only when it
     validates and holds the AUC on a sample large enough to tell; otherwise the file is put back as it was before the
     agent ran (removed when it wasn't there)."""
 
@@ -67,12 +67,12 @@ class TestFinalizeEvalJudgesTheModelEdit:
     )
     def test_a_valid_edit_is_kept(
         self,
-        finalize_eval_args,
+        finalize_retro_args,
         cli_runner,
         ci_folders,
         recommendation,
     ):
-        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 0
         result = json.loads(
             Path(
                 ci_folders.out,
@@ -97,11 +97,11 @@ class TestFinalizeEvalJudgesTheModelEdit:
     @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": lf("structural_model_edit")}], indirect=True)
     def test_a_structural_edit_is_reverted(
         self,
-        finalize_eval_args,
+        finalize_retro_args,
         cli_runner,
         ci_folders,
     ):
-        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 0
         assert not json.loads(
             Path(
                 ci_folders.out,
@@ -117,11 +117,11 @@ class TestFinalizeEvalJudgesTheModelEdit:
     @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": lf("flat_model_edit")}], indirect=True)
     def test_an_edit_that_lowers_the_auc_is_reverted(
         self,
-        finalize_eval_args,
+        finalize_retro_args,
         cli_runner,
         ci_folders,
     ):
-        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 0
         model_change = json.loads(
             Path(
                 ci_folders.out,
@@ -131,15 +131,15 @@ class TestFinalizeEvalJudgesTheModelEdit:
         assert not model_change["accepted"]
         assert "below" in model_change["reason"]
 
-    @pytest.mark.parametrize("eval_history_prs", [(3, 10)], indirect=True)
+    @pytest.mark.parametrize("retro_history_prs", [(3, 10)], indirect=True)
     @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": lf("valid_model_edit")}], indirect=True)
     def test_an_edit_on_a_small_sample_is_rejected(
         self,
-        finalize_eval_args,
+        finalize_retro_args,
         cli_runner,
         ci_folders,
     ):
-        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 0
         model_change = json.loads(
             Path(
                 ci_folders.out,
@@ -153,15 +153,15 @@ class TestFinalizeEvalJudgesTheModelEdit:
             "risk-model.json",
         ).exists()
 
-    @pytest.mark.parametrize("eval_history_prs", [(0, 30)], indirect=True)
+    @pytest.mark.parametrize("retro_history_prs", [(0, 30)], indirect=True)
     @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": {"unrated_band": "Low"}}], indirect=True)
     def test_an_edit_with_an_undefined_auc_is_rejected(
         self,
-        finalize_eval_args,
+        finalize_retro_args,
         cli_runner,
         ci_folders,
     ):
-        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 0
         assert not json.loads(
             Path(
                 ci_folders.out,
@@ -175,14 +175,14 @@ class TestFinalizeEvalJudgesTheModelEdit:
         ).exists()
 
     @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": lf("valid_model_edit")}], indirect=True)
-    @pytest.mark.parametrize("finalize_eval_args", [[]], indirect=True)
+    @pytest.mark.parametrize("finalize_retro_args", [[]], indirect=True)
     def test_without_apply_an_edit_is_rejected(
         self,
-        finalize_eval_args,
+        finalize_retro_args,
         cli_runner,
         ci_folders,
     ):
-        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 0
         assert not Path(
             ci_folders.ws,
             ".clean-eval",
@@ -200,13 +200,13 @@ class TestFinalizeEvalJudgesTheModelEdit:
     @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": None}], indirect=True)
     def test_removing_the_model_is_judged_like_an_edit(
         self,
-        finalize_eval_args,
+        finalize_retro_args,
         cli_runner,
         ci_folders,
         earlier_model,
     ):
         assert (
-            cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+            cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 0
         )  # back to the defaults would also change `depth`: not allowed
         assert not json.loads(
             Path(
@@ -223,7 +223,7 @@ class TestFinalizeEvalJudgesTheModelEdit:
 
 
 class TestFinalizeEvalJudgesTheRulesEdit:
-    """`finalize --skill eval` keeps the agent's edit of .clean-eval/review-rules.md when its table is valid; removing
+    """`finalize --skill retro` keeps the agent's edit of .clean-eval/review-rules.md when its table is valid; removing
     the file, or a table that isn't, is reverted."""
 
     @pytest.mark.parametrize("tuning", [{"review-rules.md": lf("review_rules")}], indirect=True)
@@ -234,11 +234,11 @@ class TestFinalizeEvalJudgesTheRulesEdit:
     )
     def test_a_valid_edit_is_kept(
         self,
-        finalize_eval_args,
+        finalize_retro_args,
         cli_runner,
         ci_folders,
     ):
-        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 0
         assert json.loads(
             Path(
                 ci_folders.out,
@@ -258,12 +258,12 @@ class TestFinalizeEvalJudgesTheRulesEdit:
     @pytest.mark.parametrize("tuning_edits", [{"review-rules.md": None}], indirect=True)
     def test_removing_the_rules_is_reverted(
         self,
-        finalize_eval_args,
+        finalize_retro_args,
         cli_runner,
         ci_folders,
         review_rules,
     ):
-        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 0
         assert json.loads(
             Path(
                 ci_folders.out,
@@ -289,11 +289,11 @@ class TestFinalizeEvalJudgesTheRulesEdit:
     )
     def test_a_bad_edit_is_reverted(
         self,
-        finalize_eval_args,
+        finalize_retro_args,
         cli_runner,
         ci_folders,
     ):
-        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 0
         assert not Path(
             ci_folders.ws,
             ".clean-eval",
@@ -302,7 +302,7 @@ class TestFinalizeEvalJudgesTheRulesEdit:
 
 
 class TestFinalizeEvalRestoresTheOtherFiles:
-    """`finalize --skill eval` puts every other file of .clean-eval/ back as it was: changed, created and deleted
+    """`finalize --skill retro` puts every other file of .clean-eval/ back as it was: changed, created and deleted
     ones."""
 
     @pytest.mark.parametrize("tuning", [{"notes.md": "original", "sub/keep.txt": "k"}], indirect=True)
@@ -313,11 +313,11 @@ class TestFinalizeEvalRestoresTheOtherFiles:
     )
     def test_other_clean_eval_files_restored(
         self,
-        finalize_eval_args,
+        finalize_retro_args,
         cli_runner,
         ci_folders,
     ):
-        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
+        assert cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 0
         tuning_dir = Path(
             ci_folders.ws,
             ".clean-eval",
@@ -344,17 +344,17 @@ class TestFinalizeEvalRestoresTheOtherFiles:
 
 @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": lf("valid_model_edit")}], indirect=True)
 class TestFinalizeEvalFailsClosed:
-    """When the agent's output or the history can't be trusted, `finalize --skill eval` exits 2 and reverts every edit,
+    """When the agent's output or the history can't be trusted, `finalize --skill retro` exits 2 and reverts every edit,
     even one that would pass."""
 
     @pytest.mark.parametrize("agent_files", [{"result.json": "not json"}], indirect=True)
     def test_invalid_agent_output_reverts_accepted_edits(
         self,
-        finalize_eval_args,
+        finalize_retro_args,
         cli_runner,
         ci_folders,
     ):
-        result = cli_runner.invoke(cli.clean_eval, finalize_eval_args)
+        result = cli_runner.invoke(cli.clean_eval, finalize_retro_args)
         assert result.exit_code == 2
         assert not Path(
             ci_folders.ws,
@@ -367,14 +367,14 @@ class TestFinalizeEvalFailsClosed:
         ).exists()
         assert "::error::clean-eval: invalid agent output" in result.stderr
 
-    @pytest.mark.parametrize("context_files", [{"eval-history.json": "{broken"}], indirect=True)
+    @pytest.mark.parametrize("context_files", [{"retro-history.json": "{broken"}], indirect=True)
     def test_unreadable_history_reverts_edits(
         self,
-        finalize_eval_args,
+        finalize_retro_args,
         cli_runner,
         ci_folders,
     ):
-        assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 2
+        assert cli_runner.invoke(cli.clean_eval, finalize_retro_args).exit_code == 2
         assert not Path(
             ci_folders.ws,
             ".clean-eval",
@@ -693,7 +693,7 @@ class TestAnInvalidPolicy:
 
 
 class TestHistoryCommand:
-    """The eval skill runs `uv run ... python -I <checkout>/clean_eval history ...` from the repository it evaluates."""
+    """The retro skill runs `uv run ... python -I <checkout>/clean_eval history ...` from the repository it evaluates."""
 
     @pytest.mark.parametrize("history", [lf("fixed_feature_history")], indirect=True)
     def test_replay_and_sensitivity_from_any_folder(

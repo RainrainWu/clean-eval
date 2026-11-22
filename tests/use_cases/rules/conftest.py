@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-from clean_eval.domain.evaluation import MergedPR
 from clean_eval.domain.rating import AspectScores
+from clean_eval.domain.retro import MergedPR
 from clean_eval.domain.review import Secrets
 from clean_eval.use_cases.rules.heatmap import (
     MARKERS,
@@ -266,7 +266,7 @@ def legacy_review_rules():
 """
 
 
-# The merged-PR history the eval reads.
+# The merged-PR history the retro reads.
 
 
 @pytest.fixture

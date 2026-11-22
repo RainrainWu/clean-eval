@@ -17,13 +17,13 @@ reaches this layer as domain models.
 - **Use cases** take implementations of the interfaces as parameters, e.g. `rate_working_tree(git, fs, coverage,
   clock, policy)`. They call only the interfaces' abstract methods, and never build a gateway or import an outer layer.
 - **One module per feature:** `heatmap.py` (rate, level, summarize and publish the heat map), `review.py` (a change's
-  risk, the CI reviewer's context, finalizing and posting the review) and `evaluation.py` (the merged-PR history, the
-  eval's context and tuning files, finalizing the eval). Each also holds its skill's CI run (`run_heatmap_action`,
-  `run_review_action`, `run_eval_action`), which the `action` command runs.
+  risk, the CI reviewer's context, finalizing and posting the review) and `retro.py` (the merged-PR history, the
+  retro's context and tuning files, finalizing the retro). Each also holds its skill's CI run (`run_heatmap_action`,
+  `run_review_action`, `run_retro_action`), which the `action` command runs.
 - **Shared:** `store.py` holds the files of a run, and `ci.py` the steps every CI run shares (its folders, the agent's
   run on its `AgentTask` and its redacted transcript, what the run reports to its `Runner`).
 - **`rules/`** holds the business rules: pure functions over domain models that take no interfaces. They follow the
-  same features (`heatmap.py`, `review.py`, `evaluation.py`), plus `analysis.py` for reading code.
+  same features (`heatmap.py`, `review.py`, `retro.py`), plus `analysis.py` for reading code.
 
 **Constraints**
 - Import only the domain, this layer, the stdlib modules in `PURE_IMPORTS`, pydantic, and `clean_eval.settings`. A use

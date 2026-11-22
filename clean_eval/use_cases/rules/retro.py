@@ -1,4 +1,4 @@
-"""The eval's rules: reading the merged-PR history (escaped defects, review signal, rule stats), calibrating the risk
+"""The retro's rules: reading the merged-PR history (escaped defects, review signal, rule stats), calibrating the risk
 model against it, and judging the tuning the agent proposes."""
 
 import json
@@ -22,16 +22,21 @@ from clean_eval.domain.errors import (
     InvalidOutput,
     RemoteFailure,
 )
-from clean_eval.domain.evaluation import (
-    AgentEvalResult,
+from clean_eval.domain.policy import (
+    WEIGHT_GROUPS,
+    Aspect,
+    Band,
+    Policy,
+)
+from clean_eval.domain.rating import ModuleRecord
+from clean_eval.domain.retro import (
+    AgentRetroResult,
     AspectMeans,
     BandStats,
     Calibration,
     Confidence,
     DefectKind,
     DefectLink,
-    EvalHistory,
-    EvalResult,
     FetchFailure,
     HostComment,
     MergedPR,
@@ -42,6 +47,8 @@ from clean_eval.domain.evaluation import (
     Recommendation,
     Rejection,
     Replay,
+    RetroHistory,
+    RetroResult,
     ReviewSignal,
     ReviewThreads,
     RulesChange,
@@ -49,13 +56,6 @@ from clean_eval.domain.evaluation import (
     RuleUse,
     SensitivityRow,
 )
-from clean_eval.domain.policy import (
-    WEIGHT_GROUPS,
-    Aspect,
-    Band,
-    Policy,
-)
-from clean_eval.domain.rating import ModuleRecord
 from clean_eval.domain.review import (
     Secrets,
     StepOutputs,
@@ -76,7 +76,7 @@ from clean_eval.use_cases.rules.review import (
 # Merged-PR history: which later fixes and reverts point back at a merged PR ("escaped defects"), and what its
 # clean-eval review cited. Each first-parent commit of the main branch is one merged PR (merge or squash), whose number
 # the code host reads from its subject. The fix-to-PR links are heuristics (shared files plus fix/revert wording) that
-# the eval skill verifies from the diffs.
+# the retro skill verifies from the diffs.
 
 RULE_ID = re.compile(r"\[([A-Z]{1,4}-\d{2,3}|NEW)\]")  # pr-review tags findings as [CA-01] / [NEW]
 FIX = re.compile(r"(?i)\b(fix(es|ed)?|bug|hotfix|regression|patch|revert)\b")
@@ -329,10 +329,10 @@ def rescore(
 
 
 def replay(
-    history: EvalHistory,
+    history: RetroHistory,
     policy: Policy,
 ) -> Replay:
-    """Calibration of `policy` on an already-collected EvalHistory (weights, mixes and thresholds; not module shape)."""
+    """Calibration of `policy` on an already-collected RetroHistory (weights, mixes and thresholds; not module shape)."""
     cal = calibration(rescore(history.prs, policy))
     return Replay(
         auc_max_score=cal.auc_max_score,
@@ -342,7 +342,7 @@ def replay(
 
 
 def sensitivity(
-    history: EvalHistory,
+    history: RetroHistory,
     policy: Policy,
     step: float = 0.1,
 ) -> list[SensitivityRow]:
@@ -381,7 +381,7 @@ def sensitivity(
     return rows
 
 
-# Which edits of the tuning files (`.clean-eval/risk-model.json` and `review-rules.md`) an unattended eval may keep.
+# Which edits of the tuning files (`.clean-eval/risk-model.json` and `review-rules.md`) an unattended retro may keep.
 #
 # The domain models check the shape of an edit (a valid policy changing only tunable knobs; rules that parse into unique
 # rows). The evidence is judged here: enough PRs in the period, and a replay AUC no lower than the current model's.
@@ -394,10 +394,10 @@ MIN_PRS, MIN_DEFECTIVE = 20, 5  # below this, a model edit has no evidence behin
 def judge_model_edit(
     new_text: Optional[str],
     orig_text: Optional[str],
-    history: EvalHistory,
+    history: RetroHistory,
 ) -> ModelChange:
     """The accepted change of the risk-model overrides (None text: no file, i.e. the defaults), judged on the collected
-    EvalHistory; InvalidOutput (or a parse error) when it has to be restored."""
+    RetroHistory; InvalidOutput (or a parse error) when it has to be restored."""
     try:
         edit = PolicyEdit(
             new=json.loads(new_text) if new_text is not None else {},
@@ -445,13 +445,13 @@ def judge_rules_edit(
     return RulesChange()
 
 
-def eval_recommendations(
+def retro_recommendations(
     raw: object,
     secrets: Secrets,
 ) -> list[Recommendation]:
     """The recommendations of the agent's result.json, validated and redacted of `secrets`."""
     try:
-        recs = AgentEvalResult.model_validate(raw).recommendations
+        recs = AgentRetroResult.model_validate(raw).recommendations
     except ValidationError as e:
         raise InvalidOutput.from_validation(e, "result.json")
     return [
@@ -460,16 +460,16 @@ def eval_recommendations(
     ]
 
 
-def eval_result(
-    history: EvalHistory,
+def retro_result(
+    history: RetroHistory,
     recommendations: list[Recommendation],
     model_change: Optional[Union[ModelChange, Rejection]],
     rules_change: Optional[Union[RulesChange, Rejection]],
     other_reverted: list[str],
-) -> tuple[EvalResult, StepOutputs]:
-    """(EvalResult, step outputs). Counts and AUC come from the collected history, never from agent text."""
+) -> tuple[RetroResult, StepOutputs]:
+    """(RetroResult, step outputs). Counts and AUC come from the collected history, never from agent text."""
     baseline = history.calibration.auc_max_score
-    res = EvalResult(
+    res = RetroResult(
         since=history.period.since,
         until=history.period.until,
         prs=history.totals.prs,

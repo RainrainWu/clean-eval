@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from clean_eval.domain.evaluation import ModelChange
 from clean_eval.domain.policy import Policy
+from clean_eval.domain.retro import ModelChange
 
 # The fields of one valid example of each model, which `request.param` overrides.
 
@@ -38,12 +38,12 @@ HOST_PULL_REQUEST: frozendict[str, Any] = frozendict(
         "head_refspec": "pull/7/head",
     }
 )
-# domain/evaluation.py: the period an eval looks back over, a merged PR, and an eval's outcome.
+# domain/retro.py: the period a retro looks back over, a merged PR, and a retro's outcome.
 PERIOD: frozendict[str, Any] = frozendict({"since": "2026-01-01", "until": "2026-01-31"})
 MERGED_PR: frozendict[str, Any] = frozendict(
     {"sha": "a" * 40, "base": "b" * 40, "author": "a", "ts": 1, "subject": "s"}
 )
-EVAL_RESULT: frozendict[str, Any] = frozendict(
+RETRO_RESULT: frozendict[str, Any] = frozendict(
     {"since": "2026-01-01", "until": "2026-02-01", "prs": 30, "defective_prs": 6, "auc": 0.7}
 )
 
@@ -139,7 +139,7 @@ def trusted_major():
     return {"rule": "Q-02", "severity": "major"}
 
 
-# domain/evaluation.py
+# domain/retro.py
 
 
 @pytest.fixture
@@ -161,12 +161,12 @@ def merged_pr(
 
 
 @pytest.fixture
-def eval_result(
+def retro_result(
     request,
 ):
-    """An EvalResult's fields: 2026-01-01 to 2026-02-01, 30 PRs of which 6 defective, AUC 0.7, with no change kept,
+    """An RetroResult's fields: 2026-01-01 to 2026-02-01, 30 PRs of which 6 defective, AUC 0.7, with no change kept,
     with the fields in `request.param` replaced (`model_change`, `rules_change`: a model or a dict of its fields)."""
-    return copy.deepcopy({**EVAL_RESULT, **getattr(request, "param", {})})
+    return copy.deepcopy({**RETRO_RESULT, **getattr(request, "param", {})})
 
 
 @pytest.fixture
