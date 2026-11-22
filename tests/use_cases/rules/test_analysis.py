@@ -2,6 +2,7 @@
 signals, and the built-in knowledge graph."""
 
 import pytest
+from pytest_lazy_fixtures import lf
 
 from clean_eval.use_cases.rules import analysis  # analysis.test_files_to_modules by its module, or pytest collects it
 from clean_eval.use_cases.rules.analysis import (
@@ -12,74 +13,6 @@ from clean_eval.use_cases.rules.analysis import (
     split_modules,
     write_calls,
 )
-
-# A large module with two sub-folders, and a small one.
-LARGE_AND_SMALL = [
-    {"path": "a/b/x.py", "loc": 400},
-    {"path": "a/c/y.py", "loc": 400},
-    {"path": "z/w.py", "loc": 100},
-]
-# A package in a src layout: its two sub-packages sit at the end of a single-child chain.
-SRC_LAYOUT = [
-    {"path": "pkg/src/pkg/one/a.py", "loc": 300},
-    {"path": "pkg/src/pkg/two/b.py", "loc": 300},
-    {"path": "other/c.py", "loc": 50},
-]
-# src/ holds ext (three files, 300 lines) and dom (two files, 120 lines).
-EXT_AND_DOM = [
-    {"path": "src/ext/a.py", "loc": 100},
-    {"path": "src/ext/b.py", "loc": 100},
-    {"path": "src/ext/c.py", "loc": 100},
-    {"path": "src/dom/d.py", "loc": 60},
-    {"path": "src/dom/e.py", "loc": 60},
-]
-# Rated modules: folders, a folder split per file (src/ext), a split folder with files of its own (src/core), the root.
-MODULE_NAMES = {"src/api", "src/ext/a.py", "src/core/(files)", "src/core/deep", "(root)", "tools"}
-# Three files of three modules A, B and C: a.py imports b.py, c.py is test code, and a test is linked to a.py's f.
-THREE_FILES = {
-    "nodes": {
-        "a.py::f": ("Function", "a.py", False),
-        "b.py::g": ("Function", "b.py", False),
-        "c.py::t": ("Function", "c.py", True),
-    },
-    "links": {"a.py": {"b.py"}},
-    "tested": {"a.py::f": {"tests/test_a.py"}},
-}
-FILE_MODULES = {"a.py": "A", "b.py": "B", "c.py": "C"}
-# A typed function with an if and a boolean operator, and an untyped one that swallows a broad exception.
-SAMPLE = """
-def typed(a: int) -> int:
-    if a and a > 1:
-        return a
-    return 0
-
-
-def loose(x):
-    try:
-        return x
-    except Exception:
-        pass
-"""
-# An AWS client that writes twice, first on line 3.
-AWS_WRITES = "import boto3\nc = boto3.client('s3')\nc.put_object(Bucket='b')\nc.delete_object(Bucket='b')\n"
-# Two TODO markers (TODOS is no marker), in a file whose content has the id b1.
-TODO_FILE = [{"path": "a.py", "loc": 1, "text": "# TODO a\nx = 1  # FIXME b\nTODOS = 3\n", "blob": "b1"}]
-# A repository: a package in a src layout, a lambda that imports its sibling utils (another utils lives elsewhere),
-# a tool named like a stdlib module, and a test of the package.
-REPOSITORY = {
-    "src/pkg/__init__.py": "from .core import run\n",
-    "src/pkg/core.py": "import json\nfrom . import util\n\ndef run():\n    return util.helper()\n\nclass Svc:\n    def go(self):\n        pass\n",
-    "src/pkg/util.py": "def helper():\n    return 1\n",
-    "tools/json.py": "X = 1\n",
-    "lambdas/x/handler.py": "import utils\n\ndef handler(e, c):\n    return utils.f()\n",
-    "lambdas/x/utils.py": "def f():\n    pass\n",
-    "other/deep/utils.py": "def f():\n    pass\n",
-    "tests/test_core.py": "from pkg import run\nfrom pkg.core import Svc\n\ndef test_run():\n    assert run() and Svc().go() is None\n",
-}
-REPOSITORY_FILES = [
-    {"path": path, "loc": 1, "text": text, "is_test": path.startswith("tests/"), "blob": "blob-" + path}
-    for path, text in REPOSITORY.items()
-]
 
 
 class TestClassifyPaths:
@@ -186,7 +119,7 @@ class TestSplitModules:
     """A repository split into modules: its top-level folders, then each large module into its sub-folders (or files),
     level by level down to a depth, and never past a cap on the number of modules."""
 
-    @pytest.mark.parametrize("source_files", [LARGE_AND_SMALL], indirect=True)
+    @pytest.mark.parametrize("source_files", [lf("large_and_small_module_files")], indirect=True)
     @pytest.mark.parametrize("depth", [2])
     def test_a_large_module_is_split_into_its_children(
         self,
@@ -198,7 +131,7 @@ class TestSplitModules:
         assert sorted(modules) == ["a/b", "a/c", "z"]
         assert any("split a" in note for note in notes)
 
-    @pytest.mark.parametrize("source_files", [SRC_LAYOUT], indirect=True)
+    @pytest.mark.parametrize("source_files", [lf("src_layout_files")], indirect=True)
     @pytest.mark.parametrize("depth", [2])
     def test_a_single_child_chain_is_skipped(
         self,
@@ -210,7 +143,7 @@ class TestSplitModules:
         assert "pkg/src/pkg/one" in modules
         assert "pkg/src/pkg/two" in modules
 
-    @pytest.mark.parametrize("source_files", [EXT_AND_DOM], indirect=True)
+    @pytest.mark.parametrize("source_files", [lf("ext_and_dom_files")], indirect=True)
     @pytest.mark.parametrize(
         ("depth", "max_modules", "expected"),
         [
@@ -261,10 +194,11 @@ class TestModuleOf:
     )
     def test_the_deepest_module_that_holds_the_path(
         self,
+        rated_module_names,
         path,
         expected,
     ):
-        assert module_of(path, MODULE_NAMES) == expected
+        assert module_of(path, rated_module_names) == expected
 
     def test_a_top_level_file_has_none_without_a_root_module(
         self,
@@ -272,7 +206,7 @@ class TestModuleOf:
         assert module_of("setup.py", {"src"}) is None
 
 
-@pytest.mark.parametrize("graph", [THREE_FILES], indirect=True)
+@pytest.mark.parametrize("graph", [lf("three_files_graph")], indirect=True)
 class TestGraphQueries:
     """What the knowledge graph says about modules: who depends on whom, their functions, and the test files linked to
     them."""
@@ -280,21 +214,24 @@ class TestGraphQueries:
     def test_dependents(
         self,
         graph,
+        three_files_modules,
     ):
-        fan_in, fan_out = analysis.dependents(graph, FILE_MODULES)
+        fan_in, fan_out = analysis.dependents(graph, three_files_modules)
         assert (fan_in["B"], fan_out["A"]) == ({"A"}, {"B"})
 
     def test_functions_by_module_leave_test_code_out(
         self,
         graph,
+        three_files_modules,
     ):
-        assert sorted(analysis.functions_by_module(graph, FILE_MODULES)) == ["A", "B"]
+        assert sorted(analysis.functions_by_module(graph, three_files_modules)) == ["A", "B"]
 
     def test_a_test_file_maps_to_the_modules_of_its_functions(
         self,
         graph,
+        three_files_modules,
     ):
-        assert analysis.test_files_to_modules(graph, FILE_MODULES) == {"tests/test_a.py": {"A"}}
+        assert analysis.test_files_to_modules(graph, three_files_modules) == {"tests/test_a.py": {"A"}}
 
 
 class TestPythonStats:
@@ -303,8 +240,9 @@ class TestPythonStats:
 
     def test_functions_typing_and_exception_handlers_are_counted(
         self,
+        typed_and_loose_functions,
     ):
-        stats = python_stats(SAMPLE)
+        stats = python_stats(typed_and_loose_functions)
         assert stats is not None
         assert (len(stats.funcs), stats.typed, stats.broad, stats.swallow) == (2, 1, 1, 1)
         assert stats.funcs[0][1] == 3  # one if and one boolean operator on top of the base path
@@ -320,8 +258,9 @@ class TestWriteCalls:
 
     def test_writes_are_counted_with_their_first_line(
         self,
+        aws_writes,
     ):
-        assert write_calls(AWS_WRITES)["aws_write"] == (2, 3)
+        assert write_calls(aws_writes)["aws_write"] == (2, 3)
 
     def test_a_call_outside_its_context_is_not_a_write(
         self,
@@ -332,7 +271,7 @@ class TestWriteCalls:
 class TestFileSignals:
     """What one file says about risk, computed once per file content."""
 
-    @pytest.mark.parametrize("source_files", [TODO_FILE], indirect=True)
+    @pytest.mark.parametrize("source_files", [[lf("todo_file")]], indirect=True)
     def test_signals_are_cached_per_content(
         self,
         source_files,
@@ -345,7 +284,7 @@ class TestFileSignals:
         assert file_signals(renamed, rating_cache.signals) is signals
 
 
-@pytest.mark.parametrize("source_files", [REPOSITORY_FILES], indirect=True)
+@pytest.mark.parametrize("source_files", [lf("package_repository_files")], indirect=True)
 class TestBuiltinGraph:
     """The built-in knowledge graph: imports resolved by path, and tests linked to the functions they import and name;
     each file content is parsed once."""
@@ -375,9 +314,10 @@ class TestBuiltinGraph:
         self,
         source_files,
         rating_cache,
+        package_repository,
     ):
         builtin_graph(source_files, rating_cache.syntax)
-        assert len(rating_cache.syntax) == len(REPOSITORY)
+        assert len(rating_cache.syntax) == len(package_repository)
         before = dict(rating_cache.syntax)
         builtin_graph(source_files, rating_cache.syntax)
         assert rating_cache.syntax == before

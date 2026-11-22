@@ -3,11 +3,14 @@ today's date (ClockGateway)."""
 
 import datetime as dt
 import os
-from typing import Optional
 
-from clean_eval.use_cases.interfaces import Clock, Environment
+from clean_eval.use_cases.interfaces import (
+    Clock,
+    Environment,
+)
 
-# The process environment: its variables (secrets to redact, the guard's roots, PATH) and the home folder.
+# The process environment: its variables (secrets to redact, the guard's roots, PATH) and the home folder. A run's
+# settings read their own variables (clean_eval/settings.py).
 
 
 class EnvironmentGateway(Environment):
@@ -16,13 +19,6 @@ class EnvironmentGateway(Environment):
     ) -> dict[str, str]:
         """A copy of every variable, as {name: value}."""
         return dict(os.environ)
-
-    def get(
-        self,
-        name: str,
-        default: Optional[str] = None,
-    ) -> Optional[str]:
-        return os.environ.get(name, default)
 
     def paths(
         self,

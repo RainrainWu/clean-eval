@@ -2,41 +2,18 @@
 MemoryGit (tests/use_cases/fakes.py): the contract checks run on both, over the same history. `git` holds the commits
 of `history`, and `shas` are theirs."""
 
-import datetime as dt
 import subprocess
 
 import pytest
+from pytest_lazy_fixtures import lf
 
 from clean_eval.domain.errors import HeatmapError
 from clean_eval.external.git import GitGateway
 from tests.helpers import Dates
 from tests.use_cases.fakes import MemoryGit
 
-# A commit of a.py, then one that adds files whose names need quoting.
-ODD_NAMES = [
-    {"subject": "init", "files": {"a.py": "1\n"}, "when": Dates.days_ago(2)},
-    {"subject": "odd names", "files": {"src/résumé.py": "2\n", 'src/we"ird.py': "3\n"}, "when": Dates.days_ago(1)},
-]
-# A commit of a.py, then a PR's merge that adds b.py, in the last few days.
-MERGED_PR = [
-    {"subject": "init", "files": {"a.py": "1\n"}, "when": Dates.days_ago(3)},
-    {"subject": "feat: b (#2)", "files": {"b.py": "2\n"}, "when": Dates.days_ago(2)},
-]
-# The contract's history: src/a.py and docs/n.md; then src/a.py changed, src/b.py added and docs/n.md removed.
-FIRST, SECOND = dt.datetime(2026, 3, 1, 12, tzinfo=dt.timezone.utc), dt.datetime(2026, 3, 2, 12, tzinfo=dt.timezone.utc)
-CONTRACT = [
-    {"subject": "init", "files": {"src/a.py": "a\n", "docs/n.md": "n\n"}, "when": FIRST, "author": "Test"},
-    {
-        "subject": "feat: b (#2)",
-        "files": {"src/a.py": "a2\n", "src/b.py": "b\n"},
-        "when": SECOND,
-        "author": "Test",
-        "remove": ["docs/n.md"],
-    },
-]
 
-
-@pytest.mark.parametrize("history", [ODD_NAMES], indirect=True)
+@pytest.mark.parametrize("history", [lf("odd_names_history")], indirect=True)
 class TestShowAndDiff:
     """Paths are taken literally, whatever their names; a path that is no file at a revision is None, while a bad
     revision is an error; and the repository is named after its origin."""
@@ -75,7 +52,7 @@ class TestShowAndDiff:
         assert git.repo_name() == "My-Repo"
 
 
-@pytest.mark.parametrize("history", [MERGED_PR], indirect=True)
+@pytest.mark.parametrize("history", [lf("merged_pr_history")], indirect=True)
 class TestHistoryReads:
     """The history the eval reads: the first-parent log of a period, the default branch, commits that are or aren't
     here, and the log and patch of a file."""
@@ -125,7 +102,7 @@ class TestGitGateway:
     ):
         assert not hasattr(GitGateway, "run")
 
-    @pytest.mark.parametrize("history", [CONTRACT], indirect=True)
+    @pytest.mark.parametrize("history", [lf("contract_history")], indirect=True)
     def test_a_shallow_clone_says_so(
         self,
         repo,
@@ -133,10 +110,12 @@ class TestGitGateway:
     ):
         clone = tmp_path / "shallow"
         subprocess.run(["git", "clone", "-q", "--depth", "1", "file://" + repo.path, str(clone)], check=True)
-        assert GitGateway(str(clone)).is_shallow()
+        assert GitGateway(
+            str(clone),
+        ).is_shallow()
 
 
-@pytest.mark.parametrize("history", [CONTRACT], indirect=True)
+@pytest.mark.parametrize("history", [lf("contract_history")], indirect=True)
 @pytest.mark.parametrize("git", ["MemoryGit", "GitGateway"], indirect=True)
 class TestMemoryGitAgreesWithTheGateway:
     """The contract: every check runs on the in-memory MemoryGit and on GitGateway over the same history, so the use
@@ -202,12 +181,13 @@ class TestMemoryGitAgreesWithTheGateway:
         self,
         git,
         shas,
+        history,
     ):
         first, second = shas
         log = git.first_parent_log("main", "2026-02-28", "2026-03-03")
         assert [(sha, parents, author, ts, subject) for sha, parents, author, ts, subject in log] == [
-            (second, [first], "Test", int(SECOND.timestamp()), "feat: b (#2)"),
-            (first, [], "Test", int(FIRST.timestamp()), "init"),
+            (second, [first], "Test", int(history[1]["when"].timestamp()), "feat: b (#2)"),
+            (first, [], "Test", int(history[0]["when"].timestamp()), "init"),
         ]
         assert git.first_parent_log("main", "2026-03-10", "2026-03-20") == []
         lines = git.file_log(second, "src/a.py").splitlines()

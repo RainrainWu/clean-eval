@@ -19,7 +19,7 @@ import tomllib
 import click
 
 TAG = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|rc)\.(0|[1-9]\d*))?")  # the whole tag
-PEP440_PRE = {"alpha": "a", "beta": "b", "rc": "rc"}
+PEP440_PRE = frozendict({"alpha": "a", "beta": "b", "rc": "rc"})
 
 
 class ReleaseError(Exception):
@@ -59,7 +59,9 @@ def git(
 ):
     r = subprocess.run(["git", *args], capture_output=True, text=True)
     if r.returncode:
-        raise ReleaseError("git %s failed: %s" % (" ".join(args), r.stderr.strip()))
+        raise ReleaseError(
+            "git %s failed: %s" % (" ".join(args), r.stderr.strip()),
+        )
     return r.stdout
 
 
@@ -77,13 +79,19 @@ def check(
     sha = git("rev-parse", "--verify", tag + "^{commit}").strip()
     on_branch = subprocess.run(["git", "merge-base", "--is-ancestor", sha, branch], capture_output=True, text=True)
     if on_branch.returncode == 1:
-        raise ReleaseError("%s (%s) is not on %s: releases are cut from %s only" % (tag, sha[:8], branch, branch))
+        raise ReleaseError(
+            "%s (%s) is not on %s: releases are cut from %s only" % (tag, sha[:8], branch, branch),
+        )
     if on_branch.returncode:
-        raise ReleaseError("cannot tell whether %s is on %s: %s" % (tag, branch, on_branch.stderr.strip()))
+        raise ReleaseError(
+            "cannot tell whether %s is on %s: %s" % (tag, branch, on_branch.stderr.strip()),
+        )
     try:
         declared = tomllib.loads(git("show", sha + ":pyproject.toml"))["project"]["version"]
     except (tomllib.TOMLDecodeError, KeyError, TypeError) as e:
-        raise ReleaseError("cannot read the project version in pyproject.toml at %s: %s" % (tag, e))
+        raise ReleaseError(
+            "cannot read the project version in pyproject.toml at %s: %s" % (tag, e),
+        )
     if declared != python_version(version):
         raise ReleaseError(
             "%s needs version %s in pyproject.toml, which says %s at that commit: run `uv version %s` "
@@ -98,7 +106,9 @@ def check(
         key=lambda tag: precedence(parse(tag)),
     )
     if newer:
-        raise ReleaseError("%s is not newer than the release tag(s) %s" % (tag, ", ".join(newer)))
+        raise ReleaseError(
+            "%s is not newer than the release tag(s) %s" % (tag, ", ".join(newer)),
+        )
     return {
         "version": tag[1:],
         "sha": sha,

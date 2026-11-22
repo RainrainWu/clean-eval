@@ -122,7 +122,14 @@ class FileSystemGateway(FileSystem):
         pattern: str,
     ) -> list[str]:
         """The paths in `folder` that match `pattern`, sorted."""
-        return [str(p) for p in sorted(Path(folder).glob(pattern))]
+        return [
+            str(p)
+            for p in sorted(
+                Path(
+                    folder,
+                ).glob(pattern)
+            )
+        ]
 
     def find_executable(
         self,
@@ -139,9 +146,13 @@ class FileSystemGateway(FileSystem):
         path: str,
     ) -> str:
         try:
-            return Path(path).read_text(errors="replace")
+            return Path(
+                path,
+            ).read_text(errors="replace")
         except OSError as e:
-            raise HeatmapError("cannot read %s: %s" % (path, e))
+            raise HeatmapError(
+                "cannot read %s: %s" % (path, e),
+            )
 
     def write_text(
         self,
@@ -149,8 +160,12 @@ class FileSystemGateway(FileSystem):
         text: str,
     ) -> None:
         """Write the file, making its folders."""
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_text(text)
+        Path(
+            path,
+        ).parent.mkdir(parents=True, exist_ok=True)
+        Path(
+            path,
+        ).write_text(text)
 
     def append_text(
         self,

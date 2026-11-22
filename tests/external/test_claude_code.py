@@ -1,7 +1,8 @@
 """The Claude Code gateway (external/claude_code.py), with what it calls out to mocked (`claude_runs`, `npm_installs`,
-`claude_installed`, `oidc_tokens`): installing the CLI only when it is missing, refusing to run without credentials in
-CI, the sandbox it runs the agent in, and keyless sign-in by workload identity federation, which trades the job's OIDC
-token. `tests/test_action.py` runs it with a fake `claude` executable, end to end."""
+`claude_installed`, `oidc_tokens`), for a run whose environment is `environ` (its settings, and what the agent may be
+passed): installing the CLI only when it is missing, refusing to run without credentials in CI, the sandbox it runs the
+agent in, and keyless sign-in by workload identity federation, which trades the job's OIDC token.
+`tests/test_action.py` runs it with a fake `claude` executable, end to end."""
 
 import json
 import os
@@ -13,56 +14,18 @@ from pathlib import Path
 from unittest.mock import call
 
 import pytest
+from pytest_lazy_fixtures import (
+    lf,
+    lfc,
+)
 
 from clean_eval.domain.errors import HeatmapError
 from clean_eval.domain.review import AgentRun
-from clean_eval.external.claude_code import OIDC_REFRESH_SECONDS, VERSION, github_oidc_token
-
-# A CI runner's variables: without credentials, and with them.
-CI_WITHOUT_CREDENTIALS = {"PATH": "/usr/bin", "GITHUB_ACTIONS": "true"}
-CI_WITH_A_KEY = {**CI_WITHOUT_CREDENTIALS, "ANTHROPIC_API_KEY": "sk-ant-api03-" + "k" * 40}
-# A CI job that signs in keyless, by workload identity federation: the rule, the organization, and what the runner sets
-# for a job with `id-token: write` to request its OIDC token.
-TOKEN_REQUEST_URL = "https://token.actions.example/idtoken?api-version=2.0"
-TOKEN_REQUEST_TOKEN = "request-" + "r" * 32
-FEDERATED_JOB = {
-    **CI_WITHOUT_CREDENTIALS,
-    "ANTHROPIC_FEDERATION_RULE_ID": "fdrl_example",
-    "ANTHROPIC_ORGANIZATION_ID": "00000000-0000-4000-8000-000000000000",
-    "ACTIONS_ID_TOKEN_REQUEST_URL": TOKEN_REQUEST_URL,
-    "ACTIONS_ID_TOKEN_REQUEST_TOKEN": TOKEN_REQUEST_TOKEN,
-}
-NO_TOKEN_REQUEST = {
-    name: value for name, value in FEDERATED_JOB.items() if not name.startswith("ACTIONS_ID_TOKEN_REQUEST_")
-}
-# Federation set up wrong: the variables, and what require() says.
-FEDERATION_REFUSED = [
-    (
-        {name: value for name, value in FEDERATED_JOB.items() if name != "ANTHROPIC_ORGANIZATION_ID"},
-        "needs the organization's ID",
-    ),
-    (NO_TOKEN_REQUEST, "give the job `id-token: write`"),
-    (
-        {**FEDERATED_JOB, "ACTIONS_ID_TOKEN_REQUEST_TOKEN": ""},
-        "give the job `id-token: write`",
-    ),
-    (
-        {**FEDERATED_JOB, "ANTHROPIC_API_KEY": "sk-ant-api03-" + "k" * 40},
-        "and so is ANTHROPIC_API_KEY, which Claude Code would sign in with instead",
-    ),
-    (
-        {**FEDERATED_JOB, "CLAUDE_CODE_USE_BEDROCK": "1"},
-        "and so is CLAUDE_CODE_USE_BEDROCK",
-    ),
-]
-# What GitHub's token endpoint may answer instead of a token.
-BAD_TOKEN_REPLIES = [
-    urllib.error.URLError("timed out"),
-    urllib.error.HTTPError(TOKEN_REQUEST_URL, 403, "Forbidden", Message(), None),
-    b"<html>not JSON</html>",
-    b"[]",
-    b'{"count": 0}',
-]
+from clean_eval.external.claude_code import (
+    OIDC_REFRESH_SECONDS,
+    github_oidc_token,
+)
+from clean_eval.settings import CLAUDE_CODE_VERSION
 
 
 class TestRequire:
@@ -85,8 +48,18 @@ class TestRequire:
     ):
         claude_code.require()
         command = npm_installs.call_args.args[0]
-        assert command == ["npm", "install", "-g", "@anthropic-ai/claude-code@%s" % VERSION]
+        assert command == ["npm", "install", "-g", "@anthropic-ai/claude-code@%s" % CLAUDE_CODE_VERSION]
         assert npm_installs.call_args.kwargs["cwd"] == run_folders.out  # not the checkout: its .npmrc is untrusted
+
+    @pytest.mark.parametrize("claude_installed", [False], indirect=True)
+    @pytest.mark.parametrize("environ", [{"CE_CLAUDE_VERSION": "2.2.0"}], indirect=True)
+    def test_the_settings_name_the_version_to_install(
+        self,
+        claude_code,
+        npm_installs,
+    ):
+        claude_code.require()
+        assert npm_installs.call_args.args[0][-1] == "@anthropic-ai/claude-code@2.2.0"
 
     @pytest.mark.parametrize("claude_installed", [False], indirect=True)
     @pytest.mark.parametrize("npm_installs", [{"exit": 1, "err": "npm ERR! 404"}], indirect=True)
@@ -97,7 +70,7 @@ class TestRequire:
         with pytest.raises(HeatmapError, match="could not install Claude Code .*404"):
             claude_code.require()
 
-    @pytest.mark.parametrize("claude_code", [{"variables": CI_WITHOUT_CREDENTIALS}], indirect=True)
+    @pytest.mark.parametrize("environ", [lf("ci_without_credentials")], indirect=True)
     def test_in_ci_it_needs_credentials(
         self,
         claude_code,
@@ -106,10 +79,7 @@ class TestRequire:
             claude_code.require()
 
     @pytest.mark.parametrize(
-        "claude_code",
-        [{"variables": CI_WITH_A_KEY}, {"variables": FEDERATED_JOB}],
-        indirect=True,
-        ids=["key", "keyless"],
+        "environ", [lf("ci_with_a_key"), lf("federated_job")], indirect=True, ids=["key", "keyless"]
     )
     def test_in_ci_an_api_key_or_federation_will_do(
         self,
@@ -124,9 +94,27 @@ class TestRequireWithFederation:
     instead; set up wrong, it is refused before anything is installed."""
 
     @pytest.mark.parametrize(
-        ("claude_code", "refusal"),
-        [({"variables": variables}, refusal) for variables, refusal in FEDERATION_REFUSED],
-        indirect=["claude_code"],
+        ("environ", "refusal"),
+        [
+            (
+                lfc(lambda job: {**job, "ANTHROPIC_ORGANIZATION_ID": None}, lf("federated_job")),
+                "needs the organization's ID",
+            ),
+            (lf("federated_job_without_id_token"), "give the job `id-token: write`"),
+            (
+                lfc(lambda job: {**job, "ACTIONS_ID_TOKEN_REQUEST_TOKEN": ""}, lf("federated_job")),
+                "give the job `id-token: write`",
+            ),
+            (
+                lfc(lambda job, key: {**job, "ANTHROPIC_API_KEY": key}, lf("federated_job"), lf("anthropic_api_key")),
+                "and so is ANTHROPIC_API_KEY, which Claude Code would sign in with instead",
+            ),
+            (
+                lfc(lambda job: {**job, "CLAUDE_CODE_USE_BEDROCK": "1"}, lf("federated_job")),
+                "and so is CLAUDE_CODE_USE_BEDROCK",
+            ),
+        ],
+        indirect=["environ"],
         ids=["no organization", "no id-token permission", "no request token", "an API key too", "Bedrock too"],
     )
     def test_a_wrong_setup_is_refused(
@@ -139,7 +127,7 @@ class TestRequireWithFederation:
             claude_code.require()
         npm_installs.assert_not_called()
 
-    @pytest.mark.parametrize("claude_code", [{"variables": FEDERATED_JOB}], indirect=True)
+    @pytest.mark.parametrize("environ", [lf("federated_job")], indirect=True)
     def test_a_complete_setup_goes_on_to_install(
         self,
         claude_code,
@@ -151,6 +139,7 @@ class TestRequireWithFederation:
         oidc_tokens.assert_not_called()  # the job's token is fetched only when the agent runs
 
 
+@pytest.mark.parametrize("environ", [lf("agent_variables")], indirect=True)
 class TestRun:
     """The agent runs sandboxed: restricted, with the settings, the hook, the tools and the environment it may have."""
 
@@ -160,7 +149,12 @@ class TestRun:
         run_folders,
     ):
         claude_code.run("Review it.", run_folders, [])
-        settings = json.loads(Path(run_folders.context, "claude-settings.json").read_text())
+        settings = json.loads(
+            Path(
+                run_folders.context,
+                "claude-settings.json",
+            ).read_text()
+        )
         assert settings["hooks"]["PreToolUse"] == [
             {"matcher": "*", "hooks": [{"type": "command", "command": "python -I /action/clean_eval guard || exit 2"}]}
         ]
@@ -219,7 +213,46 @@ class TestRun:
         assert environment["CE_GUARD_WRITE_ROOTS"] == run_folders.agent
         assert environment["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] == "1"
 
-    @pytest.mark.parametrize("claude_code", [{"model": "claude-opus-5-5", "max_turns": 9}], indirect=True)
+    @pytest.mark.parametrize("claude_runs", [{"exit": 3, "out": "reviewed, then failed"}], indirect=True)
+    def test_it_waits_for_claude_and_returns_its_status_and_transcript(
+        self,
+        claude_code,
+        claude_runs,
+        run_folders,
+    ):
+        assert claude_code.run("Review it.", run_folders, []) == AgentRun(
+            status=3,
+            transcript="reviewed, then failed",
+        )
+        claude_runs.return_value.communicate.assert_called_once_with(timeout=None)
+
+    @pytest.mark.parametrize(
+        "claude_runs",
+        [
+            FileNotFoundError(
+                "claude",
+            )
+        ],
+        indirect=True,
+    )
+    def test_a_claude_that_cannot_start_is_a_failed_run(
+        self,
+        claude_code,
+        run_folders,
+    ):
+        run = claude_code.run("Review it.", run_folders, [])
+        assert run.status == 127
+        assert "could not run claude" in run.transcript
+
+
+@pytest.mark.parametrize(
+    "environ",
+    [lfc(lambda variables: {**variables, "CE_MODEL": "claude-opus-5-5", "CE_MAX_TURNS": "9"}, lf("agent_variables"))],
+    indirect=True,
+)
+class TestRunAsTheSettingsSay:
+    """The agent runs on the model and with the turn limit the run's settings name."""
+
     def test_a_model_and_a_turn_limit_are_passed_on(
         self,
         claude_code,
@@ -231,28 +264,8 @@ class TestRun:
         assert command[command.index("--model") + 1] == "claude-opus-5-5"
         assert command[command.index("--max-turns") + 1] == "9"
 
-    @pytest.mark.parametrize("claude_runs", [{"exit": 3, "out": "reviewed, then failed"}], indirect=True)
-    def test_it_waits_for_claude_and_returns_its_status_and_transcript(
-        self,
-        claude_code,
-        claude_runs,
-        run_folders,
-    ):
-        assert claude_code.run("Review it.", run_folders, []) == AgentRun(status=3, transcript="reviewed, then failed")
-        claude_runs.return_value.communicate.assert_called_once_with(timeout=None)
 
-    @pytest.mark.parametrize("claude_runs", [FileNotFoundError("claude")], indirect=True)
-    def test_a_claude_that_cannot_start_is_a_failed_run(
-        self,
-        claude_code,
-        run_folders,
-    ):
-        run = claude_code.run("Review it.", run_folders, [])
-        assert run.status == 127
-        assert "could not run claude" in run.transcript
-
-
-@pytest.mark.parametrize("claude_code", [{"variables": FEDERATED_JOB}], indirect=True)
+@pytest.mark.parametrize("environ", [lf("federated_job")], indirect=True)
 class TestRunWithFederation:
     """With federation, claude reads the job's OIDC token from a file outside every folder it can reach; a new token is
     written while it runs, since each lasts minutes and serves one trade; and the file is gone once it stops."""
@@ -263,25 +276,37 @@ class TestRunWithFederation:
         claude_runs,
         run_folders,
     ):
-        assert claude_code.run("Review it.", run_folders, []) == AgentRun(status=0, transcript="done")
+        assert claude_code.run("Review it.", run_folders, []) == AgentRun(
+            status=0,
+            transcript="done",
+        )
         environment = claude_runs.call_args.kwargs["env"]
         token = environment["ANTHROPIC_IDENTITY_TOKEN_FILE"]
-        assert token == str(Path(run_folders.out, "identity", "token"))
+        assert token == str(
+            Path(
+                run_folders.out,
+                "identity",
+                "token",
+            )
+        )
         for reachable in (run_folders.workspace, run_folders.context, run_folders.agent):
             assert not token.startswith(reachable + os.sep)
         assert claude_runs.identity_tokens == ["jwt-1"]
-        assert not Path(token).exists()
+        assert not Path(
+            token,
+        ).exists()
 
     def test_claude_gets_the_federation_settings_but_not_the_means_to_mint_tokens(
         self,
         claude_code,
         claude_runs,
         run_folders,
+        federated_job,
     ):
         claude_code.run("Review it.", run_folders, [])
         environment = claude_runs.call_args.kwargs["env"]
-        assert environment["ANTHROPIC_FEDERATION_RULE_ID"] == "fdrl_example"
-        assert environment["ANTHROPIC_ORGANIZATION_ID"] == FEDERATED_JOB["ANTHROPIC_ORGANIZATION_ID"]
+        assert environment["ANTHROPIC_FEDERATION_RULE_ID"] == federated_job["ANTHROPIC_FEDERATION_RULE_ID"]
+        assert environment["ANTHROPIC_ORGANIZATION_ID"] == federated_job["ANTHROPIC_ORGANIZATION_ID"]
         assert not {"ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "GITHUB_ACTIONS"} & set(
             environment
         )
@@ -291,11 +316,15 @@ class TestRunWithFederation:
         claude_code,
         oidc_tokens,
         run_folders,
+        token_request,
     ):
         claude_code.run("Review it.", run_folders, [])
         request = oidc_tokens.call_args.args[0]
-        assert request.full_url == TOKEN_REQUEST_URL + "&audience=https%3A%2F%2Fapi.anthropic.com"
-        assert request.get_header("Authorization") == "bearer " + TOKEN_REQUEST_TOKEN
+        assert (
+            request.full_url
+            == token_request["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=https%3A%2F%2Fapi.anthropic.com"
+        )
+        assert request.get_header("Authorization") == "bearer " + token_request["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
 
     @pytest.mark.parametrize("claude_runs", [{"timeouts": 2, "out": "reviewed"}], indirect=True)
     def test_a_new_token_is_written_while_claude_runs(
@@ -304,22 +333,49 @@ class TestRunWithFederation:
         claude_runs,
         run_folders,
     ):
-        assert claude_code.run("Review it.", run_folders, []) == AgentRun(status=0, transcript="reviewed")
+        assert claude_code.run("Review it.", run_folders, []) == AgentRun(
+            status=0,
+            transcript="reviewed",
+        )
         assert claude_runs.identity_tokens == ["jwt-1", "jwt-2", "jwt-3"]
         assert claude_runs.return_value.communicate.call_args_list == [call(timeout=OIDC_REFRESH_SECONDS)] * 3
 
     @pytest.mark.parametrize("claude_runs", [{"timeouts": 2}], indirect=True)
-    @pytest.mark.parametrize("oidc_tokens", [["jwt-1", urllib.error.URLError("timed out")]], indirect=True)
+    @pytest.mark.parametrize(
+        "oidc_tokens",
+        [
+            [
+                "jwt-1",
+                urllib.error.URLError(
+                    "timed out",
+                ),
+            ]
+        ],
+        indirect=True,
+    )
     def test_a_failed_refresh_lets_claude_run_on(
         self,
         claude_code,
         claude_runs,
         run_folders,
     ):
-        assert claude_code.run("Review it.", run_folders, []) == AgentRun(status=0, transcript="done")
+        assert claude_code.run("Review it.", run_folders, []) == AgentRun(
+            status=0,
+            transcript="done",
+        )
         assert claude_runs.identity_tokens == ["jwt-1", "jwt-1", "jwt-3"]
 
-    @pytest.mark.parametrize("oidc_tokens", [[urllib.error.URLError("timed out")]], indirect=True)
+    @pytest.mark.parametrize(
+        "oidc_tokens",
+        [
+            [
+                urllib.error.URLError(
+                    "timed out",
+                )
+            ]
+        ],
+        indirect=True,
+    )
     def test_without_the_jobs_token_claude_does_not_start(
         self,
         claude_code,
@@ -330,7 +386,11 @@ class TestRunWithFederation:
         assert run.status == 1
         assert run.transcript.startswith("could not sign in to Claude: could not get the job's OIDC token")
         claude_runs.assert_not_called()
-        assert not Path(run_folders.out, "identity", "token").exists()
+        assert not Path(
+            run_folders.out,
+            "identity",
+            "token",
+        ).exists()
 
     @pytest.mark.parametrize("run_folders", ["ws/out"], indirect=True)
     def test_an_output_folder_inside_the_checkout_is_refused(
@@ -345,14 +405,26 @@ class TestRunWithFederation:
         oidc_tokens.assert_not_called()
         claude_runs.assert_not_called()
 
-    @pytest.mark.parametrize("claude_runs", [FileNotFoundError("claude")], indirect=True)
+    @pytest.mark.parametrize(
+        "claude_runs",
+        [
+            FileNotFoundError(
+                "claude",
+            )
+        ],
+        indirect=True,
+    )
     def test_a_claude_that_cannot_start_leaves_no_token(
         self,
         claude_code,
         run_folders,
     ):
         assert claude_code.run("Review it.", run_folders, []).status == 127
-        assert not Path(run_folders.out, "identity", "token").exists()
+        assert not Path(
+            run_folders.out,
+            "identity",
+            "token",
+        ).exists()
 
     @pytest.mark.parametrize("claude_runs", [{"timeouts": 1, "interrupted": KeyboardInterrupt()}], indirect=True)
     def test_a_run_cut_short_stops_claude_and_leaves_no_token(
@@ -364,37 +436,67 @@ class TestRunWithFederation:
         with pytest.raises(KeyboardInterrupt):
             claude_code.run("Review it.", run_folders, [])
         claude_runs.return_value.kill.assert_called_once_with()
-        assert not Path(run_folders.out, "identity", "token").exists()
+        assert not Path(
+            run_folders.out,
+            "identity",
+            "token",
+        ).exists()
 
 
 class TestGithubOidcToken:
     """The job's OIDC token, from the endpoint the runner names; anything else is a HeatmapError."""
 
+    @pytest.mark.parametrize("environ", [lf("federated_job")], indirect=True)
     def test_the_token_is_the_value_github_issues(
         self,
+        settings,
         oidc_tokens,
+        token_request,
     ):
-        assert github_oidc_token(FEDERATED_JOB, "https://audience.example") == "jwt-1"
-        assert oidc_tokens.call_args.args[0].full_url == TOKEN_REQUEST_URL + "&audience=https%3A%2F%2Faudience.example"
+        assert github_oidc_token(settings.federation, "https://audience.example") == "jwt-1"
+        requested = oidc_tokens.call_args.args[0].full_url
+        assert requested == token_request["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=https%3A%2F%2Faudience.example"
         assert oidc_tokens.call_args.kwargs["timeout"] == 30
 
+    @pytest.mark.parametrize("environ", [lf("federated_job_without_id_token")], indirect=True)
     def test_a_job_without_id_token_permission_has_none(
         self,
+        settings,
         oidc_tokens,
     ):
         with pytest.raises(HeatmapError, match="give the job `id-token: write`"):
-            github_oidc_token(NO_TOKEN_REQUEST)
+            github_oidc_token(settings.federation)
         oidc_tokens.assert_not_called()
 
-    @pytest.mark.parametrize(
+    @pytest.mark.parametrize("environ", [lf("federated_job")], indirect=True)
+    @pytest.mark.parametrize(  # what GitHub's token endpoint may answer instead of a token
         "oidc_tokens",
-        [[reply] for reply in BAD_TOKEN_REPLIES],
+        [
+            [
+                urllib.error.URLError(
+                    "timed out",
+                )
+            ],
+            [
+                urllib.error.HTTPError(
+                    "https://token.actions.example/idtoken",
+                    403,
+                    "Forbidden",
+                    Message(),
+                    None,
+                )
+            ],
+            [b"<html>not JSON</html>"],
+            [b"[]"],
+            [b'{"count": 0}'],
+        ],
         indirect=True,
         ids=["no answer", "refused", "not JSON", "not an object", "no value"],
     )
     def test_anything_but_a_token_is_an_error(
         self,
+        settings,
         oidc_tokens,
     ):
         with pytest.raises(HeatmapError, match="could not get the job's OIDC token"):
-            github_oidc_token(FEDERATED_JOB)
+            github_oidc_token(settings.federation)

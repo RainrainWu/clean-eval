@@ -3,45 +3,15 @@ released, and the step outputs the workflow publishes from. Run against throwawa
 (the `released` and `release_check` fixtures)."""
 
 import pytest
-
-RELEASE_TAGS = ["v1.0.0", "v0.1.0", "v10.20.30", "v1.2.3-alpha.0", "v1.2.3-beta.2", "v1.2.3-rc.11"]
-NOT_RELEASE_TAGS = [
-    "1.0.0",
-    "v1",
-    "v1.0",
-    "v01.0.0",
-    "v1.0.0-rc",
-    "v1.0.0-rc.01",
-    "v1.0.0-RC.1",
-    "v1.0.0-foo.1",
-    "v1.0.0+build.1",
-    "v1.0.0\n",
-]
-SEMVER_ORDER = [  # lowest first
-    "v1.0.0-alpha.1",
-    "v1.0.0-alpha.2",
-    "v1.0.0-beta.2",
-    "v1.0.0-beta.10",
-    "v1.0.0-rc.1",
-    "v1.0.0",
-    "v1.0.1",
-    "v1.1.0-rc.1",
-    "v1.1.0",
-    "v1.10.0",
-    "v2.0.0",
-]
-# Steps after release 1.0.0 (see the `released` fixture).
-RC_ANNOTATED = [{"version": "1.1.0rc1", "tag": "v1.1.0-rc.1", "annotated": True}]
-BUMP_FORGOTTEN = [{"message": "forgot the bump", "files": {"README.md": "x\n"}, "tag": "v1.1.0"}]
-OFF_THE_BRANCH = [{"branch": "side", "version": "1.1.0"}]
-OLDER_AFTER_NEWER = [{"version": "1.2.0"}, {"version": "1.0.1"}, {"tag": "v1", "at": "v1.2.0"}]  # v1: the major tag
-NOT_SEMVER = [{"tag": "v1.0", "at": "v1.0.0"}]
+from pytest_lazy_fixtures import lf
 
 
 class TestReleaseTags:
     """Which tags are release tags, how they sort, and the version pyproject.toml must hold for one."""
 
-    @pytest.mark.parametrize("tag", RELEASE_TAGS)
+    @pytest.mark.parametrize(
+        "tag", ["v1.0.0", "v0.1.0", "v10.20.30", "v1.2.3-alpha.0", "v1.2.3-beta.2", "v1.2.3-rc.11"]
+    )
     def test_a_release_tag_is_semver_that_a_python_version_can_express(
         self,
         check_release,
@@ -49,7 +19,22 @@ class TestReleaseTags:
     ):
         assert check_release.parse(tag) is not None
 
-    @pytest.mark.parametrize("tag", NOT_RELEASE_TAGS, ids=repr)
+    @pytest.mark.parametrize(
+        "tag",
+        [
+            "1.0.0",
+            "v1",
+            "v1.0",
+            "v01.0.0",
+            "v1.0.0-rc",
+            "v1.0.0-rc.01",
+            "v1.0.0-RC.1",
+            "v1.0.0-foo.1",
+            "v1.0.0+build.1",
+            "v1.0.0\n",
+        ],
+        ids=repr,
+    )
     def test_anything_else_is_not_a_release_tag(
         self,
         check_release,
@@ -60,9 +45,12 @@ class TestReleaseTags:
     def test_precedence_follows_semver(
         self,
         check_release,
+        release_tags_by_precedence,
     ):
-        ordered = sorted(reversed(SEMVER_ORDER), key=lambda tag: check_release.precedence(check_release.parse(tag)))
-        assert ordered == SEMVER_ORDER
+        ordered = sorted(
+            reversed(release_tags_by_precedence), key=lambda tag: check_release.precedence(check_release.parse(tag))
+        )
+        assert ordered == release_tags_by_precedence
 
     def test_the_pyproject_version_is_what_uv_writes(
         self,
@@ -86,7 +74,7 @@ class TestCheck:
         expected = "version=1.0.0\nsha=%s\nmajor=v1\nprerelease=false\n" % first
         assert (release_check.returncode, release_check.stdout) == (0, expected), release_check.stderr
 
-    @pytest.mark.parametrize("released", [RC_ANNOTATED], indirect=True)
+    @pytest.mark.parametrize("released", [lf("annotated_pre_release")], indirect=True)
     @pytest.mark.parametrize("release_check", ["v1.1.0-rc.1"], indirect=True)
     def test_an_annotated_pre_release_tag(
         self,
@@ -97,7 +85,7 @@ class TestCheck:
         expected = "version=1.1.0-rc.1\nsha=%s\nmajor=v1\nprerelease=true\n" % sha
         assert (release_check.returncode, release_check.stdout) == (0, expected), release_check.stderr
 
-    @pytest.mark.parametrize("released", [BUMP_FORGOTTEN], indirect=True)
+    @pytest.mark.parametrize("released", [lf("forgotten_bump")], indirect=True)
     @pytest.mark.parametrize("release_check", ["v1.1.0"], indirect=True)
     def test_the_version_must_be_the_one_in_pyproject(
         self,
@@ -106,7 +94,7 @@ class TestCheck:
         assert (release_check.returncode, release_check.stdout) == (1, "")
         assert "::error::v1.1.0 needs version 1.1.0 in pyproject.toml, which says 1.0.0" in release_check.stderr
 
-    @pytest.mark.parametrize("released", [OFF_THE_BRANCH], indirect=True)
+    @pytest.mark.parametrize("released", [lf("release_off_the_branch")], indirect=True)
     @pytest.mark.parametrize("release_check", ["v1.1.0"], indirect=True)
     def test_the_tag_must_be_on_the_release_branch(
         self,
@@ -115,7 +103,7 @@ class TestCheck:
         assert release_check.returncode == 1
         assert "is not on main" in release_check.stderr
 
-    @pytest.mark.parametrize("released", [OLDER_AFTER_NEWER], indirect=True)
+    @pytest.mark.parametrize("released", [lf("older_release_after_newer")], indirect=True)
     @pytest.mark.parametrize(
         ("release_check", "status", "error"),
         [
@@ -134,7 +122,7 @@ class TestCheck:
         assert release_check.returncode == status, release_check.stderr
         assert error in release_check.stderr
 
-    @pytest.mark.parametrize("released", [NOT_SEMVER], indirect=True)
+    @pytest.mark.parametrize("released", [lf("non_semver_tag")], indirect=True)
     @pytest.mark.parametrize("release_check", ["v1.0"], indirect=True)
     def test_a_tag_that_is_not_a_release_tag(
         self,

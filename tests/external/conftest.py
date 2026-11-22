@@ -16,31 +16,59 @@ A fixture reads its customisation from `request.param` and has a default without
 from it follow: `repo`, `git` and `shas` from `history`; `fs` from `files` and `links`; the CI commands' arguments from
 the data of their run (`tuning`, `eval_history`, `agent_files`, `context_files`, `agent_review`, `risk_report`, ...)."""
 
+import datetime as dt
 import io
 import json
 import os
 import subprocess
-import sys
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
-from unittest.mock import MagicMock, create_autospec
+from unittest.mock import (
+    MagicMock,
+    create_autospec,
+)
 
 import pytest
 from click.testing import CliRunner
 
-from clean_eval.domain.review import RunFolders
+from clean_eval.domain.review import (
+    HostReview,
+    InlineComment,
+    ReviewPost,
+    RunFolders,
+)
 from clean_eval.external import cli
 from clean_eval.external.claude_code import ClaudeCodeGateway
 from clean_eval.external.filesystem import FileSystemGateway
 from clean_eval.external.git import GitGateway
-from clean_eval.use_cases.evaluation import SNAPSHOT, snapshot_tuning
-from clean_eval.use_cases.interfaces import CodeHost, Environment
-from clean_eval.use_cases.rules.review import finalize_review, parse_rules
-from tests.helpers import ROOT
-from tests.use_cases.fakes import MemoryFileSystem, MemoryGit
+from clean_eval.use_cases.evaluation import (
+    SNAPSHOT,
+    snapshot_tuning,
+)
+from clean_eval.use_cases.interfaces import (
+    CodeHost,
+    Environment,
+)
+from clean_eval.use_cases.rules.review import (
+    finalize_review,
+    parse_rules,
+)
+from tests.external.fakes import (
+    ClaudeProcess,
+    TokenEndpoint,
+)
+from tests.helpers import (
+    ROOT,
+    CommandLine,
+    Contents,
+    Dates,
+)
+from tests.use_cases.fakes import (
+    MemoryFileSystem,
+    MemoryGit,
+)
 
 PACKAGE = os.path.join(
     ROOT, "clean_eval"
@@ -50,15 +78,6 @@ SANDBOX_FOLDERS = ("base", "ws", "ctx", "agent")
 
 
 # The process environment.
-
-
-@pytest.fixture
-def environ(
-    request,
-):
-    """Environment variables: {name: value} from `request.param`, a value of None for a variable that must not be set;
-    none when not parametrized. `process_env` puts them in this process's environment."""
-    return dict(getattr(request, "param", {}))
 
 
 @pytest.fixture
@@ -74,6 +93,14 @@ def process_env(
         else:
             monkeypatch.setenv(name, value)
     return os.environ
+
+
+@pytest.fixture
+def variables_of_each_kind():
+    """Variables of each kind the environment gateway reads ({name: value}, for `environ`): a path list with an empty
+    entry (CE_ROOTS), an empty one (CE_EMPTY, how the guard gets no roots), a plain one (CE_X) and one that is not set
+    (CE_UNSET)."""
+    return {"CE_ROOTS": os.pathsep.join(["/a", "", "/b c"]), "CE_EMPTY": "", "CE_X": "1", "CE_UNSET": None}
 
 
 # Repositories: real throwaway ones, and the in-memory fake.
@@ -98,7 +125,10 @@ def repo(
     `history`."""
     for commit in history:
         for removed in commit.get("remove", ()):
-            Path(repo.path, removed).unlink()
+            Path(
+                repo.path,
+                removed,
+            ).unlink()
         repo.commit(commit["subject"], commit.get("files"), commit.get("when"))
     return repo
 
@@ -115,7 +145,9 @@ def git(
         for commit in history:
             fake.commit(**commit)
         return fake
-    return GitGateway(request.getfixturevalue("repo").path)
+    return GitGateway(
+        request.getfixturevalue("repo").path,
+    )
 
 
 @pytest.fixture
@@ -130,6 +162,49 @@ def shas(
     if not history:
         return []
     return request.getfixturevalue("repo").git("rev-list", "--reverse", "HEAD").split()
+
+
+# The histories the git gateway's tests give `history` (test_git.py).
+
+
+@pytest.fixture
+def odd_names_history():
+    """A commit of a.py two days ago, then one a day ago that adds files whose names need quoting: src/résumé.py and
+    src/we"ird.py."""
+    return [
+        {"subject": "init", "files": {"a.py": "1\n"}, "when": Dates.days_ago(2)},
+        {"subject": "odd names", "files": {"src/résumé.py": "2\n", 'src/we"ird.py': "3\n"}, "when": Dates.days_ago(1)},
+    ]
+
+
+@pytest.fixture
+def merged_pr_history():
+    """A commit of a.py three days ago, then the merge of PR #2 two days ago, which adds b.py."""
+    return [
+        {"subject": "init", "files": {"a.py": "1\n"}, "when": Dates.days_ago(3)},
+        {"subject": "feat: b (#2)", "files": {"b.py": "2\n"}, "when": Dates.days_ago(2)},
+    ]
+
+
+@pytest.fixture
+def contract_history():
+    """The history of the contract checks, both commits by Test at noon UTC: src/a.py and docs/n.md on 2026-03-01; then,
+    on 2026-03-02, the merge of PR #2, which changes src/a.py, adds src/b.py and removes docs/n.md."""
+    return [
+        {
+            "subject": "init",
+            "files": {"src/a.py": "a\n", "docs/n.md": "n\n"},
+            "when": dt.datetime(2026, 3, 1, 12, tzinfo=dt.timezone.utc),
+            "author": "Test",
+        },
+        {
+            "subject": "feat: b (#2)",
+            "files": {"src/a.py": "a2\n", "src/b.py": "b\n"},
+            "when": dt.datetime(2026, 3, 2, 12, tzinfo=dt.timezone.utc),
+            "author": "Test",
+            "remove": ["docs/n.md"],
+        },
+    ]
 
 
 # Files and folders: real temporary ones, and the in-memory fake.
@@ -174,16 +249,18 @@ def fs(
     if getattr(request, "param", "FileSystemGateway") == "MemoryFileSystem":
         fake = MemoryFileSystem()
         for path, text in files.items():
-            fake.write_text(str(Path(root, path)), text)
+            fake.write_text(os.path.join(root, path), text)
         for path, target in links.items():
-            fake.link(str(Path(root, path)), str(Path(root, target)))
+            fake.link(os.path.join(root, path), os.path.join(root, target))
         return fake
-    for path, text in files.items():
-        Path(root, path).parent.mkdir(parents=True, exist_ok=True)
-        Path(root, path).write_text(text)
+    Contents.write(root, files)
     for path, target in links.items():
-        Path(root, path).parent.mkdir(parents=True, exist_ok=True)
-        Path(root, path).symlink_to(Path(root, target))
+        link = Path(
+            root,
+            path,
+        )
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(os.path.join(root, target))
     return FileSystemGateway()
 
 
@@ -215,9 +292,78 @@ def gh(
     if replies:
         run.side_effect = replies
     else:
-        run.return_value = subprocess.CompletedProcess(["gh"], 0, "{}", "")
-    monkeypatch.setattr("clean_eval.external.github.subprocess", SimpleNamespace(**{**vars(subprocess), "run": run}))
+        run.return_value = subprocess.CompletedProcess(
+            ["gh"],
+            0,
+            "{}",
+            "",
+        )
+    monkeypatch.setattr(
+        "clean_eval.external.github.subprocess",
+        SimpleNamespace(
+            **{**vars(subprocess), "run": run},
+        ),
+    )
     return run
+
+
+# What gh prints to the GitHub gateway, and the reviews the gateway posts (test_github.py).
+
+
+@pytest.fixture
+def review_threads_view():
+    """A PR's reviews and comments as `gh pr view --json reviews,comments,labels,additions,deletions,url` prints them
+    (a dict): none of either, no label, a line added and one removed, at url "u"."""
+    return {"url": "u", "reviews": [], "comments": [], "labels": [], "additions": 1, "deletions": 1}
+
+
+@pytest.fixture
+def inline_comment_pages():
+    """A PR's inline comments as `gh api --paginate` prints them: two pages, one JSON document each, holding "x" by a
+    and then "y" by b."""
+    return '[{"user":{"login":"a"},"body":"x"}][{"user":{"login":"b"},"body":"y"}]'
+
+
+@pytest.fixture
+def review_pages():
+    """A PR's reviews as `gh api --paginate` prints them: two pages, one JSON document each, holding review 10 (a change
+    request by github-actions[bot]), an entry not readable as a review (never one of ours to dismiss) and review 11 (a
+    comment with no user and no body)."""
+    return (
+        '[{"id": 10, "state": "CHANGES_REQUESTED", "user": {"login": "github-actions[bot]"}, "body": "m"}]'
+        '[{"id": "x"}, {"id": 11, "state": "COMMENTED", "user": null, "body": null}]'
+    )
+
+
+@pytest.fixture
+def review_with_comments():
+    """A review as the GitHub gateway posts it (a ReviewPost): a change request on commit "c" * 40, with one inline
+    comment, a CA-01 blocker on line 2 of a.py."""
+    return ReviewPost(
+        commit_id="c" * 40,
+        body="b",
+        event="REQUEST_CHANGES",
+        comments=[
+            InlineComment(
+                path="a.py",
+                line=2,
+                side="RIGHT",
+                body="[CA-01][blocker] s",
+            )
+        ],
+    )
+
+
+@pytest.fixture
+def review_without_comments(
+    review_with_comments,
+):
+    """`review_with_comments` as a plain comment, without inline comments (`comments` left at its default)."""
+    return ReviewPost(
+        commit_id=review_with_comments.commit_id,
+        body=review_with_comments.body,
+        event="COMMENT",
+    )
 
 
 # The CI agent's guard: its folders (real, since resolving real paths is what it guards with), the tool call it
@@ -234,9 +380,24 @@ def sandbox(
     guard is given: `read_roots` [ws, ctx] and `write_roots` [agent]."""
     base = tmp_path.resolve()
     for folder in ("ws/.git", "ctx", "agent"):
-        Path(base, folder).mkdir(parents=True)
-    Path(base, "secret.txt").write_text("")
-    Path(base, "ws", "link.txt").symlink_to(Path(base, "secret.txt"))
+        Path(
+            base,
+            folder,
+        ).mkdir(parents=True)
+    Path(
+        base,
+        "secret.txt",
+    ).write_text("")
+    Path(
+        base,
+        "ws",
+        "link.txt",
+    ).symlink_to(
+        Path(
+            base,
+            "secret.txt",
+        )
+    )
     return SimpleNamespace(
         base=str(base),
         ws=str(base / "ws"),
@@ -272,7 +433,9 @@ def stdin(
     text = param if isinstance(param, str) else json.dumps(param)
     for name in SANDBOX_FOLDERS:
         text = text.replace("<%s>" % name, getattr(sandbox, name))
-    return io.StringIO(text)
+    return io.StringIO(
+        text,
+    )
 
 
 @pytest.fixture
@@ -303,25 +466,19 @@ def cli_runner():
     """Runs the command line in-process, through click: `cli_runner.invoke(cli.clean_eval, args)` returns the result,
     with its `exit_code` and what the command printed (`stdout`, `stderr`). An exception the command line doesn't turn
     into an exit status propagates, so a test fails on it with its traceback."""
-    return CliRunner(catch_exceptions=False)
+    return CliRunner(
+        catch_exceptions=False,
+    )
 
 
 @pytest.fixture
 def run_cli():
     """Runs the command line as the skills and the action do, `python -I <checkout>/clean_eval <arguments>`, in a
     subprocess: call it with the arguments and the folder to run in (`cwd`), and any other keyword of subprocess.run;
-    it returns the CompletedProcess, with text output."""
-
-    def run(
-        *arguments,
-        cwd,
-        **options,
-    ):
-        return subprocess.run(
-            [sys.executable, "-I", PACKAGE, *arguments], cwd=cwd, capture_output=True, text=True, **options
-        )
-
-    return run
+    it returns the CompletedProcess, with text output (tests.helpers.CommandLine, on this checkout's package)."""
+    return CommandLine(
+        PACKAGE,
+    ).run
 
 
 @pytest.fixture
@@ -341,21 +498,8 @@ def host(
 @pytest.fixture
 def write_files():
     """Writes files into a folder: call it with the folder and {path in it: content}. A str is written as is, None
-    removes the file, and anything else is written as JSON; folders are made as needed."""
-
-    def write(
-        folder,
-        contents,
-    ):
-        for relative, content in contents.items():
-            path = Path(folder, relative)
-            if content is None:
-                path.unlink()
-                continue
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content if isinstance(content, str) else json.dumps(content, indent=2))
-
-    return write
+    removes the file, and anything else is written as JSON; folders are made as needed (tests.helpers.Contents)."""
+    return Contents.write
 
 
 @pytest.fixture
@@ -374,7 +518,9 @@ def ci_folders(
         gh_output=str(tmp_path / "gh_output"),
     )
     for folder in (folders.ctx, folders.agent, folders.ws):
-        Path(folder).mkdir()
+        Path(
+            folder,
+        ).mkdir()
     return folders
 
 
@@ -397,6 +543,93 @@ def context_files(
     return dict(getattr(request, "param", {}))
 
 
+# The command line end to end (test_cli.py): the commands it has, and the repositories it runs on, as histories for
+# `history`.
+
+
+@pytest.fixture
+def cli_commands():
+    """The commands of the command line, in the order its usage (`clean_eval --help`) lists them."""
+    return ["action", "assess", "finalize", "guard", "history", "post", "prepare", "rate", "readme", "redact", "report"]
+
+
+@pytest.fixture
+def billing_history():
+    """A billing module (one with tests) and a users module that depends on it, four days ago; then a change of the users
+    module two days ago, which also adds docs and infrastructure."""
+    return [
+        {
+            "subject": "init",
+            "files": {
+                "src/billing/core.py": "import requests\n\ndef charge(x):\n    return requests.post('u', json=x)\n"
+                + "\n".join("def f%d(a):\n    return a\n" % number for number in range(60)),
+                "src/billing/models.py": "class Invoice:\n    pass\n" * 40,
+                "src/users/api.py": (
+                    "from src.billing.core import charge\n\ndef sign_up(u):\n    return charge(u)\n" * 30
+                ),
+                "tests/test_core.py": "from src.billing.core import charge\n\ndef test_charge():\n    assert charge\n",
+            },
+            "when": Dates.days_ago(4),
+        },
+        {
+            "subject": "feat: users",
+            "files": {
+                "src/users/api.py": "def sign_up(u):\n    return u\n",
+                "docs/x.md": "doc\n",
+                "infra/main.tf": "resource {}\n",
+            },
+            "when": Dates.days_ago(2),
+        },
+    ]
+
+
+@pytest.fixture
+def app_with_readme_history():
+    """An app module and a README, committed two days ago."""
+    return [
+        {
+            "subject": "init",
+            "files": {"app/a.py": "def a():\n    return 1\n", "README.md": "# App\n"},
+            "when": Dates.days_ago(2),
+        }
+    ]
+
+
+@pytest.fixture
+def v1_policy_history():
+    """A module and a .clean-eval/risk-model.json of the v1 model, which doesn't validate, committed a day ago."""
+    return [
+        {
+            "subject": "init",
+            "files": {"a/b.py": "x = 1\n", ".clean-eval/risk-model.json": '{"window_days": 30}'},
+            "when": Dates.days_ago(1),
+        }
+    ]
+
+
+@pytest.fixture
+def fixed_feature_history():
+    """A module made on 2026-01-01; then a feature PR (#1) changes it on 2026-02-01, and a fix of it (#2) the next day,
+    each at noon UTC."""
+    return [
+        {
+            "subject": "init",
+            "files": {"src/a/x.py": "1\n"},
+            "when": dt.datetime(2026, 1, 1, 12, tzinfo=dt.timezone.utc),
+        },
+        {
+            "subject": "feat: a (#1)",
+            "files": {"src/a/x.py": "2\n"},
+            "when": dt.datetime(2026, 2, 1, 12, tzinfo=dt.timezone.utc),
+        },
+        {
+            "subject": "fix: a (#2)",
+            "files": {"src/a/x.py": "3\n"},
+            "when": dt.datetime(2026, 2, 2, 12, tzinfo=dt.timezone.utc),
+        },
+    ]
+
+
 # The data of a PR review: the rules, what the agent proposed, the change's risk, and the review CI trusts.
 
 
@@ -411,18 +644,97 @@ def review(
     return finalize_review(agent_review, risk_report, parse_rules(review_rules))
 
 
+# What `finalize --skill pr-review` and `post` are given (test_cli.py): the agent's findings and report, the diff in the
+# context, and the reviews already on the PR.
+
+
+@pytest.fixture
+def blocker_finding(
+    finding,
+):
+    """`finding` as a blocker of rule CA-01 (on line 3 of a.py)."""
+    return {**finding, "rule": "CA-01", "severity": "blocker"}
+
+
+@pytest.fixture
+def unplaced_finding(
+    finding,
+):
+    """`finding` (a major one of rule Q-02) on no file and no line, so never attached inline."""
+    return {**finding, "file": None, "line": None}
+
+
+@pytest.fixture
+def unsanitized_report():
+    """A report.md as the review agent may write it, before CI sanitizes it: with a clean-eval marker of its own and a
+    GitHub token."""
+    return "## Review\n<!-- clean-eval:pr-review tier=Low -->\nghp_" + "x" * 36
+
+
+@pytest.fixture
+def prepared_diff():
+    """The diff of a.py as `prepare pr-review` writes it to the context ({path in it: content}, for `context_files`):
+    its index and its patch, which changes line 2, so lines 1-3 take inline comments."""
+    return {
+        "diff/index.json": [
+            {
+                "file": "a.py",
+                "module": None,
+                "patch": "diff/001.patch",
+                "patch_lines": 8,
+                "added": 1,
+                "removed": 1,
+                "truncated": False,
+            }
+        ],
+        "diff/001.patch": "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,3 @@\n x\n-y\n+Y\n z\n",
+    }
+
+
+@pytest.fixture
+def reviews_once_posted():
+    """The reviews on the PR (HostReviews, as the code host lists them) once github-actions[bot] has posted review 50:
+    its earlier change request (10) is stale, but not a human's (11), its comment (12) or the new review itself."""
+    marker = "<!-- clean-eval:pr-review tier=High -->"
+    return [
+        HostReview(
+            id=10,
+            state="CHANGES_REQUESTED",
+            user="github-actions[bot]",
+            body=marker,
+        ),
+        HostReview(
+            id=11,
+            state="CHANGES_REQUESTED",
+            user="human",
+            body=marker,
+        ),
+        HostReview(
+            id=12,
+            state="COMMENTED",
+            user="github-actions[bot]",
+            body=marker,
+        ),
+        HostReview(
+            id=50,
+            state="CHANGES_REQUESTED",
+            user="github-actions[bot]",
+            body=marker,
+        ),
+    ]
+
+
 # The data of an eval: the merged-PR history, and the repository's tuning files before and after the agent ran.
 
 
 @pytest.fixture
-def eval_history(
+def eval_history_prs(
     request,
     facts,
 ):
-    """An eval-history.json as `history` collects it (a dict): `hot` defective PRs on widely depended-on modules hot0,
-    hot1, ... and `cold` clean PRs on leaf modules cold0, ..., each module with `facts`; (hot, cold) from
-    `request.param`, (6, 16) by default. Under the default policy every hot PR outscores every cold one: AUC 1.0, and
-    undefined without both kinds."""
+    """The merged PRs of `eval_history`, as `history` collects them (dicts): `hot` defective PRs on widely depended-on
+    modules hot0, hot1, ... and `cold` clean PRs on leaf modules cold0, ..., each module with `facts`; (hot, cold) from
+    `request.param`, (6, 16) by default. Under the default policy every hot PR outscores every cold one."""
     hot, cold = getattr(request, "param", (6, 16))
     prs = []
     for number in range(hot + cold):
@@ -459,6 +771,18 @@ def eval_history(
                 ],
             }
         )
+    return prs
+
+
+@pytest.fixture
+def eval_history(
+    eval_history_prs,
+):
+    """An eval-history.json as `history` collects it (a dict), of `eval_history_prs`: AUC 1.0 with both hot and cold
+    PRs, and undefined without both kinds."""
+    hot = sum(1 for pr in eval_history_prs if pr["defects"])
+    cold = len(eval_history_prs) - hot
+    prs = eval_history_prs
     return {
         "period": {
             "since": "2026-01-01",
@@ -491,6 +815,41 @@ def tuning_edits(
     return dict(getattr(request, "param", {}))
 
 
+# What the CI agent writes for an eval, which `finalize --skill eval` judges (test_cli.py): risk-model.json contents (its
+# edits, and one that was there before) and a recommendation.
+
+
+@pytest.fixture
+def valid_model_edit():
+    """A risk-model.json the CI agent may write (a dict): it validates, and keeps the AUC of `eval_history`."""
+    return {"business_weights": {"dependents": 0.4}}
+
+
+@pytest.fixture
+def structural_model_edit():
+    """A risk-model.json that changes the model's structure (its depth), which CI may not change."""
+    return {"depth": 1}
+
+
+@pytest.fixture
+def flat_model_edit():
+    """A risk-model.json that drops the only terms telling the hot modules of `eval_history` from the cold ones, so
+    every PR scores the same (AUC 0.5 < 1.0)."""
+    return {"business_weights": {"dependents": 0}, "effects_mix": {"dependents": 0}}
+
+
+@pytest.fixture
+def earlier_model():
+    """A risk-model.json that was in .clean-eval/ before the CI agent ran."""
+    return {"depth": 2, "business_weights": {"dependents": 0.35}}
+
+
+@pytest.fixture
+def recommendation():
+    """A recommendation as the eval agent lists it in result.json: a change of risk-model.json, with its evidence."""
+    return {"target": "risk-model.json", "change": "c", "evidence": "e"}
+
+
 # The CI commands' arguments (argv lists for `cli_runner`), over the folders their steps leave.
 
 
@@ -509,10 +868,22 @@ def finalize_eval_args(
     workspace's .clean-eval/ held `tuning` when it was snapshotted into the context, then the agent made `tuning_edits`
     and wrote `agent_files`; the context holds `eval_history` and `context_files`. `request.param` is the options after
     the folders: ["--apply"] by default ([] for a run without it)."""
-    tuning_dir = Path(ci_folders.ws, ".clean-eval")
+    tuning_dir = Path(
+        ci_folders.ws,
+        ".clean-eval",
+    )
     tuning_dir.mkdir()
     write_files(tuning_dir, tuning)
-    snapshot_tuning(FileSystemGateway(), ci_folders.ws, str(Path(ci_folders.ctx, SNAPSHOT)))
+    snapshot_tuning(
+        FileSystemGateway(),
+        ci_folders.ws,
+        str(
+            Path(
+                ci_folders.ctx,
+                SNAPSHOT,
+            )
+        ),
+    )
     write_files(tuning_dir, tuning_edits)
     write_files(ci_folders.ctx, {"eval-history.json": eval_history, **context_files})
     write_files(ci_folders.agent, agent_files)
@@ -586,14 +957,69 @@ def post_args(
 
 # Claude Code, the CI agent: its gateway over real folders, with its CLI and npm mocked.
 
-# What the agent's process may see of the runner's environment, and what it must not.
-AGENT_VARIABLES = {
-    "PATH": "/usr/bin:/bin",
-    "ANTHROPIC_API_KEY": "sk-ant-api03-" + "k" * 40,
-    "GH_TOKEN": "ghs_" + "t" * 36,
-    "SOME_RUNNER_TOKEN": "x" * 20,
-}
 GUARD = "python -I /action/clean_eval guard || exit 2"  # the PreToolUse hook the composition root passes
+
+
+@pytest.fixture
+def agent_variables(
+    anthropic_api_key,
+):
+    """A runner's environment as the agent's process could inherit it: what it may see (PATH, the Anthropic API key) and
+    what it must not (a GitHub token, another runner token)."""
+    return {
+        "PATH": "/usr/bin:/bin",
+        "ANTHROPIC_API_KEY": anthropic_api_key,
+        "GH_TOKEN": "ghs_" + "t" * 36,
+        "SOME_RUNNER_TOKEN": "x" * 20,
+    }
+
+
+@pytest.fixture
+def ci_without_credentials():
+    """A CI runner's variables, without Claude credentials."""
+    return {"PATH": "/usr/bin", "GITHUB_ACTIONS": "true"}
+
+
+@pytest.fixture
+def ci_with_a_key(
+    ci_without_credentials,
+    anthropic_api_key,
+):
+    """A CI runner's variables, with an Anthropic API key."""
+    return {**ci_without_credentials, "ANTHROPIC_API_KEY": anthropic_api_key}
+
+
+@pytest.fixture
+def token_request():
+    """What the runner sets for a job with `id-token: write`, to request its OIDC token: the endpoint, and the request's
+    bearer token."""
+    return {
+        "ACTIONS_ID_TOKEN_REQUEST_URL": "https://token.actions.example/idtoken?api-version=2.0",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-" + "r" * 32,
+    }
+
+
+@pytest.fixture
+def federated_job(
+    ci_without_credentials,
+    token_request,
+):
+    """A CI job that signs in keyless, by workload identity federation: the rule, the organization, and the job's means
+    to request its OIDC token."""
+    return {
+        **ci_without_credentials,
+        "ANTHROPIC_FEDERATION_RULE_ID": "fdrl_example",
+        "ANTHROPIC_ORGANIZATION_ID": "00000000-0000-4000-8000-000000000000",
+        **token_request,
+    }
+
+
+@pytest.fixture
+def federated_job_without_id_token(
+    federated_job,
+):
+    """`federated_job` without `id-token: write`: the runner sets no means to request the OIDC token (None: unset)."""
+    return {**federated_job, "ACTIONS_ID_TOKEN_REQUEST_URL": None, "ACTIONS_ID_TOKEN_REQUEST_TOKEN": None}
 
 
 @pytest.fixture
@@ -606,7 +1032,10 @@ def npm_installs(
     reply = getattr(request, "param", {})
     run = create_autospec(subprocess.run)
     run.return_value = subprocess.CompletedProcess(
-        ["npm"], reply.get("exit", 0), reply.get("out", "added 1 package"), reply.get("err", "")
+        ["npm"],
+        reply.get("exit", 0),
+        reply.get("out", "added 1 package"),
+        reply.get("err", ""),
     )
     return run
 
@@ -630,25 +1059,16 @@ def claude_runs(
         popen.side_effect = outcome
     else:
         process = popen.return_value
-
-        def communicate(
-            timeout=None,
-        ):
-            token = popen.call_args.kwargs["env"].get("ANTHROPIC_IDENTITY_TOKEN_FILE")
-            if token:
-                popen.identity_tokens.append(Path(token).read_text())
-            if process.communicate.call_count <= outcome.get("timeouts", 0):
-                raise subprocess.TimeoutExpired("claude", timeout or 0)
-            if outcome.get("interrupted"):
-                raise outcome["interrupted"]
-            process.returncode = process.poll.return_value = outcome.get("exit", 0)
-            return outcome.get("out", "done"), None
-
-        process.communicate.side_effect = communicate
+        process.communicate.side_effect = ClaudeProcess(
+            popen,
+            outcome,
+        ).communicate
         process.returncode = process.poll.return_value = None  # running, until the wait ends
     monkeypatch.setattr(
         "clean_eval.external.claude_code.subprocess",
-        SimpleNamespace(**{**vars(subprocess), "run": npm_installs, "Popen": popen}),
+        SimpleNamespace(
+            **{**vars(subprocess), "run": npm_installs, "Popen": popen},
+        ),
     )
     return popen
 
@@ -661,22 +1081,19 @@ def oidc_tokens(
     """GitHub's OIDC token endpoint as the Claude Code gateway calls it (urllib.request.urlopen): an autospecced
     MagicMock patched into clean_eval.external.claude_code only. `request.param` lists its replies to successive calls,
     each a token it issues (a str), a raw body (bytes) or an exception it raises; past them, or unparametrized, the
-    n-th call issues "jwt-<n>". Each call holds the Request the gateway made."""
-    replies = list(getattr(request, "param", []))
-
-    def respond(
-        url_request,
-        **options,
-    ):
-        reply = replies.pop(0) if replies else "jwt-%d" % urlopen.call_count
-        if isinstance(reply, BaseException):
-            raise reply
-        return io.BytesIO(reply if isinstance(reply, bytes) else json.dumps({"value": reply}).encode())
-
-    urlopen = create_autospec(urllib.request.urlopen, side_effect=respond)
+    n-th call issues "jwt-<n>" (tests.external.fakes.TokenEndpoint). Each call holds the Request the gateway made."""
+    endpoint = TokenEndpoint(
+        getattr(request, "param", []),
+    )
+    urlopen = create_autospec(urllib.request.urlopen, side_effect=endpoint.respond)
     monkeypatch.setattr(
         "clean_eval.external.claude_code.urllib",
-        SimpleNamespace(parse=urllib.parse, request=SimpleNamespace(**{**vars(urllib.request), "urlopen": urlopen})),
+        SimpleNamespace(
+            parse=urllib.parse,
+            request=SimpleNamespace(
+                **{**vars(urllib.request), "urlopen": urlopen},
+            ),
+        ),
     )
     return urlopen
 
@@ -688,8 +1105,15 @@ def claude_installed(
 ):
     """Whether `claude` is on the PATH the gateway looks on: `request.param`, True by default. shutil.which is mocked in
     clean_eval.external.claude_code only; the mock is returned."""
-    which = MagicMock(return_value="/usr/bin/claude" if getattr(request, "param", True) else None)
-    monkeypatch.setattr("clean_eval.external.claude_code.shutil", SimpleNamespace(which=which))
+    which = MagicMock(
+        return_value="/usr/bin/claude" if getattr(request, "param", True) else None,
+    )
+    monkeypatch.setattr(
+        "clean_eval.external.claude_code.shutil",
+        SimpleNamespace(
+            which=which,
+        ),
+    )
     return which
 
 
@@ -710,26 +1134,30 @@ def run_folders(
         agent=str(out / "agent"),
     )
     for folder in (folders.workspace, folders.context, folders.agent):
-        Path(folder).mkdir(parents=True)
+        Path(
+            folder,
+        ).mkdir(parents=True)
     return folders
 
 
 @pytest.fixture
 def claude_code(
-    request,
+    environ,
+    settings,
     run_folders,
     claude_runs,
     claude_installed,
     oidc_tokens,
 ):
-    """The Claude Code gateway of a run in `run_folders`, writing its settings with FileSystemGateway, with
-    `claude_runs` (and its `npm_installs`), `claude_installed` and `oidc_tokens` in place of the CLI, the PATH and
-    GitHub's token endpoint. `request.param` replaces any of its constructor's keywords: `variables` (AGENT_VARIABLES
-    by default), `version`, `model`, `max_turns`."""
-    keywords: dict[str, Any] = {
-        "variables": AGENT_VARIABLES,
-        "guard_command": GUARD,
-        "install_dir": run_folders.out,
-        **getattr(request, "param", {}),
-    }
-    return ClaudeCodeGateway(FileSystemGateway(), **keywords)
+    """The Claude Code gateway of a run in `run_folders` whose environment holds `environ`: its `settings`, and the
+    variables it passes on to the agent. It writes Claude Code's settings with FileSystemGateway, with `claude_runs`
+    (and its `npm_installs`), `claude_installed` and `oidc_tokens` in place of the CLI, the PATH and GitHub's token
+    endpoint."""
+    variables = {name: value for name, value in environ.items() if value is not None}
+    return ClaudeCodeGateway(
+        FileSystemGateway(),
+        settings,
+        variables,
+        GUARD,
+        run_folders.out,
+    )

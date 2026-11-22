@@ -1,6 +1,10 @@
 """Failures the user can act on. The message is shown as it is."""
 
-from typing import Literal, Optional, Self
+from enum import StrEnum
+from typing import (
+    Optional,
+    Self,
+)
 
 from pydantic import ValidationError
 
@@ -42,13 +46,20 @@ class InvalidOutput(HeatmapError):
     """What the CI agent proposed (its result, its report, or an edit it made) does not pass validation."""
 
 
+class RemoteFailure(StrEnum):
+    """How a call to the code host failed."""
+
+    NOT_FOUND = "not_found"  # what it asked for doesn't exist (a PR)
+    ERROR = "error"  # anything else
+
+
 class RemoteError(HeatmapError):
-    """A call to the code host failed. `kind` is "not_found" (the PR doesn't exist) or "error" (anything else)."""
+    """A call to the code host failed, as `kind` says."""
 
     def __init__(
         self,
         message: str,
-        kind: Literal["not_found", "error"] = "error",
+        kind: RemoteFailure = RemoteFailure.ERROR,
     ) -> None:
         super().__init__(message)
         self.kind = kind

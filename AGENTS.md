@@ -37,10 +37,16 @@ The package is in four layers. Imports point inward only: domain ‚Üê use_cases ‚
 
 | Layer | Holds |
 |---|---|
-| `domain/` | pydantic data models only; every invariant is a validator |
+| `domain/` | pydantic data models, and the enumerations (`StrEnum`) of their closed value sets; every invariant is a validator |
 | `use_cases/` | `interfaces.py` (the abstract classes of every external utility), plus module-level functions that take implementations of them: `heatmap.py`, `review.py`, `evaluation.py` and the shared `store.py`; `rules/` holds the pure business rules, by the same features plus `analysis.py` |
 | `adaptor/` | the presenters (SVG treemap, Markdown summary) |
 | `external/` | one gateway per external dependency, the click command line `cli.py` (the entry point of every utility, and the composition root) and the CI agent's guard `agent_guard.py` |
+
+Beside the layers, `settings.py` holds `Settings` (pydantic-settings): everything a run reads from its environment, in
+groups of what belongs together (`run`, `review`, `evaluation`, `heatmap`, `agent`, `github`, `credentials`,
+`federation`), each setting still read from its own variable (`settings.review.pr` is `CE_PR`). It imports no layer,
+every layer but the domain may import it, and only the command line builds it. The use cases and the Claude Code gateway
+take it as a parameter.
 
 A command runs in this order:
 1. `__main__.py` puts the checkout on `sys.path`.
@@ -58,6 +64,8 @@ The skills chain the commands:
 
 The action runs one command, `clean_eval action <skill>`, which runs four steps. The agent only proposes;
 deterministic code decides:
+Its inputs are environment variables, which the command reads once into `Settings` (`clean_eval action --help` lists
+them).
 1. `clean_eval prepare` precomputes the context: the diff, history, risk, and config read from the base commit.
 2. A sandboxed `claude` runs with no shell, no network and no token (the Claude Code gateway, behind the `Agent`
    interface). The `clean_eval guard` hook allows only listed paths and tools. It takes no instructions from the checkout: no CLAUDE.md, AGENTS.md, rules or skills.
@@ -72,15 +80,36 @@ deterministic code decides:
   run it.
 - **Every Python call runs isolated, with `python -I`.** This applies in `action.yml`, the skills and the docs, so a module
   planted in a checkout (a `json.py`, a `pydantic.py`) can't shadow the standard library or a dependency.
-- **Imports are absolute** (`from clean_eval.domain.policy import Policy`), never relative.
+- **Imports are absolute** (`from clean_eval.domain.policy import Policy`), never relative. An import of several
+  names lists them in parentheses, one per line, with a trailing comma, which keeps ruff from joining them again.
+- **One home per constant.** A name the package binds at the top of a module is bound in that one module, and the
+  modules that need it import it (`TestEachConstantHasOneHome`): two copies drift apart.
+- **Configuration from the environment is a field of `Settings`** (`clean_eval/settings.py`), never a variable read
+  elsewhere by name. A new action input is a new field, in the group it belongs with, and `tests/test_settings.py`
+  checks that `action.yml` and `Settings` name the same variables. `Settings` reads only the environment, never a `.env` file: in CI the working
+  directory is the checkout under review.
 - **Every function in `clean_eval/` is annotated** (ruff's `ANN`), and ty checks each call against the annotations.
   - Write `Optional[...]` and `Union[...]` from `typing`, as the domain models do.
   - Input that is validated before use (parsed JSON, a `mode="before"` validator's value) is `object`, not `Any`.
 - **Code style, everywhere (package, tests, scripts).** `TestCodeStyle` in `tests/test_architecture.py` enforces it.
   - **No protected-level functions or methods.** There is no `def _name`. Give a helper a descriptive public name.
     A gateway's helpers are module-level functions, since a gateway class exposes only its interface.
+  - **Functions within 50 lines,** from the `def` to the last line, signature and docstring included. Split a longer
+    one at its steps into module-level functions (in the tests, fixtures or a support class's methods).
+  - **No nested functions.** A function never defines another. A helper is a module-level function, or a method of a
+    class where classes belong (in the tests, a support class: a fixture that hands out a callable returns its method).
+    Lambdas, which are expressions, are allowed.
   - **One parameter per line.** Every `def` with parameters ends its parameter list with a trailing comma, so ruff
     format puts each parameter on its own line, `self` included.
+  - **One argument per line in a class constructor.** A call of a class (a CapWords name, as PEP 8 names classes:
+    `RunFolders(...)`, `Path(...)`, `HeatmapError(...)`, pydantic's `Field(...)`) with arguments ends its argument
+    list with a trailing comma too, so each argument gets its own line. Builtins' lowercase calls (`dict(...)`,
+    `str(...)`) are left alone.
+  - **Constants are immutable:** a module-level value is a tuple, a `frozenset` or a `frozendict` (a builtin since
+    Python 3.15), never a list, set or dict, which any importer could change.
+  - **A closed set of named values is a `StrEnum`,** never a `Literal` of strings or a tuple of them: its members keep
+    the values stored data, variables and commands use (`Band.HIGH` is `"High"`). `TestCodeStyle` rejects a `Literal` of
+    two or more strings.
   - **Descriptive parameter names.** No single-character parameter, lambdas included (`lambda module: -module.loc`).
 - **Logic goes into `clean_eval`; the skills hold only instructions.** They invoke the package as
   `uv run --frozen --no-config --project ${CLEAN_EVAL_HOME:-.} python -I ${CLEAN_EVAL_HOME:-.}/clean_eval`.

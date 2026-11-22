@@ -1,11 +1,17 @@
 """The PR review's rules (use_cases/rules/review.py): diffs, redaction, a change's risk, and the review CI trusts."""
 
-import base64
-
 import pytest
 from pydantic import ValidationError
+from pytest_lazy_fixtures import (
+    lf,
+    lfc,
+)
 
-from clean_eval.domain.review import AgentReview, RiskReport
+from clean_eval.domain.review import (
+    AgentReview,
+    ReviewEvent,
+    RiskReport,
+)
 from clean_eval.use_cases.rules.heatmap import band
 from clean_eval.use_cases.rules.review import (
     MARKER_RE,
@@ -21,36 +27,13 @@ from clean_eval.use_cases.rules.review import (
     split_patch,
 )
 
-# The patches of two files; a `git diff` of both is the one followed by the other.
-PATCH_X = "diff --git a/x b/x\n+1\n"
-PATCH_Y = "diff --git a/y b/y\n-2\n"
-# Well-known token formats.
-GITHUB_TOKEN = "ghp_" + "a" * 36
-ANTHROPIC_KEY = "sk-ant-" + "b" * 30
-# A GitHub App token, and the base64 of the header value actions/checkout persists for it in .git/config.
-APP_TOKEN = "ghs_" + "z" * 36
-APP_TOKEN_BASIC = base64.b64encode(("x-access-token:" + APP_TOKEN).encode()).decode()
-# Two rated modules: src/api in the Critical band (overall 90) and src/util in the Low band (overall 5).
-API_AND_UTIL = [
-    {"name": "src/api", "loc": 500, "biz": 90, "unverified": 90},
-    {"name": "src/util", "loc": 100, "biz": 5, "effects": 0, "entropy": 5, "unverified": 5},
-]
-# The rules of the `review_rules` fixture as a pre-v2 file wrote them: the Moderate band under its old name, Medium.
-LEGACY_RULES = """
-| ID | Severity | Min tier | Rule |
-|---|---|---|---|
-| CA-01 | blocker | Low | dependency rule |
-| Q-02 | major | Medium | failure paths |
-| Q-04 | minor | Medium | clarity |
-"""
-
 
 class TestSplitPatch:
     """A combined `git diff`, split into one patch per file."""
 
     @pytest.mark.parametrize(
         ("diff", "patches"),
-        [(PATCH_X + PATCH_Y, [PATCH_X, PATCH_Y]), ("", [])],
+        [(lf("diff_of_x_and_y"), [lf("patch_of_x"), lf("patch_of_y")]), ("", [])],
         ids=["two files", "no change"],
     )
     def test_one_patch_per_file(
@@ -73,9 +56,11 @@ class TestRedact:
     def test_secret_values_of_the_environment_and_token_formats(
         self,
         environ,
+        github_token,
+        anthropic_api_key,
     ):
         text, count = redact(
-            "leak s3cr3t-value-123 and %s and %s" % (GITHUB_TOKEN, ANTHROPIC_KEY),
+            "leak s3cr3t-value-123 and %s and %s" % (github_token, anthropic_api_key),
             secret_values(environ),
         )
         assert "s3cr3t" not in text
@@ -83,16 +68,17 @@ class TestRedact:
         assert "sk-ant-" not in text
         assert count == 3
 
-    @pytest.mark.parametrize("environ", [{"GH_TOKEN": APP_TOKEN}], indirect=True)
+    @pytest.mark.parametrize("environ", [{"GH_TOKEN": lf("github_app_token")}], indirect=True)
     def test_authorization_headers_and_base64_forms(
         self,
         environ,
+        github_app_token_basic,
     ):
         text, count = redact(
-            "extraheader AUTHORIZATION: basic %s\nraw %s" % (APP_TOKEN_BASIC, APP_TOKEN_BASIC),
+            "extraheader AUTHORIZATION: basic %s\nraw %s" % (github_app_token_basic, github_app_token_basic),
             secret_values(environ),
         )
-        assert APP_TOKEN_BASIC not in text
+        assert github_app_token_basic not in text
         assert "AUTHORIZATION: basic [REDACTED]" in text
         assert count >= 2
 
@@ -138,7 +124,7 @@ class TestChangeRisk:
     """A change's risk, from the heat map of its base: every changed path takes its module's band, or the policy's
     unrated band when no rated module covers it."""
 
-    @pytest.mark.parametrize("ratings", [API_AND_UTIL], indirect=True)
+    @pytest.mark.parametrize("ratings", [lf("api_and_util_ratings")], indirect=True)
     def test_paths_take_their_modules_band_and_unknown_paths_the_unrated_band(
         self,
         heatmap,
@@ -251,7 +237,9 @@ class TestFinalizeReview:
         review = finalize_review(agent_review, risk_report, parse_rules(review_rules))
         assert "clean-eval:" not in review.findings[0].summary
 
-    @pytest.mark.parametrize("finding", [{"summary": "token " + GITHUB_TOKEN}], indirect=True)
+    @pytest.mark.parametrize(
+        "finding", [{"summary": lfc(lambda token: "token " + token, lf("github_token"))}], indirect=True
+    )
     def test_finding_text_is_redacted(
         self,
         agent_review,
@@ -262,7 +250,7 @@ class TestFinalizeReview:
         assert "ghp_" not in review.findings[0].summary
         assert review.redactions == 1
 
-    @pytest.mark.parametrize("review_rules", [LEGACY_RULES], indirect=True)
+    @pytest.mark.parametrize("review_rules", [lf("legacy_review_rules")], indirect=True)
     @pytest.mark.parametrize("finding", [{"rule": "Q-02", "severity": "minor"}], indirect=True)
     def test_legacy_medium_rules_files_keep_working(
         self,
@@ -354,14 +342,14 @@ class TestPostAttempts:
         self,
         inline_comment,
     ):
-        assert post_attempts("REQUEST_CHANGES", [inline_comment]) == [
-            ("REQUEST_CHANGES", [inline_comment]),
-            ("REQUEST_CHANGES", []),
-            ("COMMENT", [inline_comment]),
-            ("COMMENT", []),
+        assert post_attempts(ReviewEvent.REQUEST_CHANGES, [inline_comment]) == [
+            (ReviewEvent.REQUEST_CHANGES, [inline_comment]),
+            (ReviewEvent.REQUEST_CHANGES, []),
+            (ReviewEvent.COMMENT, [inline_comment]),
+            (ReviewEvent.COMMENT, []),
         ]
 
     def test_an_attempt_is_not_repeated(
         self,
     ):
-        assert post_attempts("COMMENT", []) == [("COMMENT", [])]
+        assert post_attempts(ReviewEvent.COMMENT, []) == [(ReviewEvent.COMMENT, [])]

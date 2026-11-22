@@ -1,7 +1,9 @@
 # clean_eval/domain
 
 Data models only: pydantic models of the policy, the code read, the ratings and heat map, a change's risk, reviews, the
-merged-PR history and an eval's outcome, plus the constants and error types they use:
+merged-PR history and an eval's outcome, plus the enumerations, constants and error types they use. A closed set of
+named values is a `StrEnum` (`Band`, `Severity`, `Aspect`, `Verdict`, ...), whose members keep the values the stored data
+uses, so JSON and `.clean-eval/` files read as before:
 - `policy.py`: the risk model and the value types and bands every model uses;
 - `rating.py`: the code read, its knowledge graph, rated modules and the heat map, a judgement, a change's risk;
 - `review.py`: the PR review in CI, with the run's step outputs and tool calls;

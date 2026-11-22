@@ -23,7 +23,9 @@ def run_git(
         errors="surrogateescape",
     )
     if check and completed.returncode != 0:
-        raise HeatmapError("git %s failed: %s" % (" ".join(args[:3]), completed.stderr.strip()[-300:]))
+        raise HeatmapError(
+            "git %s failed: %s" % (" ".join(args[:3]), completed.stderr.strip()[-300:]),
+        )
     return completed.stdout
 
 
@@ -114,7 +116,9 @@ class GitGateway(Git):
             ["git", "-C", self.root, "cat-file", "--batch"], input="\n".join(ids).encode() + b"\n", capture_output=True
         )
         if p.returncode != 0:
-            raise HeatmapError("git cat-file failed: %s" % p.stderr.decode(errors="replace")[-300:])
+            raise HeatmapError(
+                "git cat-file failed: %s" % p.stderr.decode(errors="replace")[-300:],
+            )
         out, data, pos = {}, p.stdout, 0
         for _ in ids:
             nl = data.index(b"\n", pos)
@@ -166,7 +170,9 @@ class GitGateway(Git):
         if not self.has_commit(sha):
             run_git(self.root, "fetch", "--quiet", "origin", refspec, check=False)
         if not self.has_commit(sha):
-            raise HeatmapError("commit %s is not available locally (checkout with fetch-depth: 0)" % sha)
+            raise HeatmapError(
+                "commit %s is not available locally (checkout with fetch-depth: 0)" % sha,
+            )
 
     def diff(
         self,

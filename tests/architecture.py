@@ -12,9 +12,18 @@ import inspect
 import re
 from pathlib import Path
 
-CLOCK_CALLS = {"now", "today", "utcnow"}  # datetime's clock reads (the time module isn't importable here at all)
-MODEL_METHOD_DECORATORS = {"field_validator", "model_validator", "computed_field", "property", "classmethod"}
-REVIEW_RULES = Path(".claude") / "skills" / "pr-review" / "review-rules.md"  # the default review rules
+CLOCK_CALLS = frozenset(
+    {"now", "today", "utcnow"}
+)  # datetime's clock reads (the time module isn't importable here at all)
+MODEL_METHOD_DECORATORS = frozenset({"field_validator", "model_validator", "computed_field", "property", "classmethod"})
+REVIEW_RULES = (
+    Path(
+        ".claude",
+    )
+    / "skills"
+    / "pr-review"
+    / "review-rules.md"
+)  # the default review rules
 
 
 class Codebase:
@@ -26,7 +35,9 @@ class Codebase:
         root,
         top="clean_eval",
     ):
-        self.root = Path(root)
+        self.root = Path(
+            root,
+        )
         self.top = top
         self.package = self.root / top
         self.tests = self.root / "tests"
@@ -126,6 +137,23 @@ class Codebase:
             elif not node.level and node.module is not None:
                 found += [node.module + "." + alias.name for alias in node.names]
         return found
+
+    def settings_built(
+        self,
+        module,
+    ):
+        """The lines where `module` builds a Settings, which reads the environment: a call of Settings itself, or of one
+        of its class methods that make one (model_validate, model_validate_json, model_construct)."""
+        makers = {"model_validate", "model_validate_json", "model_construct"}
+        found = []
+        for node in self.nodes(module, ast.Call):
+            callee = node.func
+            if isinstance(callee, ast.Name) and callee.id == "Settings":
+                found.append(node.lineno)
+            elif isinstance(callee, ast.Attribute) and callee.attr in makers:
+                if isinstance(callee.value, ast.Name) and callee.value.id == "Settings":
+                    found.append(node.lineno)
+        return sorted(found)
 
     def unittest_beyond_mock(
         self,
@@ -272,6 +300,126 @@ class Codebase:
                 found.append("%d %s" % (function.lineno, function.name))
         return found
 
+    def shared_argument_lines(
+        self,
+        module,
+    ):
+        """`line name` of every class-constructor call of `module` with an argument on the call's line or two arguments
+        on one line. A constructor is a callee named in CapWords, as PEP 8 names classes (`RunFolders`, `Path`,
+        `HeatmapError`, pydantic's `Field`), not a builtin's lowercase name (`dict`, `str`)."""
+        found = []
+        for call in self.nodes(module, ast.Call):
+            name = call.func.attr if isinstance(call.func, ast.Attribute) else getattr(call.func, "id", "")
+            lines = [argument.lineno for argument in [*call.args, *call.keywords]]
+            constructor = name[:1].isupper() and not name.isupper()
+            if constructor and lines and (min(lines) == call.lineno or len(set(lines)) != len(lines)):
+                found.append("%d %s" % (call.lineno, name))
+        return sorted(found, key=lambda entry: int(entry.split()[0]))
+
+    def long_functions(
+        self,
+        module,
+        limit,
+    ):
+        """`line name (lines)` of every function of `module` that takes more than `limit` lines, from its `def` to its
+        last line, its signature and docstring included."""
+        found = []
+        for function in self.functions(module):
+            size = function.end_lineno - function.lineno + 1
+            if size > limit:
+                found.append("%d %s (%d)" % (function.lineno, function.name, size))
+        return found
+
+    def nested_functions(
+        self,
+        module,
+    ):
+        """`line name` of every function of `module` defined inside another function: a helper is a module-level
+        function, or a method. (Lambdas are expressions, not definitions, and are left out.)"""
+        found = []
+        for function in self.functions(module):
+            for statement in function.body:
+                for node in ast.walk(statement):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        found.append((node.lineno, node.name))
+        return ["%d %s" % entry for entry in sorted(set(found))]
+
+    def shared_import_lines(
+        self,
+        module,
+    ):
+        """`line module` of every import of several names in `module` with a name on the import's line, or two names
+        on one line."""
+        found = []
+        for node in self.nodes(module, ast.ImportFrom):
+            lines = [alias.lineno for alias in node.names]
+            if len(lines) > 1 and (min(lines) == node.lineno or len(set(lines)) != len(lines)):
+                found.append("%d %s" % (node.lineno, node.module))
+        return found
+
+    def module_level_names(
+        self,
+        module,
+    ):
+        """The names `module` binds at its top level by assignment or as a `type` alias: its constants and type
+        aliases (its functions and classes aside)."""
+        names = []
+        for node in self.parse(module).body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                    elements = target.elts if isinstance(target, ast.Tuple) else [target]
+                    names += [element.id for element in elements if isinstance(element, ast.Name)]
+            elif isinstance(node, ast.TypeAlias):
+                names.append(node.name.id)
+        return names
+
+    def shared_definitions(
+        self,
+        modules,
+    ):
+        """{name: the positions in `modules` of the modules that bind it} of every top-level name that more than one
+        of `modules` binds."""
+        found = {}
+        for position, module in enumerate(modules):
+            for name in sorted(set(self.module_level_names(module))):
+                found.setdefault(name, []).append(position)
+        return {name: positions for name, positions in found.items() if len(positions) > 1}
+
+    def mutable_constants(
+        self,
+        module,
+    ):
+        """`line name` of every value at the top of `module` bound to a list, set or dict (a display, a comprehension,
+        or a list(), set() or dict() call), which any importer could change: a constant is a tuple, a frozenset or a
+        frozendict. (`pytestmark` aside.)"""
+        mutable = (ast.List, ast.Set, ast.Dict, ast.ListComp, ast.SetComp, ast.DictComp)
+        found = []
+        for node in self.parse(module).body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                target = node.targets[0] if isinstance(node, ast.Assign) else node.target
+                value = node.value
+                called = isinstance(value, ast.Call) and getattr(value.func, "id", "") in ("list", "set", "dict")
+                if getattr(target, "id", "pytestmark") != "pytestmark" and (isinstance(value, mutable) or called):
+                    found.append("%d %s" % (node.lineno, target.id))
+        return found
+
+    def literal_string_sets(
+        self,
+        module,
+    ):
+        """The lines of `module` that spell a closed set of names as a `Literal` of two or more strings, where a StrEnum
+        belongs (a Literal of one value, or of booleans, is no set of names)."""
+        found = []
+        for node in self.nodes(module, ast.Subscript):
+            if isinstance(node.value, ast.Name) and node.value.id == "Literal":
+                values = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+                strings = [
+                    value for value in values if isinstance(value, ast.Constant) and isinstance(value.value, str)
+                ]
+                if len(strings) > 1:
+                    found.append(node.lineno)
+        return sorted(found)
+
     def single_character_parameters(
         self,
         module,
@@ -341,16 +489,16 @@ class Codebase:
         self,
         module,
     ):
-        """`line name` of what, in a test module, is neither a constant nor a test. Its top level holds only imports,
-        UPPER_CASE constants (and `pytestmark`) and Test* classes, and such a class only its docstring and test
-        methods (no helper, no fixture)."""
+        """`line name` of what, in a test module, is not a test. Its top level holds only imports, Test* classes and
+        `pytestmark`: no value (its static assets are fixtures, in a conftest.py), and a Test* class only its docstring
+        and test methods (no helper, no fixture)."""
         found = []
         for position, node in enumerate(self.parse(module).body):
             if self.is_docstring(node, position) or isinstance(node, (ast.Import, ast.ImportFrom)):
                 continue
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
                 names = self.constant_names(node)
-                if names and all(name.isupper() or name == "pytestmark" for name in names):
+                if names == ["pytestmark"]:
                     continue
                 found.append("%d %s" % (node.lineno, ", ".join(names or ["assignment"])))
             elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):

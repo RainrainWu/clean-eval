@@ -22,23 +22,29 @@ unexpected denies; the hook command the gateway sets also turns any other exit s
 """
 
 import sys
-from typing import Any, Optional, TextIO
+from typing import (
+    Any,
+    Optional,
+    TextIO,
+)
 
 from clean_eval.domain.review import ToolCall
 from clean_eval.external.environment import EnvironmentGateway
 from clean_eval.external.filesystem import FileSystemGateway
-from clean_eval.use_cases.interfaces import Environment, FileSystem
+from clean_eval.use_cases.interfaces import (
+    Environment,
+    FileSystem,
+)
 
-READ_TOOLS = {"Read": "file_path", "Grep": "path", "Glob": "path", "LS": "path"}
-WRITE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path"}
-SAFE_TOOLS = {"TodoWrite", "ToolSearch"}
+READ_TOOLS = frozendict({"Read": "file_path", "Grep": "path", "Glob": "path", "LS": "path"})
+WRITE_TOOLS = frozendict({"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path"})
+SAFE_TOOLS = frozenset({"TodoWrite", "ToolSearch"})
 ALLOW, DENY = 0, 2
-FS, ENV = FileSystemGateway(), EnvironmentGateway()
 
 
 def roots(
     paths: list[str],
-    fs: FileSystem = FS,
+    fs: FileSystem,
 ) -> list[str]:
     """The real paths of the given roots. A symlinked root would make its target reachable, so it is dropped (fail
     closed)."""
@@ -59,7 +65,7 @@ def decide(
     cwd: str,
     read_roots: list[str],
     write_roots: list[str],
-    fs: FileSystem = FS,
+    fs: FileSystem,
 ) -> Optional[str]:
     """Return None to allow, or a reason string to deny."""
     if tool in SAFE_TOOLS:
@@ -93,11 +99,13 @@ def decide(
 def hook(
     stdin: Optional[TextIO] = None,
     stderr: Optional[TextIO] = None,
-    env: Environment = ENV,
-    fs: FileSystem = FS,
+    env: Optional[Environment] = None,
+    fs: Optional[FileSystem] = None,
 ) -> int:
-    """Decide one tool call (default: the hook protocol on this process's stdin and stderr); the exit status."""
+    """Decide one tool call (default: the hook protocol on this process's stdin and stderr, with its environment and
+    file system); the exit status."""
     stdin, stderr = stdin or sys.stdin, stderr or sys.stderr
+    env, fs = env or EnvironmentGateway(), fs or FileSystemGateway()
     try:
         call = ToolCall.model_validate_json(stdin.read())
         reason = decide(

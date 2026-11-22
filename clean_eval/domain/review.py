@@ -1,21 +1,74 @@
 """The PR review in CI: the pull request, what the agent proposes, the review CI derives, posts and reports, and
 the step outputs and tool calls of a CI run."""
 
-from typing import Annotated, Any, Literal, Optional, Self
+from enum import StrEnum
+from typing import (
+    Annotated,
+    Any,
+    Literal,
+    Optional,
+    Self,
+)
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, computed_field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
-from clean_eval.domain.policy import Band, Count, OneLine, Score, Severity, Sha
+from clean_eval.domain.policy import (
+    Band,
+    Count,
+    OneLine,
+    Score,
+    Severity,
+    Sha,
+)
 from clean_eval.domain.rating import ModuleRisk
 
 # A PR review: the rules it applies, the findings the review agent proposes (untrusted, checked field by field), the
 # review CI trusts and posts, and the PR and change it is about.
 
-RuleId = Annotated[str, Field(pattern=r"^[A-Z]{1,4}-\d{2,3}$")]
-FindingRule = Annotated[str, Field(pattern=r"^(?:[A-Z]{1,4}-\d{2,3}|NEW)$")]  # NEW: a problem no rule covers
-LineNumber = Annotated[int, Field(ge=1, strict=True)]
-LEGACY_BANDS = {"Medium": "Moderate"}  # "Medium" is the pre-v2 name of the Moderate band
+RuleId = Annotated[
+    str,
+    Field(
+        pattern=r"^[A-Z]{1,4}-\d{2,3}$",
+    ),
+]
+FindingRule = Annotated[
+    str,
+    Field(
+        pattern=r"^(?:[A-Z]{1,4}-\d{2,3}|NEW)$",
+    ),
+]  # NEW: a problem no rule covers
+LineNumber = Annotated[
+    int,
+    Field(
+        ge=1,
+        strict=True,
+    ),
+]
+LEGACY_BANDS = frozendict({"Medium": Band.MODERATE})  # "Medium" is the pre-v2 name of the Moderate band
 MAX_FINDINGS = 50
+
+
+class Verdict(StrEnum):
+    """A review's verdict, derived from its findings: request changes on a blocker, comment on a major, else approve."""
+
+    APPROVE = "approve"
+    COMMENT = "comment"
+    REQUEST_CHANGES = "request_changes"
+
+
+class LogLevel(StrEnum):
+    """How a line of a run's log reads: information, or a warning."""
+
+    INFO = "info"
+    WARNING = "warning"
 
 
 class ReviewRule(BaseModel):
@@ -55,7 +108,9 @@ class CheckedRules(RulesTable):
         self,
     ) -> Self:
         if not self.rules:
-            raise ValueError("review-rules.md has no rule rows")
+            raise ValueError(
+                "review-rules.md has no rule rows",
+            )
         ids = [r.id for r in self.rules]
         if len(ids) != len(set(ids)):
             raise ValueError(
@@ -217,7 +272,9 @@ class Review(BaseModel):
     """The review CI trusts and posts. The verdict and the counts are derived from the findings, never taken from agent
     text; the band and score come from the precomputed risk."""
 
-    model_config = ConfigDict(extra="ignore")  # a stored review's derived fields are recomputed, not read back
+    model_config = ConfigDict(
+        extra="ignore",
+    )  # a stored review's derived fields are recomputed, not read back
 
     pr: Optional[int] = None
     base: Optional[str] = None
@@ -234,21 +291,21 @@ class Review(BaseModel):
     def blockers(
         self,
     ) -> int:
-        return sum(f.severity == "blocker" for f in self.findings)
+        return sum(f.severity == Severity.BLOCKER for f in self.findings)
 
     @computed_field
     @property
     def majors(
         self,
     ) -> int:
-        return sum(f.severity == "major" for f in self.findings)
+        return sum(f.severity == Severity.MAJOR for f in self.findings)
 
     @computed_field
     @property
     def verdict(
         self,
-    ) -> Literal["approve", "comment", "request_changes"]:
-        return "request_changes" if self.blockers else ("comment" if self.majors else "approve")
+    ) -> Verdict:
+        return Verdict.REQUEST_CHANGES if self.blockers else (Verdict.COMMENT if self.majors else Verdict.APPROVE)
 
 
 class InlineComment(BaseModel):
@@ -258,7 +315,12 @@ class InlineComment(BaseModel):
     body: str
 
 
-ReviewEvent = Literal["COMMENT", "REQUEST_CHANGES"]
+class ReviewEvent(StrEnum):
+    """The event a review is posted with: a comment, or a request for changes (never an approval: the action doesn't
+    approve PRs)."""
+
+    COMMENT = "COMMENT"
+    REQUEST_CHANGES = "REQUEST_CHANGES"
 
 
 class ReviewPost(BaseModel):
@@ -299,13 +361,23 @@ class PostOutcome(BaseModel):
     """What posting a review did: whether it went up, and a log of each step ("info" or "warning")."""
 
     posted: bool = False
-    log: list[tuple[Literal["info", "warning"], str]] = []
+    log: list[tuple[LogLevel, str]] = []
 
 
 # What crosses into and out of GitHub Actions around the CI agent: the tool calls it asks to make, and step outputs.
 
-OutputName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]*$")]
-OutputValue = Annotated[str, Field(pattern=r"^[^\r\n]*$")]  # one `name=value` line: a line break would start another
+OutputName = Annotated[
+    str,
+    Field(
+        pattern=r"^[a-z][a-z0-9-]*$",
+    ),
+]
+OutputValue = Annotated[
+    str,
+    Field(
+        pattern=r"^[^\r\n]*$",
+    ),
+]  # one `name=value` line: a line break would start another
 
 
 class StepOutputs(RootModel[dict[OutputName, OutputValue]]):
@@ -344,7 +416,9 @@ class RunFolders(BaseModel):
     folder, and in it the context the agent reads (precomputed, read-only to it) and the agent's own folder, the only
     one it may write."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(
+        frozen=True,
+    )
 
     workspace: str
     out: str

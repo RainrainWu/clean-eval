@@ -10,7 +10,10 @@ import hashlib
 import posixpath
 
 from clean_eval.domain.errors import HeatmapError
-from clean_eval.use_cases.interfaces import FileSystem, Git
+from clean_eval.use_cases.interfaces import (
+    FileSystem,
+    Git,
+)
 
 
 class MemoryFileSystem(FileSystem):
@@ -52,7 +55,9 @@ class MemoryFileSystem(FileSystem):
             while current in self.links:
                 current, hops = self.links[current], hops + 1
                 if hops > 40:
-                    raise HeatmapError("too many levels of symlinks in %s" % path)
+                    raise HeatmapError(
+                        "too many levels of symlinks in %s" % path,
+                    )
         return current
 
     def paths_under(
@@ -195,7 +200,9 @@ class MemoryFileSystem(FileSystem):
     ):
         resolved = self.resolve(path)
         if resolved not in self.files:
-            raise HeatmapError("cannot read %s: no such file" % path)
+            raise HeatmapError(
+                "cannot read %s: no such file" % path,
+            )
         return self.files[resolved]
 
     def write_text(
@@ -214,7 +221,9 @@ class MemoryFileSystem(FileSystem):
     ):
         resolved = self.resolve(path)
         if posixpath.dirname(resolved) not in self.dirs:
-            raise FileNotFoundError(path)
+            raise FileNotFoundError(
+                path,
+            )
         self.files[resolved] = self.files.get(resolved, "") + text
 
     def same_content(
@@ -248,7 +257,9 @@ class MemoryFileSystem(FileSystem):
     ):
         src, dst = self.resolve(src), self.normalize(dst)
         if self.lexists(dst):
-            raise FileExistsError(dst)
+            raise FileExistsError(
+                dst,
+            )
         self.make_dirs(dst)
         for d in self.paths_under(self.dirs, src):
             self.make_dirs(dst + d[len(src) :])
@@ -265,7 +276,9 @@ class MemoryFileSystem(FileSystem):
         elif path in self.files:
             del self.files[path]
         else:
-            raise FileNotFoundError(path)
+            raise FileNotFoundError(
+                path,
+            )
 
     def remove_tree(
         self,
@@ -273,7 +286,9 @@ class MemoryFileSystem(FileSystem):
     ):
         path = self.normalize(path)
         if path not in self.dirs:
-            raise FileNotFoundError(path)
+            raise FileNotFoundError(
+                path,
+            )
         inside = (
             set(self.paths_under(self.files, path))
             | set(self.paths_under(self.links, path))
@@ -374,7 +389,9 @@ class MemoryGit(Git):
             return self.commits[-1]
         found = [c for c in self.commits if len(rev) >= 4 and c["sha"].startswith(rev)]
         if len(found) != 1:
-            raise HeatmapError("git rev-parse failed: unknown revision %s" % rev)
+            raise HeatmapError(
+                "git rev-parse failed: unknown revision %s" % rev,
+            )
         return found[0]
 
     def toplevel(
@@ -463,7 +480,9 @@ class MemoryGit(Git):
         refspec,
     ):
         if not self.has_commit(sha):
-            raise HeatmapError("commit %s is not available locally (checkout with fetch-depth: 0)" % sha)
+            raise HeatmapError(
+                "commit %s is not available locally (checkout with fetch-depth: 0)" % sha,
+            )
 
     def diff(
         self,

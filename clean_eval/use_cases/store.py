@@ -3,16 +3,34 @@ judgement, and GitHub step outputs."""
 
 import json
 from collections.abc import Sequence
-from typing import Optional, Union
+from typing import (
+    Optional,
+    Union,
+)
 
-from pydantic import BaseModel, ValidationError
+from pydantic import (
+    BaseModel,
+    ValidationError,
+)
 from pydantic_core import to_jsonable_python
 
-from clean_eval.domain.errors import HeatmapError, InvalidOutput
+from clean_eval.domain.errors import (
+    HeatmapError,
+    InvalidOutput,
+)
 from clean_eval.domain.evaluation import EvalResult
-from clean_eval.domain.policy import REPO_POLICY, Policy
-from clean_eval.domain.rating import Heatmap, Judgement
-from clean_eval.domain.review import Review, StepOutputs
+from clean_eval.domain.policy import (
+    REPO_POLICY,
+    Policy,
+)
+from clean_eval.domain.rating import (
+    Heatmap,
+    Judgement,
+)
+from clean_eval.domain.review import (
+    Review,
+    StepOutputs,
+)
 from clean_eval.use_cases.interfaces import FileSystem
 from clean_eval.use_cases.rules.review import sanitize_report
 
@@ -25,7 +43,9 @@ def read_json(
     try:
         return json.loads(fs.read_text(path))
     except ValueError as e:
-        raise HeatmapError("cannot read %s: %s" % (path, e))
+        raise HeatmapError(
+            "cannot read %s: %s" % (path, e),
+        )
 
 
 def write_json(
@@ -96,7 +116,9 @@ def invalid(
 ) -> InvalidOutput:
     """The InvalidOutput that a failure to judge the CI agent's output becomes."""
     if isinstance(error, ValidationError):
-        return InvalidOutput(str(InvalidOutput.from_validation(error)) + suffix)
+        return InvalidOutput(
+            str(InvalidOutput.from_validation(error)) + suffix,
+        )
     return InvalidOutput(
         (str(error) if isinstance(error, HeatmapError) else "%s: %s" % (type(error).__name__, error)) + suffix
     )

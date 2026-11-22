@@ -10,25 +10,61 @@ import json
 import shlex
 import sys
 from collections.abc import Callable
-from typing import IO, Any, Optional
+from enum import StrEnum
+from typing import (
+    IO,
+    Any,
+    Optional,
+    Union,
+)
 
 import click
 from pydantic import ValidationError
 from pydantic_core import to_jsonable_python
 
-from clean_eval.adaptor.presenters import DIAGRAM_PATH, MarkdownReportPresenter, SvgDiagramPresenter
-from clean_eval.domain.errors import HeatmapError, InvalidOutput, InvalidRequest
-from clean_eval.domain.evaluation import EvalHistory, Period
-from clean_eval.domain.rating import Heatmap, Judgement, RatingCache
+from clean_eval.adaptor.presenters import (
+    MarkdownReportPresenter,
+    SvgDiagramPresenter,
+)
+from clean_eval.domain.errors import (
+    HeatmapError,
+    InvalidOutput,
+    InvalidRequest,
+)
+from clean_eval.domain.evaluation import (
+    EvalHistory,
+    Period,
+    Replay,
+    SensitivityRow,
+)
+from clean_eval.domain.policy import Policy
+from clean_eval.domain.rating import (
+    Heatmap,
+    Judgement,
+    RatingCache,
+    ReadmeAction,
+)
 from clean_eval.domain.review import RunFolders
 from clean_eval.external import agent_guard
-from clean_eval.external.claude_code import MAX_TURNS, VERSION, ClaudeCodeGateway
-from clean_eval.external.environment import ClockGateway, EnvironmentGateway
+from clean_eval.external.claude_code import ClaudeCodeGateway
+from clean_eval.external.environment import (
+    ClockGateway,
+    EnvironmentGateway,
+)
 from clean_eval.external.filesystem import FileSystemGateway
 from clean_eval.external.git import GitGateway
 from clean_eval.external.github import GitHubGateway
+from clean_eval.settings import (
+    DIAGRAM_PATH,
+    Settings,
+)
 from clean_eval.use_cases.ci import start_run
-from clean_eval.use_cases.evaluation import collect_history, finalize_eval, prepare_eval, run_eval_action
+from clean_eval.use_cases.evaluation import (
+    collect_history,
+    finalize_eval,
+    prepare_eval,
+    run_eval_action,
+)
 from clean_eval.use_cases.heatmap import (
     finalize_heatmap_report,
     rate_revision,
@@ -46,14 +82,17 @@ from clean_eval.use_cases.interfaces import (
     RunLog,
 )
 from clean_eval.use_cases.review import (
-    FAIL_ON,
     assess_change,
     finalize_pr_review,
     post_review,
     prepare_review,
     run_review_action,
 )
-from clean_eval.use_cases.rules.evaluation import replay, rules_warning, sensitivity
+from clean_eval.use_cases.rules.evaluation import (
+    replay,
+    rules_warning,
+    sensitivity,
+)
 from clean_eval.use_cases.rules.review import redact as redact_text
 from clean_eval.use_cases.rules.review import secret_values
 from clean_eval.use_cases.store import (
@@ -65,7 +104,6 @@ from clean_eval.use_cases.store import (
     write_step_outputs,
 )
 
-SKILLS = ("pr-review", "eval", "risk-heat-map")  # what `finalize --skill` accepts
 # The stateless gateways, shared; git is per repository, gh per use.
 FS, ENV, CLOCK = FileSystemGateway(), EnvironmentGateway(), ClockGateway()
 CHECKOUT = FS.parent(FS.parent(FS.parent(FS.real_path(__file__))))  # the clean-eval checkout: package and skills
@@ -78,6 +116,19 @@ review changes by that risk.
 The commands marked CI are the ones the GitHub Action runs (`action` runs the others around its agent, which only
 proposes): they
 decide and act."""
+ACTION_HELP = """CI: run SKILL (risk-heat-map, pr-review or eval) on a checkout, as the GitHub Action does. A run that fails
+reports an ::error:: and exits with status 1.
+
+Its inputs are environment variables, which the run reads once into its settings (clean_eval/settings.py): action.yml
+sets the CE_* ones from the action's inputs, and the runner sets the rest. An empty variable counts as unset."""
+
+
+class Skill(StrEnum):
+    """The skills a CI run runs: what `action` and `finalize --skill` take."""
+
+    PR_REVIEW = "pr-review"
+    EVAL = "eval"
+    RISK_HEAT_MAP = "risk-heat-map"
 
 
 # The gateways and presenters the commands hand the use cases.
@@ -86,7 +137,9 @@ decide and act."""
 def git(
     repo: str,
 ) -> Git:
-    return GitGateway(repo)
+    return GitGateway(
+        repo,
+    )
 
 
 def github() -> CodeHost:
@@ -115,26 +168,49 @@ def default_rules() -> str:
 
 
 def agent_for(
+    settings: Settings,
     folders: RunFolders,
-    version: str,
-    model: Optional[str],
-    max_turns: int,
 ) -> Agent:
     """Claude Code for a CI run, sandboxed: its PreToolUse hook is this checkout's guard, run by this Python, and a
     failing hook denies the call (`|| exit 2`); npm installs it from the run's output folder, away from the checkout."""
     guard = "%s -I %s guard || exit 2" % (shlex.quote(sys.executable), shlex.quote(PACKAGE_DIR))
-    return ClaudeCodeGateway(FS, ENV.variables(), guard, folders.out, version, model, max_turns)
+    return ClaudeCodeGateway(
+        FS,
+        settings,
+        ENV.variables(),
+        guard,
+        folders.out,
+    )
 
 
-def default_output_dir() -> str:
-    """Where a CI run's outputs go by default: under the runner's temporary folder, else under /tmp."""
-    return FS.join(ENV.get("RUNNER_TEMP") or "/tmp", "clean-eval")
+def run_settings() -> Settings:
+    """A CI run's settings, read from this process's environment; HeatmapError names each variable that doesn't fit."""
+    try:
+        return Settings()
+    except ValidationError as error:
+        raise HeatmapError.from_validation(error, "invalid settings")
+
+
+def action_help() -> str:
+    """The `action` command's help: ACTION_HELP, then each group of settings, with each setting's variable, what it is
+    for, and its default."""
+    groups: dict[str, list[str]] = {}
+    for setting, field in Settings.fields().items():
+        description, default = field.description or "", field.get_default()
+        if default not in (None, "") and "(default:" not in description:
+            description += " (default: %s)" % (str(default).lower() if isinstance(default, bool) else default)
+        line = "  %-31s %s" % (Settings.variables(setting)[0], description)
+        groups.setdefault(setting.split(".")[0], []).append(line)
+    paragraphs = ["\b\n%s:\n%s" % (group, "\n".join(lines)) for group, lines in groups.items()]
+    return "\n\n".join([ACTION_HELP, *paragraphs])
 
 
 def repository_root(
     path: str,
 ) -> str:
-    return GitGateway(path).toplevel()
+    return GitGateway(
+        path,
+    ).toplevel()
 
 
 def period(
@@ -144,7 +220,11 @@ def period(
 ) -> Period:
     """The Period of PRs merged from `since` to `until` (YYYY-MM-DD, inclusive), with `window_days` of look-ahead."""
     try:
-        return Period(since=since, until=until, window_days=window_days)
+        return Period(
+            since=since,
+            until=until,
+            window_days=window_days,
+        )
     except ValidationError as e:
         raise InvalidRequest.from_validation(e, "since/until must be dates as YYYY-MM-DD")
 
@@ -156,6 +236,93 @@ def heatmap_and_judgement(
     """The rated heat map in `data` (data.json), and the levels in `judgement_path` when there is one."""
     judgement = load_judgement(FS, judgement_path) if judgement_path else None
     return load_heatmap(FS, data), judgement
+
+
+def rescored_history(
+    root: str,
+    policy: Policy,
+    from_history: Optional[str],
+    replay_overrides: Optional[str],
+) -> Union[Replay, list[SensitivityRow]]:
+    """The collected history in `from_history`, re-scored: replayed under the policy `replay_overrides` describes, else
+    its one-knob sensitivity to `policy`."""
+    if not from_history:
+        raise InvalidRequest(
+            "--replay/--sensitivity need --from-history",
+        )
+    try:
+        collected = EvalHistory.model_validate(read_json(FS, from_history))
+    except ValidationError as e:
+        raise HeatmapError.from_validation(e, "%s is not a collected history" % from_history)
+    if replay_overrides:
+        return replay(collected, load_policy(FS, root, replay_overrides)[0])
+    return sensitivity(collected, policy)
+
+
+def print_or_write(
+    result: Union[EvalHistory, Replay, list[SensitivityRow]],
+    out: Optional[str],
+) -> None:
+    """Print `result` as JSON, or write it to `out` and say what a collected history holds."""
+    text = json.dumps(to_jsonable_python(result), indent=2)
+    if not out:
+        print(text)
+        return
+    FS.write_text(out, text)
+    if isinstance(result, EvalHistory):
+        print(
+            "wrote %s: %d PRs, %d with escaped defects" % (out, result.totals.prs, result.totals.defective_prs),
+            file=sys.stderr,
+        )
+
+
+def run_skill(
+    skill: Skill,
+    settings: Settings,
+    folders: RunFolders,
+    agent: Agent,
+    log: RunLog,
+) -> None:
+    """Run `skill`'s CI run in `folders`, with the gateways and presenters it takes."""
+    if skill == Skill.RISK_HEAT_MAP:
+        run_heatmap_action(
+            git(folders.workspace),
+            FS,
+            CLOCK,
+            ENV,
+            agent,
+            diagram_presenter(),
+            report_presenter(),
+            log,
+            folders,
+            settings,
+        )
+    elif skill == Skill.PR_REVIEW:
+        run_review_action(
+            github(),
+            git(repository_root(folders.workspace)),
+            FS,
+            CLOCK,
+            ENV,
+            agent,
+            log,
+            folders,
+            settings,
+            default_rules(),
+        )
+    else:
+        run_eval_action(
+            git(repository_root(folders.workspace)),
+            FS,
+            CLOCK,
+            ENV,
+            github(),
+            agent,
+            log,
+            folders,
+            settings,
+            default_rules(),
+        )
 
 
 # The command line.
@@ -212,7 +379,9 @@ class CommandLine(click.Group):
         try:
             return super().invoke(ctx)
         except HeatmapError as error:
-            raise UserError(str(error)) from error
+            raise UserError(
+                str(error),
+            ) from error
 
 
 @click.group(cls=CommandLine, help=HELP, context_settings={"help_option_names": ["-h", "--help"]})
@@ -332,7 +501,7 @@ def readme(
             ),
         )
     if result.changed:
-        verb = "added" if result.action == "ADD" else "updated"
+        verb = "added" if result.action == ReadmeAction.ADD else "updated"
         print("%s the heat map in %s and %s (%d modules)" % (verb, readme_path, svg_path, len(result.heatmap.modules)))
     else:
         print("unchanged: %s already shows these ratings (fingerprint %s)" % (readme_path, result.fingerprint))
@@ -439,20 +608,12 @@ def history(
     root = repository_root(repo)
     policy, source = load_policy(FS, root, model)
     if replay_overrides or with_sensitivity:
-        if not from_history:
-            raise InvalidRequest("--replay/--sensitivity need --from-history")
-        try:
-            collected = EvalHistory.model_validate(read_json(FS, from_history))
-        except ValidationError as e:
-            raise HeatmapError.from_validation(e, "%s is not a collected history" % from_history)
-        result = (
-            replay(collected, load_policy(FS, root, replay_overrides)[0])
-            if replay_overrides
-            else sensitivity(collected, policy)
-        )
+        result = rescored_history(root, policy, from_history, replay_overrides)
     else:
         if not since:
-            raise InvalidRequest("--since is required (or --from-history with --replay/--sensitivity)")
+            raise InvalidRequest(
+                "--since is required (or --from-history with --replay/--sensitivity)",
+            )
         result = collect_history(
             git(root),
             CLOCK,
@@ -466,16 +627,7 @@ def history(
         warning = rules_warning(result.rules) if result.rules else None
         if warning:
             print("warning: " + warning, file=sys.stderr)
-    text = json.dumps(to_jsonable_python(result), indent=2)
-    if not out:
-        print(text)
-        return
-    FS.write_text(out, text)
-    if isinstance(result, EvalHistory):
-        print(
-            "wrote %s: %d PRs, %d with escaped defects" % (out, result.totals.prs, result.totals.defective_prs),
-            file=sys.stderr,
-        )
+    print_or_write(result, out)
 
 
 # The commands the GitHub Action runs around its agent.
@@ -542,7 +694,13 @@ def prepare_eval_context(
     short_help="CI: validate the agent's output.",
     help="CI: validate the agent's output and write the result CI trusts, redacted, and the step outputs.",
 )
-@click.option("--skill", type=click.Choice(SKILLS), required=True)
+@click.option(
+    "--skill",
+    type=click.Choice(
+        [skill.value for skill in Skill],
+    ),
+    required=True,
+)
 @click.option("--ctx", "context_dir", required=True)
 @click.option("--agent", required=True)
 @click.option("--out", required=True)
@@ -561,9 +719,9 @@ def finalize(
     gh_output: str,
 ) -> None:
     try:
-        if skill == "pr-review":
+        if skill == Skill.PR_REVIEW:
             result, outputs = finalize_pr_review(FS, ENV, context_dir, agent, out)
-        elif skill == "eval":
+        elif skill == Skill.EVAL:
             result, outputs = finalize_eval(FS, ENV, context_dir, agent, out, apply_edits, workspace)
         else:
             result, outputs = finalize_heatmap_report(FS, ENV, out)
@@ -634,157 +792,32 @@ def guard(
     context.exit(agent_guard.hook())
 
 
-@clean_eval.command(
-    short_help="CI: run a skill as the GitHub Action does.",
-    help="CI: run SKILL (risk-heat-map, pr-review or eval) on a checkout, as the GitHub Action does. action.yml runs "
-    "this with the action's inputs as CE_* variables, which the options read; GITHUB_OUTPUT and GITHUB_STEP_SUMMARY "
-    "take the step outputs and the job summary. A run that fails reports an ::error:: and exits with status 1.",
+@clean_eval.command(short_help="CI: run a skill as the GitHub Action does.", help=action_help())
+@click.argument(
+    "skill",
+    type=click.Choice(
+        [skill.value for skill in Skill],
+    ),
 )
-@click.argument("skill", envvar="CE_SKILL", type=click.Choice(SKILLS))
-@click.option(
-    "--workspace", envvar=["CE_WORKSPACE", "GITHUB_WORKSPACE"], default=".", help="the checkout the skill runs on"
-)
-@click.option(
-    "--output-dir",
-    envvar="CE_OUTPUT_DIR",
-    default=default_output_dir,
-    show_default="$RUNNER_TEMP/clean-eval",
-    help="where report.md, result.json and claude.log go",
-)
-@click.option("--pr", envvar="CE_PR", type=int, help="pr-review: the PR number")
-@click.option(
-    "--post", envvar="CE_POST", type=click.BOOL, default=True, show_default=True, help="pr-review: post the review"
-)
-@click.option(
-    "--fail-on",
-    envvar="CE_FAIL_ON",
-    type=click.Choice(FAIL_ON),
-    default="never",
-    show_default=True,
-    help="pr-review: fail the run on a request_changes verdict, or on a blocker finding",
-)
-@click.option("--since", envvar="CE_SINCE", help="eval: YYYY-MM-DD (default: 90 days ago)")
-@click.option("--until", envvar="CE_UNTIL", help="eval: YYYY-MM-DD (default: today)")
-@click.option(
-    "--apply",
-    "apply_edits",
-    envvar="CE_APPLY",
-    type=click.BOOL,
-    default=False,
-    show_default=True,
-    help="eval: let the agent edit .clean-eval/ (an edit is kept only when it validates)",
-)
-@click.option(
-    "--readme",
-    "readme_path",
-    envvar="CE_README",
-    default="README.md",
-    show_default=True,
-    help="risk-heat-map: README path, relative to the workspace",
-)
-@click.option(
-    "--diagram",
-    "diagram_path",
-    envvar="CE_DIAGRAM",
-    default=DIAGRAM_PATH,
-    show_default=True,
-    help="risk-heat-map: diagram path, relative to the workspace",
-)
-@click.option(
-    "--use-claude",
-    envvar="CE_USE_CLAUDE",
-    type=click.BOOL,
-    default=False,
-    show_default=True,
-    help="risk-heat-map: let the agent level the four aspects",
-)
-@click.option("--model", "agent_model", envvar="CE_MODEL", help="the agent's model (default: Claude Code's)")
-@click.option("--max-turns", envvar="CE_MAX_TURNS", type=int, default=MAX_TURNS, show_default=True)
-@click.option("--claude-code-version", envvar="CE_CLAUDE_VERSION", default=VERSION, show_default=True)
-@click.option("--extra-prompt", envvar="CE_EXTRA_PROMPT", default="", help="added to the agent's prompt")
-@click.option("--gh-output", envvar="GITHUB_OUTPUT", default="/dev/null", help="the step-outputs file")
-@click.option("--summary", envvar="GITHUB_STEP_SUMMARY", default="/dev/null", help="the job-summary file")
 @click.pass_context
 def action(
     context: click.Context,
     skill: str,
-    workspace: str,
-    output_dir: str,
-    pr: Optional[int],
-    post: bool,
-    fail_on: str,
-    since: Optional[str],
-    until: Optional[str],
-    apply_edits: bool,
-    readme_path: str,
-    diagram_path: str,
-    use_claude: bool,
-    agent_model: Optional[str],
-    max_turns: int,
-    claude_code_version: str,
-    extra_prompt: str,
-    gh_output: str,
-    summary: str,
 ) -> None:
     log = ConsoleRunLog()
     failure = None
     try:
-        folders = start_run(git(workspace), FS, workspace, output_dir, SKILLS_DIR, gh_output)
-        agent = agent_for(folders, claude_code_version, agent_model, max_turns)
-        if skill == "risk-heat-map":
-            run_heatmap_action(
-                git(folders.workspace),
-                FS,
-                CLOCK,
-                ENV,
-                agent,
-                diagram_presenter(),
-                report_presenter(),
-                log,
-                folders,
-                readme_path,
-                diagram_path,
-                use_claude,
-                extra_prompt,
-                gh_output,
-                summary,
-            )
-        elif skill == "pr-review":
-            run_review_action(
-                github(),
-                git(repository_root(folders.workspace)),
-                FS,
-                CLOCK,
-                ENV,
-                agent,
-                log,
-                folders,
-                pr,
-                post,
-                fail_on,
-                default_rules(),
-                extra_prompt,
-                gh_output,
-                summary,
-            )
-        else:
-            run_eval_action(
-                git(repository_root(folders.workspace)),
-                FS,
-                CLOCK,
-                ENV,
-                github(),
-                agent,
-                log,
-                folders,
-                since,
-                until,
-                apply_edits,
-                default_rules(),
-                extra_prompt,
-                gh_output,
-                summary,
-            )
+        settings = run_settings()
+        folders = start_run(git(settings.run.workspace), FS, settings, SKILLS_DIR)
+        run_skill(
+            Skill(
+                skill,
+            ),
+            settings,
+            folders,
+            agent_for(settings, folders),
+            log,
+        )
     except HeatmapError as error:
         failure = error
     if log.in_group:

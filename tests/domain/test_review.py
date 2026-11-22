@@ -3,6 +3,7 @@ tables, the pull request, and the CI run's step outputs and tool calls."""
 
 import pytest
 from pydantic import ValidationError
+from pytest_lazy_fixtures import lf
 
 from clean_eval.domain.review import (
     AgentReview,
@@ -13,10 +14,6 @@ from clean_eval.domain.review import (
     StepOutputs,
     ToolCall,
 )
-
-# Findings CI trusts (Finding's fields), one of each severity that counts.
-BLOCKER = {"rule": "CA-01", "severity": "blocker"}
-MAJOR = {"rule": "Q-02", "severity": "major"}
 
 
 class TestAgentReview:
@@ -75,8 +72,8 @@ class TestReview:
     @pytest.mark.parametrize(
         ("stored_review", "expected"),
         [
-            ({"findings": [BLOCKER, MAJOR]}, ("request_changes", 1, 1)),
-            ({"findings": [MAJOR]}, ("comment", 0, 1)),
+            ({"findings": [lf("trusted_blocker"), lf("trusted_major")]}, ("request_changes", 1, 1)),
+            ({"findings": [lf("trusted_major")]}, ("comment", 0, 1)),
             ({"max_tier": "Low", "max_score": 0}, ("approve", 0, 0)),
         ],
         indirect=["stored_review"],
@@ -90,7 +87,9 @@ class TestReview:
         review = Review.model_validate(stored_review)
         assert (review.verdict, review.blockers, review.majors) == expected
 
-    @pytest.mark.parametrize("stored_review", [{"findings": [BLOCKER, MAJOR]}], indirect=True, ids=["a blocker"])
+    @pytest.mark.parametrize(
+        "stored_review", [{"findings": [lf("trusted_blocker"), lf("trusted_major")]}], indirect=True, ids=["a blocker"]
+    )
     def test_a_tampered_verdict_is_derived_again(
         self,
         stored_review,
@@ -185,7 +184,9 @@ class TestStepOutputs:
     def test_step_outputs_are_names_and_values(
         self,
     ):
-        assert StepOutputs({"max-tier": "High", "auc": ""}).root == {"max-tier": "High", "auc": ""}
+        assert StepOutputs(
+            {"max-tier": "High", "auc": ""},
+        ).root == {"max-tier": "High", "auc": ""}
 
     @pytest.mark.parametrize(
         "outputs",
@@ -197,7 +198,9 @@ class TestStepOutputs:
         outputs,
     ):
         with pytest.raises(ValidationError):
-            StepOutputs(outputs)
+            StepOutputs(
+                outputs,
+            )
 
 
 class TestToolCall:

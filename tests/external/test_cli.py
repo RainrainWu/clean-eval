@@ -7,113 +7,22 @@ import json
 from pathlib import Path
 
 import pytest
+from pytest_lazy_fixtures import (
+    lf,
+    lfc,
+)
 
-from clean_eval.domain.errors import InvalidRequest, RemoteError
+from clean_eval.domain.errors import (
+    InvalidRequest,
+    RemoteError,
+)
 from clean_eval.domain.review import HostReview
 from clean_eval.external import cli
 from clean_eval.external.filesystem import FileSystemGateway
 from clean_eval.use_cases.review import lines_on_diff
 from clean_eval.use_cases.rules.review import redact
-from tests.helpers import Dates
 
 pytestmark = pytest.mark.e2e  # the command line's tests: most run `python -I clean_eval ...` in a subprocess
-
-# The commands `clean_eval --help` lists, in its order.
-COMMANDS = ["action", "assess", "finalize", "guard", "history", "post", "prepare", "rate", "readme", "redact", "report"]
-# A review-rules.md: a blocker rule from the Low band, and a major and a minor one from Moderate.
-RULES = """
-| ID | Severity | Min tier | Rule |
-|---|---|---|---|
-| CA-01 | blocker | Low | dependency rule |
-| Q-02 | major | Moderate | failure paths |
-| Q-04 | minor | Moderate | clarity |
-"""
-# The agent's edits of .clean-eval/risk-model.json: one that validates and keeps the AUC; one of the structure, which
-# CI may not change; one that drops the only term telling the hot modules from the cold ones, so every PR scores the
-# same (AUC 0.5 < 1.0); and a model that was there before the agent ran.
-VALID_MODEL = {"business_weights": {"dependents": 0.4}}
-STRUCTURAL_MODEL = {"depth": 1}
-FLAT_MODEL = {"business_weights": {"dependents": 0}, "effects_mix": {"dependents": 0}}
-EARLIER_MODEL = {"depth": 2, "business_weights": {"dependents": 0.35}}
-RECOMMENDATION = {"target": "risk-model.json", "change": "c", "evidence": "e"}
-# What the review agent proposed: CA-01 at a lower severity than its rule's, and a report with a clean-eval marker of its
-# own and a token.
-UNDERRATED_BLOCKER = {"rule": "CA-01", "severity": "minor", "file": "a.py", "line": 3, "summary": "s"}
-AGENT_REPORT = "## Review\n<!-- clean-eval:pr-review tier=Low -->\nghp_" + "x" * 36
-# Findings of a review: a blocker on line 3 of a.py, and a major one on no line, so never attached inline.
-BLOCKER = {"rule": "CA-01", "severity": "blocker", "file": "a.py", "line": 3, "summary": "s"}
-UNPLACED = {"rule": "Q-02", "severity": "major", "file": None, "line": None, "summary": "s"}
-# The context's diff (as `prepare pr-review` writes it): a.py changes line 2, so lines 1-3 take inline comments.
-PATCH = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,3 @@\n x\n-y\n+Y\n z\n"
-DIFF = {
-    "diff/index.json": [
-        {
-            "file": "a.py",
-            "module": None,
-            "patch": "diff/001.patch",
-            "patch_lines": 8,
-            "added": 1,
-            "removed": 1,
-            "truncated": False,
-        }
-    ],
-    "diff/001.patch": PATCH,
-}
-# The reviews on the PR once review 50 is posted: this reviewer's earlier change request (10) is stale, but not a
-# human's (11), a comment (12) or the new review itself.
-BOT = "github-actions[bot]"
-MARKER = "<!-- clean-eval:pr-review tier=High -->"
-REVIEWS = [
-    HostReview(id=10, state="CHANGES_REQUESTED", user=BOT, body=MARKER),
-    HostReview(id=11, state="CHANGES_REQUESTED", user="human", body=MARKER),
-    HostReview(id=12, state="COMMENTED", user=BOT, body=MARKER),
-    HostReview(id=50, state="CHANGES_REQUESTED", user=BOT, body=MARKER),
-]
-# Repositories: a billing module (one with tests) and a users module depending on it; then a change of the users module
-# that also adds docs and infrastructure.
-BILLING = [
-    {
-        "subject": "init",
-        "files": {
-            "src/billing/core.py": "import requests\n\ndef charge(x):\n    return requests.post('u', json=x)\n"
-            + "\n".join("def f%d(a):\n    return a\n" % number for number in range(60)),
-            "src/billing/models.py": "class Invoice:\n    pass\n" * 40,
-            "src/users/api.py": "from src.billing.core import charge\n\ndef sign_up(u):\n    return charge(u)\n" * 30,
-            "tests/test_core.py": "from src.billing.core import charge\n\ndef test_charge():\n    assert charge\n",
-        },
-        "when": Dates.days_ago(4),
-    },
-    {
-        "subject": "feat: users",
-        "files": {
-            "src/users/api.py": "def sign_up(u):\n    return u\n",
-            "docs/x.md": "doc\n",
-            "infra/main.tf": "resource {}\n",
-        },
-        "when": Dates.days_ago(2),
-    },
-]
-APP_WITH_README = [
-    {
-        "subject": "init",
-        "files": {"app/a.py": "def a():\n    return 1\n", "README.md": "# App\n"},
-        "when": Dates.days_ago(2),
-    }
-]
-V1_POLICY = [
-    {
-        "subject": "init",
-        "files": {"a/b.py": "x = 1\n", ".clean-eval/risk-model.json": '{"window_days": 30}'},
-        "when": Dates.days_ago(1),
-    }
-]
-# A feature PR, then a fix of it the next day.
-UTC = dt.timezone.utc
-FIXED_FEATURE = [
-    {"subject": "init", "files": {"src/a/x.py": "1\n"}, "when": dt.datetime(2026, 1, 1, 12, tzinfo=UTC)},
-    {"subject": "feat: a (#1)", "files": {"src/a/x.py": "2\n"}, "when": dt.datetime(2026, 2, 1, 12, tzinfo=UTC)},
-    {"subject": "fix: a (#2)", "files": {"src/a/x.py": "3\n"}, "when": dt.datetime(2026, 2, 2, 12, tzinfo=UTC)},
-]
 
 
 class TestPeriod:
@@ -125,7 +34,7 @@ class TestPeriod:
     ):
         period = cli.period("2026-01-01", "2026-01-31", 10)
         assert (period.lookahead_until, period.window_days) == (dt.date(2026, 2, 10), 10)
-        assert period.until_ts == dt.datetime(2026, 1, 31, 23, 59, 59, tzinfo=UTC).timestamp()
+        assert period.until_ts == dt.datetime(2026, 1, 31, 23, 59, 59, tzinfo=dt.timezone.utc).timestamp()
 
     def test_a_date_that_is_not_yyyy_mm_dd_is_an_invalid_request(
         self,
@@ -150,23 +59,40 @@ class TestFinalizeEvalJudgesTheModelEdit:
     validates and holds the AUC on a sample large enough to tell; otherwise the file is put back as it was before the
     agent ran (removed when it wasn't there)."""
 
-    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": VALID_MODEL}], indirect=True)
-    @pytest.mark.parametrize("agent_files", [{"result.json": {"recommendations": [RECOMMENDATION]}}], indirect=True)
+    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": lf("valid_model_edit")}], indirect=True)
+    @pytest.mark.parametrize(
+        "agent_files", [{"result.json": {"recommendations": [lf("recommendation")]}}], indirect=True
+    )
     def test_a_valid_edit_is_kept(
         self,
         finalize_eval_args,
         cli_runner,
         ci_folders,
+        recommendation,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
-        result = json.loads(Path(ci_folders.out, "result.json").read_text())
+        result = json.loads(
+            Path(
+                ci_folders.out,
+                "result.json",
+            ).read_text()
+        )
         assert result["model_change"]["accepted"]
         assert result["applied"]
-        assert Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()
-        assert "applied=true" in Path(ci_folders.gh_output).read_text()
-        assert result["recommendations"] == [RECOMMENDATION]
+        assert Path(
+            ci_folders.ws,
+            ".clean-eval",
+            "risk-model.json",
+        ).exists()
+        assert (
+            "applied=true"
+            in Path(
+                ci_folders.gh_output,
+            ).read_text()
+        )
+        assert result["recommendations"] == [recommendation]
 
-    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": STRUCTURAL_MODEL}], indirect=True)
+    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": lf("structural_model_edit")}], indirect=True)
     def test_a_structural_edit_is_reverted(
         self,
         finalize_eval_args,
@@ -174,10 +100,19 @@ class TestFinalizeEvalJudgesTheModelEdit:
         ci_folders,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
-        assert not json.loads(Path(ci_folders.out, "result.json").read_text())["model_change"]["accepted"]
-        assert not Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()  # it wasn't there
+        assert not json.loads(
+            Path(
+                ci_folders.out,
+                "result.json",
+            ).read_text()
+        )["model_change"]["accepted"]
+        assert not Path(
+            ci_folders.ws,
+            ".clean-eval",
+            "risk-model.json",
+        ).exists()  # it wasn't there
 
-    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": FLAT_MODEL}], indirect=True)
+    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": lf("flat_model_edit")}], indirect=True)
     def test_an_edit_that_lowers_the_auc_is_reverted(
         self,
         finalize_eval_args,
@@ -185,12 +120,17 @@ class TestFinalizeEvalJudgesTheModelEdit:
         ci_folders,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
-        model_change = json.loads(Path(ci_folders.out, "result.json").read_text())["model_change"]
+        model_change = json.loads(
+            Path(
+                ci_folders.out,
+                "result.json",
+            ).read_text()
+        )["model_change"]
         assert not model_change["accepted"]
         assert "below" in model_change["reason"]
 
-    @pytest.mark.parametrize("eval_history", [(3, 10)], indirect=True)
-    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": VALID_MODEL}], indirect=True)
+    @pytest.mark.parametrize("eval_history_prs", [(3, 10)], indirect=True)
+    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": lf("valid_model_edit")}], indirect=True)
     def test_an_edit_on_a_small_sample_is_rejected(
         self,
         finalize_eval_args,
@@ -198,11 +138,20 @@ class TestFinalizeEvalJudgesTheModelEdit:
         ci_folders,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
-        model_change = json.loads(Path(ci_folders.out, "result.json").read_text())["model_change"]
+        model_change = json.loads(
+            Path(
+                ci_folders.out,
+                "result.json",
+            ).read_text()
+        )["model_change"]
         assert "sample too small" in model_change["reason"]
-        assert not Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()
+        assert not Path(
+            ci_folders.ws,
+            ".clean-eval",
+            "risk-model.json",
+        ).exists()
 
-    @pytest.mark.parametrize("eval_history", [(0, 30)], indirect=True)
+    @pytest.mark.parametrize("eval_history_prs", [(0, 30)], indirect=True)
     @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": {"unrated_band": "Low"}}], indirect=True)
     def test_an_edit_with_an_undefined_auc_is_rejected(
         self,
@@ -211,10 +160,19 @@ class TestFinalizeEvalJudgesTheModelEdit:
         ci_folders,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
-        assert not json.loads(Path(ci_folders.out, "result.json").read_text())["model_change"]["accepted"]
-        assert not Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()
+        assert not json.loads(
+            Path(
+                ci_folders.out,
+                "result.json",
+            ).read_text()
+        )["model_change"]["accepted"]
+        assert not Path(
+            ci_folders.ws,
+            ".clean-eval",
+            "risk-model.json",
+        ).exists()
 
-    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": VALID_MODEL}], indirect=True)
+    @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": lf("valid_model_edit")}], indirect=True)
     @pytest.mark.parametrize("finalize_eval_args", [[]], indirect=True)
     def test_without_apply_an_edit_is_rejected(
         self,
@@ -223,33 +181,54 @@ class TestFinalizeEvalJudgesTheModelEdit:
         ci_folders,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
-        assert not Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()
-        model_change = json.loads(Path(ci_folders.out, "result.json").read_text())["model_change"]
+        assert not Path(
+            ci_folders.ws,
+            ".clean-eval",
+            "risk-model.json",
+        ).exists()
+        model_change = json.loads(
+            Path(
+                ci_folders.out,
+                "result.json",
+            ).read_text()
+        )["model_change"]
         assert model_change == {"accepted": False, "reason": "apply=false"}
 
-    @pytest.mark.parametrize("tuning", [{"risk-model.json": EARLIER_MODEL}], indirect=True)
+    @pytest.mark.parametrize("tuning", [{"risk-model.json": lf("earlier_model")}], indirect=True)
     @pytest.mark.parametrize("tuning_edits", [{"risk-model.json": None}], indirect=True)
     def test_removing_the_model_is_judged_like_an_edit(
         self,
         finalize_eval_args,
         cli_runner,
         ci_folders,
+        earlier_model,
     ):
         assert (
             cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
         )  # back to the defaults would also change `depth`: not allowed
-        assert not json.loads(Path(ci_folders.out, "result.json").read_text())["model_change"]["accepted"]
-        model = Path(ci_folders.ws, ".clean-eval", "risk-model.json")
-        assert json.loads(model.read_text()) == EARLIER_MODEL
+        assert not json.loads(
+            Path(
+                ci_folders.out,
+                "result.json",
+            ).read_text()
+        )["model_change"]["accepted"]
+        model = Path(
+            ci_folders.ws,
+            ".clean-eval",
+            "risk-model.json",
+        )
+        assert json.loads(model.read_text()) == earlier_model
 
 
 class TestFinalizeEvalJudgesTheRulesEdit:
     """`finalize --skill eval` keeps the agent's edit of .clean-eval/review-rules.md when its table is valid; removing
     the file, or a table that isn't, is reverted."""
 
-    @pytest.mark.parametrize("tuning", [{"review-rules.md": RULES}], indirect=True)
+    @pytest.mark.parametrize("tuning", [{"review-rules.md": lf("review_rules")}], indirect=True)
     @pytest.mark.parametrize(
-        "tuning_edits", [{"review-rules.md": RULES + "| Q-05 | major | High | new rule |\n"}], indirect=True
+        "tuning_edits",
+        [{"review-rules.md": lfc(lambda rules: rules + "| Q-05 | major | High | new rule |\n", lf("review_rules"))}],
+        indirect=True,
     )
     def test_a_valid_edit_is_kept(
         self,
@@ -258,26 +237,53 @@ class TestFinalizeEvalJudgesTheRulesEdit:
         ci_folders,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
-        assert json.loads(Path(ci_folders.out, "result.json").read_text())["rules_change"] == {"accepted": True}
-        assert "Q-05" in Path(ci_folders.ws, ".clean-eval", "review-rules.md").read_text()
+        assert json.loads(
+            Path(
+                ci_folders.out,
+                "result.json",
+            ).read_text()
+        )["rules_change"] == {"accepted": True}
+        assert (
+            "Q-05"
+            in Path(
+                ci_folders.ws,
+                ".clean-eval",
+                "review-rules.md",
+            ).read_text()
+        )
 
-    @pytest.mark.parametrize("tuning", [{"review-rules.md": RULES}], indirect=True)
+    @pytest.mark.parametrize("tuning", [{"review-rules.md": lf("review_rules")}], indirect=True)
     @pytest.mark.parametrize("tuning_edits", [{"review-rules.md": None}], indirect=True)
     def test_removing_the_rules_is_reverted(
         self,
         finalize_eval_args,
         cli_runner,
         ci_folders,
+        review_rules,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
-        assert json.loads(Path(ci_folders.out, "result.json").read_text())["rules_change"] == {
+        assert json.loads(
+            Path(
+                ci_folders.out,
+                "result.json",
+            ).read_text()
+        )["rules_change"] == {
             "accepted": False,
             "reason": "review-rules.md may not be removed",
         }
-        assert Path(ci_folders.ws, ".clean-eval", "review-rules.md").read_text() == RULES
+        assert (
+            Path(
+                ci_folders.ws,
+                ".clean-eval",
+                "review-rules.md",
+            ).read_text()
+            == review_rules
+        )
 
     @pytest.mark.parametrize(
-        "tuning_edits", [{"review-rules.md": RULES + "| CA-01 | major | Low | duplicate |\n"}], indirect=True
+        "tuning_edits",
+        [{"review-rules.md": lfc(lambda rules: rules + "| CA-01 | major | Low | duplicate |\n", lf("review_rules"))}],
+        indirect=True,
     )
     def test_a_bad_edit_is_reverted(
         self,
@@ -286,7 +292,11 @@ class TestFinalizeEvalJudgesTheRulesEdit:
         ci_folders,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
-        assert not Path(ci_folders.ws, ".clean-eval", "review-rules.md").exists()  # it wasn't there
+        assert not Path(
+            ci_folders.ws,
+            ".clean-eval",
+            "review-rules.md",
+        ).exists()  # it wasn't there
 
 
 class TestFinalizeEvalRestoresTheOtherFiles:
@@ -306,18 +316,31 @@ class TestFinalizeEvalRestoresTheOtherFiles:
         ci_folders,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 0
-        tuning_dir = Path(ci_folders.ws, ".clean-eval")
+        tuning_dir = Path(
+            ci_folders.ws,
+            ".clean-eval",
+        )
         assert (tuning_dir / "notes.md").read_text() == "original"
         assert not (tuning_dir / "hooks.sh").exists()
         assert (tuning_dir / "sub" / "keep.txt").read_text() == "k"
-        assert json.loads(Path(ci_folders.out, "result.json").read_text())["other_files_reverted"] == [
+        assert json.loads(
+            Path(
+                ci_folders.out,
+                "result.json",
+            ).read_text()
+        )["other_files_reverted"] == [
             "hooks.sh",
             "notes.md",
-            str(Path("sub", "keep.txt")),
+            str(
+                Path(
+                    "sub",
+                    "keep.txt",
+                )
+            ),
         ]
 
 
-@pytest.mark.parametrize("tuning_edits", [{"risk-model.json": VALID_MODEL}], indirect=True)
+@pytest.mark.parametrize("tuning_edits", [{"risk-model.json": lf("valid_model_edit")}], indirect=True)
 class TestFinalizeEvalFailsClosed:
     """When the agent's output or the history can't be trusted, `finalize --skill eval` exits 2 and reverts every edit,
     even one that would pass."""
@@ -331,8 +354,15 @@ class TestFinalizeEvalFailsClosed:
     ):
         result = cli_runner.invoke(cli.clean_eval, finalize_eval_args)
         assert result.exit_code == 2
-        assert not Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()
-        assert not Path(ci_folders.out, "result.json").exists()
+        assert not Path(
+            ci_folders.ws,
+            ".clean-eval",
+            "risk-model.json",
+        ).exists()
+        assert not Path(
+            ci_folders.out,
+            "result.json",
+        ).exists()
         assert "::error::clean-eval: invalid agent output" in result.stderr
 
     @pytest.mark.parametrize("context_files", [{"eval-history.json": "{broken"}], indirect=True)
@@ -343,15 +373,28 @@ class TestFinalizeEvalFailsClosed:
         ci_folders,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_eval_args).exit_code == 2
-        assert not Path(ci_folders.ws, ".clean-eval", "risk-model.json").exists()
+        assert not Path(
+            ci_folders.ws,
+            ".clean-eval",
+            "risk-model.json",
+        ).exists()
 
 
 class TestFinalizeReview:
     """`finalize --skill pr-review` derives the verdict and the step outputs from the agent's findings and the rules,
     and sanitizes the agent's report; an output that doesn't validate writes nothing."""
 
-    @pytest.mark.parametrize(
-        "agent_files", [{"result.json": {"findings": [UNDERRATED_BLOCKER]}, "report.md": AGENT_REPORT}], indirect=True
+    @pytest.mark.parametrize(  # CA-01 at a lower severity than its rule's
+        "agent_files",
+        [
+            {
+                "result.json": {
+                    "findings": [lfc(lambda blocker: {**blocker, "severity": "minor"}, lf("blocker_finding"))]
+                },
+                "report.md": lf("unsanitized_report"),
+            }
+        ],
+        indirect=True,
     )
     def test_outputs_are_derived_and_the_report_sanitized(
         self,
@@ -361,16 +404,29 @@ class TestFinalizeReview:
         ci_folders,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_review_args).exit_code == 0
-        assert Path(ci_folders.gh_output).read_text().splitlines() == [
+        assert Path(
+            ci_folders.gh_output,
+        ).read_text().splitlines() == [
             "verdict=request_changes",  # CA-01 is a blocker, whatever severity the agent gave it
             "max-tier=%s" % risk_report.max_tier,
             "max-score=%d" % risk_report.max_score,
             "blockers=1",
         ]
-        report = Path(ci_folders.out, "report.md").read_text()
+        report = Path(
+            ci_folders.out,
+            "report.md",
+        ).read_text()
         assert "clean-eval:" not in report
         assert "ghp_" not in report
-        assert json.loads(Path(ci_folders.out, "result.json").read_text())["redactions"] == 1
+        assert (
+            json.loads(
+                Path(
+                    ci_folders.out,
+                    "result.json",
+                ).read_text()
+            )["redactions"]
+            == 1
+        )
 
     @pytest.mark.parametrize("agent_files", [{"result.json": "[]"}], indirect=True)
     def test_invalid_output_writes_nothing(
@@ -380,11 +436,16 @@ class TestFinalizeReview:
         ci_folders,
     ):
         assert cli_runner.invoke(cli.clean_eval, finalize_review_args).exit_code == 2
-        assert not Path(ci_folders.out, "result.json").exists()
-        assert not Path(ci_folders.gh_output).exists()
+        assert not Path(
+            ci_folders.out,
+            "result.json",
+        ).exists()
+        assert not Path(
+            ci_folders.gh_output,
+        ).exists()
 
 
-@pytest.mark.parametrize("agent_review", [{"findings": [BLOCKER, UNPLACED]}], indirect=True)
+@pytest.mark.parametrize("agent_review", [{"findings": [lf("blocker_finding"), lf("unplaced_finding")]}], indirect=True)
 class TestPost:
     """`post` puts the validated review up as one review of the PR's head commit, falling back to fewer inline comments
     when the host rejects them, then dismisses this reviewer's stale change requests; it fails only when no attempt
@@ -395,10 +456,15 @@ class TestPost:
         [
             {
                 "post_review.side_effect": [
-                    RemoteError("gh api -X failed: HTTP 422: line must be part of the diff"),
-                    HostReview(id=50, user=BOT),
+                    RemoteError(
+                        "gh api -X failed: HTTP 422: line must be part of the diff",
+                    ),
+                    HostReview(
+                        id=50,
+                        user="github-actions[bot]",
+                    ),
                 ],
-                "reviews.return_value": REVIEWS,
+                "reviews.return_value": lf("reviews_once_posted"),
             }
         ],
         indirect=True,
@@ -424,7 +490,15 @@ class TestPost:
         )
 
     @pytest.mark.parametrize(
-        "host", [{"post_review.side_effect": RemoteError("gh api -X failed: HTTP 403")}], indirect=True
+        "host",
+        [
+            {
+                "post_review.side_effect": RemoteError(
+                    "gh api -X failed: HTTP 403",
+                )
+            }
+        ],
+        indirect=True,
     )
     def test_all_attempts_fail(
         self,
@@ -454,12 +528,30 @@ class TestPost:
 
 @pytest.mark.parametrize(
     "agent_review",
-    [{"findings": [{**BLOCKER, "line": 40}, UNPLACED, {**BLOCKER, "line": 2, "summary": "on diff"}]}],
+    [
+        {
+            "findings": [
+                lfc(lambda blocker: {**blocker, "line": 40}, lf("blocker_finding")),
+                lf("unplaced_finding"),
+                lfc(lambda blocker: {**blocker, "line": 2, "summary": "on diff"}, lf("blocker_finding")),
+            ]
+        }
+    ],
     indirect=True,
 )
-@pytest.mark.parametrize("context_files", [DIFF], indirect=True)
+@pytest.mark.parametrize("context_files", [lf("prepared_diff")], indirect=True)
 @pytest.mark.parametrize(
-    "host", [{"post_review.return_value": HostReview(id=5, user="x[bot]"), "reviews.return_value": []}], indirect=True
+    "host",
+    [
+        {
+            "post_review.return_value": HostReview(
+                id=5,
+                user="x[bot]",
+            ),
+            "reviews.return_value": [],
+        }
+    ],
+    indirect=True,
 )
 class TestPostOnTheDiff:
     """With the diff in the context, `post` attaches inline only the findings on lines of the diff, which GitHub
@@ -487,10 +579,11 @@ class TestCommands:
         self,
         run_cli,
         tmp_path,
+        cli_commands,
     ):
         usage = run_cli("--help", cwd=tmp_path).stdout
         listed = [line.split()[0] for line in usage.split("Commands:\n", 1)[1].splitlines() if line.strip()]
-        assert listed == COMMANDS
+        assert listed == cli_commands
         assert run_cli("-h", cwd=tmp_path).stdout == usage
 
     @pytest.mark.parametrize("gone", ["render", "diagram"])
@@ -503,7 +596,7 @@ class TestCommands:
         assert run_cli(gone, "x", cwd=tmp_path).returncode != 0
 
 
-@pytest.mark.parametrize("history", [BILLING], indirect=True)
+@pytest.mark.parametrize("history", [lf("billing_history")], indirect=True)
 class TestRate:
     """`rate` rates the working tree, or a past revision read from git objects, into data.json; `report` summarizes
     it."""
@@ -534,7 +627,7 @@ class TestRate:
         assert json.loads((tmp_path / "data.json").read_text())["ref"] == shas[0]
 
 
-@pytest.mark.parametrize("history", [BILLING], indirect=True)
+@pytest.mark.parametrize("history", [lf("billing_history")], indirect=True)
 class TestAssess:
     """`assess` rates the base of a change and gives the risk of each path it changes."""
 
@@ -555,7 +648,7 @@ class TestAssess:
         assert risk["max_band"] in ("Moderate", "High", "Critical")
 
 
-@pytest.mark.parametrize("history", [APP_WITH_README], indirect=True)
+@pytest.mark.parametrize("history", [lf("app_with_readme_history")], indirect=True)
 class TestReadme:
     """`readme` writes the heat map into the README's section and the diagram once, then leaves them alone while the
     ratings stay the same."""
@@ -571,16 +664,23 @@ class TestReadme:
         first = run_cli("readme", data, "--status-json", str(status), cwd=repo.path)
         assert first.returncode == 0, first.stderr
         assert json.loads(status.read_text())["readme_changed"]
-        text = Path(repo.path, "README.md").read_text()
+        text = Path(
+            repo.path,
+            "README.md",
+        ).read_text()
         assert text.startswith("# App\n\n## Risk Heat Map\n\n<!-- risk-heat-map:start -->")
         assert "](docs/risk-heatmap.svg)" in text
-        assert Path(repo.path, "docs", "risk-heatmap.svg").exists()
+        assert Path(
+            repo.path,
+            "docs",
+            "risk-heatmap.svg",
+        ).exists()
         again = run_cli("readme", data, "--status-json", str(status), cwd=repo.path)
         assert "unchanged" in again.stdout
         assert not json.loads(status.read_text())["readme_changed"]
 
 
-@pytest.mark.parametrize("history", [V1_POLICY], indirect=True)
+@pytest.mark.parametrize("history", [lf("v1_policy_history")], indirect=True)
 class TestAnInvalidPolicy:
     """A repository's risk-model.json that doesn't validate is reported, with a non-zero status, not raised."""
 
@@ -599,7 +699,7 @@ class TestAnInvalidPolicy:
 class TestHistoryCommand:
     """The eval skill runs `uv run ... python -I <checkout>/clean_eval history ...` from the repository it evaluates."""
 
-    @pytest.mark.parametrize("history", [FIXED_FEATURE], indirect=True)
+    @pytest.mark.parametrize("history", [lf("fixed_feature_history")], indirect=True)
     def test_replay_and_sensitivity_from_any_folder(
         self,
         repo,

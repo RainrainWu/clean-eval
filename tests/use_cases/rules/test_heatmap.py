@@ -4,11 +4,17 @@ reviewer's levels, and the README convention."""
 from collections import Counter
 
 import pytest
+from pytest_lazy_fixtures import (
+    lf,
+    lfc,
+)
 
-from clean_eval.domain.policy import ASPECTS, Policy
+from clean_eval.domain.policy import (
+    Aspect,
+    Policy,
+)
 from clean_eval.domain.rating import Facts
 from clean_eval.use_cases.rules.heatmap import (
-    MARKERS,
     SECTION_HEADING,
     apply_levels,
     band,
@@ -28,33 +34,6 @@ from clean_eval.use_cases.rules.heatmap import (
     unverified,
 )
 
-# Aspect scores with one outstanding aspect.
-BUSINESS_ONLY = {"biz": 95, "effects": 0, "entropy": 0, "unverified": 0}
-UNVERIFIED_ONLY = {"biz": 0, "effects": 0, "entropy": 0, "unverified": 100}
-# The bands, ascending: (name, lowest score, highest score).
-BAND_EDGES = [("Low", 0, 24), ("Moderate", 25, 49), ("High", 50, 74), ("Critical", 75, 100)]
-# A reviewer's levels, most severe first: (level, the score range of its band, the band).
-LEVEL_BANDS = [(0, (75, 100), "Critical"), (1, (50, 74), "High"), (2, (25, 49), "Moderate"), (3, (0, 24), "Low")]
-# Each aspect at each level, for the `heatmap` fixture's module "m": (judgement, score key, level, score range).
-EVERY_LEVEL = [
-    ({"modules": {"m": {name: {"level": level, "reason": "r"}}}}, key, level, score_range)
-    for name, key, *_ in ASPECTS
-    for level, score_range, _ in LEVEL_BANDS
-]
-EVERY_LEVEL_IDS = ["%s at level %d" % (name, level) for name, *_ in ASPECTS for level, *_ in LEVEL_BANDS]
-# Levels that aren't one, each given to module "m" next to a valid level for a module the heat map doesn't have.
-INVALID_LEVELS = ["high", 4, -1, 1.5, True, None, [1], {"a": 1}]
-INVALID_LEVEL_JUDGEMENTS = [
-    {"modules": {"m": {"business": {"level": level}}, "nope": {"business": {"level": 0}}}} for level in INVALID_LEVELS
-]
-# The heat map's block as `readme` writes it, and READMEs to put it in.
-BLOCK = MARKERS[0] + "\n<!-- risk-heat-map:fingerprint=0123456789ab -->\nnew\n" + MARKERS[1] + "\n"
-README = "# Title\n\nIntro.\n"
-README_WITH_BLOCK = (
-    "# T\n" + SECTION_HEADING + "\n\n" + MARKERS[0] + "\nold table\n" + MARKERS[1] + "\n\n## Next\nkeep\n"
-)
-README_WITHOUT_MARKERS = "# T\n\n## Risk Heat Map\nstale table\n\n## Next\nkeep\n"
-
 
 class TestOverall:
     """The overall score: the geometric mean of impact and weakness and, by the peak share, the worst single aspect;
@@ -62,7 +41,7 @@ class TestOverall:
 
     @pytest.mark.parametrize(
         ("aspect_scores", "expected"),
-        [(BUSINESS_ONLY, 48), (UNVERIFIED_ONLY, 50)],
+        [(lf("business_only_scores"), 48), (lf("unverified_only_scores"), 50)],
         indirect=["aspect_scores"],
         ids=["business impact", "unverified"],
     )
@@ -73,7 +52,7 @@ class TestOverall:
     ):
         assert overall(aspect_scores) == expected
 
-    @pytest.mark.parametrize("aspect_scores", [BUSINESS_ONLY], indirect=True)
+    @pytest.mark.parametrize("aspect_scores", [lf("business_only_scores")], indirect=True)
     @pytest.mark.parametrize(
         ("peak_share", "expected"),
         [(1.0, 95), (0.0, 0)],
@@ -98,9 +77,9 @@ class TestOverall:
 class TestBands:
     """Scores map to bands, and a reviewer's levels to the score ranges of the bands, most severe first."""
 
-    @pytest.mark.parametrize(
+    @pytest.mark.parametrize(  # a reviewer's levels, most severe first: the score range of its band, and the band
         ("level", "score_range", "name"),
-        LEVEL_BANDS,
+        [(0, (75, 100), "Critical"), (1, (50, 74), "High"), (2, (25, 49), "Moderate"), (3, (0, 24), "Low")],
         ids=["level 0", "level 1", "level 2", "level 3"],
     )
     def test_a_level_takes_its_bands_range_and_the_static_score_places_inside_it(
@@ -113,9 +92,9 @@ class TestBands:
         assert (place_in_level(level, 0), place_in_level(level, 100)) == score_range
         assert band(place_in_level(level, 55)) == name
 
-    @pytest.mark.parametrize(
+    @pytest.mark.parametrize(  # the bands, ascending: their lowest and highest scores
         ("name", "floor", "ceiling"),
-        BAND_EDGES,
+        [("Low", 0, 24), ("Moderate", 25, 49), ("High", 50, 74), ("Critical", 75, 100)],
         ids=["Low", "Moderate", "High", "Critical"],
     )
     def test_a_band_runs_from_its_floor_to_its_ceiling(
@@ -176,7 +155,9 @@ class TestEffects:
         busy, evidence = effects(
             facts.model_copy(
                 update={
-                    "effect_counts": Counter(db_write=10),
+                    "effect_counts": Counter(
+                        db_write=10,
+                    ),
                     "effect_examples": {"db_write": "a.py:1"},
                     "migrations": 3,
                     "fan_in": 4,
@@ -295,11 +276,15 @@ class TestApplyLevels:
     """A reviewer's levels: each fixes an aspect's band, and the static score places the module inside it. A level
     that isn't one, a malformed judgement or a level for an aspect that doesn't apply changes nothing."""
 
-    @pytest.mark.parametrize(
+    @pytest.mark.parametrize(  # each aspect at each level, for the `heatmap` fixture's module "m"
         ("judgement", "key", "level", "score_range"),
-        EVERY_LEVEL,
+        [
+            ({"modules": {"m": {aspect.value: {"level": level, "reason": "r"}}}}, aspect.score_key, level, score_range)
+            for aspect in Aspect
+            for level, score_range in [(0, (75, 100)), (1, (50, 74)), (2, (25, 49)), (3, (0, 24))]
+        ],
         indirect=["judgement"],
-        ids=EVERY_LEVEL_IDS,
+        ids=["%s at level %d" % (aspect, level) for aspect in Aspect for level in range(4)],
     )
     def test_every_aspect_level_sets_its_band(
         self,
@@ -327,11 +312,16 @@ class TestApplyLevels:
         levelled = apply_levels(heatmap, judgement).modules[0]
         assert (levelled.scores.biz, band(levelled.scores.biz)) == (60, "High")
 
+    # levels that aren't one, each given to module "m" next to a valid level for a module the heat map doesn't have
     @pytest.mark.parametrize(
         "judgement",
-        INVALID_LEVEL_JUDGEMENTS,
+        [
+            pytest.param(
+                {"modules": {"m": {"business": {"level": level}}, "nope": {"business": {"level": 0}}}}, id=repr(level)
+            )
+            for level in ["high", 4, -1, 1.5, True, None, [1], {"a": 1}]
+        ],
         indirect=True,
-        ids=[repr(level) for level in INVALID_LEVELS],
     )
     def test_an_invalid_level_is_ignored(
         self,
@@ -382,15 +372,19 @@ class TestMergeReadme:
 
     def test_a_readme_without_the_section_gets_it_added(
         self,
+        readme_without_the_section,
+        readme_block,
     ):
-        text, action = merge_readme(README, BLOCK)
+        text, action = merge_readme(readme_without_the_section, readme_block)
         assert action == "ADD"
-        assert text.startswith(README + "\n" + SECTION_HEADING + "\n\n")
+        assert text.startswith(readme_without_the_section + "\n" + SECTION_HEADING + "\n\n")
 
     def test_the_block_between_the_markers_is_replaced(
         self,
+        readme_with_the_block,
+        readme_block,
     ):
-        text, action = merge_readme(README_WITH_BLOCK, BLOCK)
+        text, action = merge_readme(readme_with_the_block, readme_block)
         assert action == "UPDATE"
         assert "new" in text
         assert "old table" not in text
@@ -398,13 +392,16 @@ class TestMergeReadme:
 
     def test_without_a_readme_the_section_is_all_there_is(
         self,
+        readme_block,
     ):
-        assert merge_readme(None, BLOCK)[0] == SECTION_HEADING + "\n\n" + BLOCK
+        assert merge_readme(None, readme_block)[0] == SECTION_HEADING + "\n\n" + readme_block
 
     def test_a_heading_without_markers_gets_its_body_replaced(
         self,
+        readme_without_markers,
+        readme_block,
     ):
-        text, action = merge_readme(README_WITHOUT_MARKERS, BLOCK)
+        text, action = merge_readme(readme_without_markers, readme_block)
         assert action == "UPDATE"
         assert "stale" not in text
         assert text.count(SECTION_HEADING) == 1
@@ -431,7 +428,7 @@ class TestFingerprint:
 
     @pytest.mark.parametrize(
         ("readme", "expected"),
-        [("x\n" + BLOCK, "0123456789ab"), ("no block", None)],
+        [(lfc(lambda block: "x\n" + block, lf("readme_block")), "0123456789ab"), ("no block", None)],
         ids=["a block", "no block"],
     )
     def test_the_readme_block_gives_its_fingerprint_back(

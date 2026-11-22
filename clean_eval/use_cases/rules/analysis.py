@@ -7,11 +7,21 @@ import functools
 import re
 import sys
 from collections import defaultdict
-from collections.abc import Container, Iterable
+from collections.abc import (
+    Container,
+    Iterable,
+)
 from typing import Optional
 
 from clean_eval.domain.policy import Policy
-from clean_eval.domain.rating import FileSignals, FileSyntax, Graph, PyStats, SourceFile
+from clean_eval.domain.rating import (
+    FileSignals,
+    FileSyntax,
+    Graph,
+    PyStats,
+    Scale,
+    SourceFile,
+)
 
 # Rules that classify paths and names: tests, test scales, manifests, tooling, core-flow names, ignored paths.
 
@@ -33,15 +43,16 @@ def is_test(
 
 def classify_scale(
     path: str,
-) -> str:
+) -> Scale:
+    """How widely the tests of the test file at `path` reach, read from its path."""
     p = path.lower()
     if "e2e" in p or "end_to_end" in p:
-        return "e2e"
+        return Scale.E2E
     if "integration" in p or "live" in p or "smoke" in p:
-        return "integration"
+        return Scale.INTEGRATION
     if "unit" in p or "/tests/" in "/" + p or "/test/" in "/" + p:
-        return "unit"
-    return "other"
+        return Scale.UNIT
+    return Scale.OTHER
 
 
 def not_applicable(
@@ -246,35 +257,37 @@ def test_files_to_modules(
 
 TODO = re.compile(r"\b(TODO|FIXME|HACK|XXX)\b")
 # kind -> (call pattern, pattern the file must also match). The points per kind are business policy (Policy.effect_points).
-WRITE_CALLS = {
-    "db_write": (
-        re.compile(
-            r"\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+(TABLE|COLUMN|INDEX)|ALTER\s+TABLE|TRUNCATE)\b"
-            r"|\bsession\.(add|delete|merge)\(|\.commit\(\)|bulk_insert",
-            re.I,
+WRITE_CALLS = frozendict(
+    {
+        "db_write": (
+            re.compile(
+                r"\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+(TABLE|COLUMN|INDEX)|ALTER\s+TABLE|TRUNCATE)\b"
+                r"|\bsession\.(add|delete|merge)\(|\.commit\(\)|bulk_insert",
+                re.I,
+            ),
+            None,
         ),
-        None,
-    ),
-    "aws_write": (
-        re.compile(
-            r"\.(put_object|delete_object|delete_objects|put_item|update_item|delete_item|send_message"
-            r"|send_message_batch|publish|start_execution|invoke|put_parameter|delete_parameter|put_record"
-            r"|terminate_\w+|create_\w+|delete_\w+|update_\w+)\("
+        "aws_write": (
+            re.compile(
+                r"\.(put_object|delete_object|delete_objects|put_item|update_item|delete_item|send_message"
+                r"|send_message_batch|publish|start_execution|invoke|put_parameter|delete_parameter|put_record"
+                r"|terminate_\w+|create_\w+|delete_\w+|update_\w+)\("
+            ),
+            re.compile(r"boto3|botocore"),
         ),
-        re.compile(r"boto3|botocore"),
-    ),
-    "es_write": (
-        re.compile(r"\.(bulk|index|delete_by_query|update_by_query|delete)\("),
-        re.compile(r"elasticsearch|opensearch", re.I),
-    ),
-    "http_write": (
-        re.compile(r"\b(requests|httpx|client|session)\.(post|put|patch|delete)\("),
-        re.compile(r"requests|httpx|aiohttp"),
-    ),
-    "fs_destructive": (re.compile(r"\b(os\.remove|os\.unlink|shutil\.rmtree|rmtree)\(|\.unlink\("), None),
-    "fs_write": (re.compile(r"open\([^)]*['\"][wa]b?['\"]|\.write_text\(|\.write_bytes\("), None),
-    "subprocess": (re.compile(r"\b(subprocess\.(run|Popen|call|check_output)|os\.system)\("), None),
-}
+        "es_write": (
+            re.compile(r"\.(bulk|index|delete_by_query|update_by_query|delete)\("),
+            re.compile(r"elasticsearch|opensearch", re.I),
+        ),
+        "http_write": (
+            re.compile(r"\b(requests|httpx|client|session)\.(post|put|patch|delete)\("),
+            re.compile(r"requests|httpx|aiohttp"),
+        ),
+        "fs_destructive": (re.compile(r"\b(os\.remove|os\.unlink|shutil\.rmtree|rmtree)\(|\.unlink\("), None),
+        "fs_write": (re.compile(r"open\([^)]*['\"][wa]b?['\"]|\.write_text\(|\.write_bytes\("), None),
+        "subprocess": (re.compile(r"\b(subprocess\.(run|Popen|call|check_output)|os\.system)\("), None),
+    }
+)
 
 
 def python_stats(
@@ -348,6 +361,23 @@ def file_signals(
 STDLIB = frozenset(sys.stdlib_module_names)
 
 
+def qualified_definitions(
+    node: ast.AST,
+    prefix: str = "",
+) -> list[str]:
+    """The qualified names of the functions and methods under `node`, in source order: `Class.method`, `outer.inner`."""
+    found = []
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            found.append(prefix + child.name)
+            found += qualified_definitions(child, prefix + child.name + ".")
+        elif isinstance(child, ast.ClassDef):
+            found += qualified_definitions(child, prefix + child.name + ".")
+        else:
+            found += qualified_definitions(child, prefix)
+    return found
+
+
 def parse_syntax(
     text: str,
 ) -> FileSyntax:
@@ -356,22 +386,7 @@ def parse_syntax(
         tree = ast.parse(text)
     except SyntaxError, ValueError, RecursionError:
         return FileSyntax()
-    defs, imports, refs = [], [], set()
-
-    def visit(
-        node: ast.AST,
-        prefix: str,
-    ) -> None:
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                defs.append(prefix + child.name)
-                visit(child, prefix + child.name + ".")
-            elif isinstance(child, ast.ClassDef):
-                visit(child, prefix + child.name + ".")
-            else:
-                visit(child, prefix)
-
-    visit(tree, "")
+    defs, imports, refs = qualified_definitions(tree), [], set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
@@ -386,7 +401,11 @@ def parse_syntax(
             refs.add(node.id)
         elif isinstance(node, ast.Attribute):
             refs.add(node.attr)
-    return FileSyntax(defs=tuple(defs), imports=tuple(imports), refs=frozenset(refs))
+    return FileSyntax(
+        defs=tuple(defs),
+        imports=tuple(imports),
+        refs=frozenset(refs),
+    )
 
 
 # Where an import name can come from: (dotted name -> path, dotted suffix -> paths).
@@ -438,6 +457,19 @@ def is_import_root(
     return root.count("/") == 0 or folder == root or folder.startswith(root + "/")
 
 
+def shared_segments(
+    first: str,
+    second: str,
+) -> int:
+    """How many leading path segments two repository paths share."""
+    count = 0
+    for mine, theirs in zip(first.split("/"), second.split("/")):
+        if mine != theirs:
+            break
+        count += 1
+    return count
+
+
 def lookup(
     index: ModuleIndex,
     dotted: str,
@@ -449,19 +481,7 @@ def lookup(
     cands = [c for c in suffix.get(dotted, ()) if is_import_root(c, dotted, importer)]
     if not cands:
         return None
-    imp = importer.split("/")
-
-    def shared(
-        candidate: str,
-    ) -> int:
-        n = 0
-        for a, b in zip(imp, candidate.split("/")):
-            if a != b:
-                break
-            n += 1
-        return n
-
-    return max(cands, key=lambda candidate: (shared(candidate), -len(candidate)))
+    return max(cands, key=lambda candidate: (shared_segments(importer, candidate), -len(candidate)))
 
 
 def resolve(
@@ -505,6 +525,18 @@ def resolve(
     return out
 
 
+def cached_syntax(
+    source_file: SourceFile,
+    cache: dict[str, FileSyntax],
+) -> FileSyntax:
+    """The FileSyntax of `source_file`: from `cache` ({content id: FileSyntax}) when it holds it, else parsed and kept
+    there."""
+    key = source_file.blob or source_file.text
+    if key not in cache:
+        cache[key] = parse_syntax(source_file.text)
+    return cache[key]
+
+
 def builtin_graph(
     files: list[SourceFile],
     cache: Optional[dict[str, FileSyntax]] = None,
@@ -512,17 +544,8 @@ def builtin_graph(
     """The Graph of the Python files: imports as links, functions as nodes, and the test files that use them.
     `cache` ({content id: FileSyntax}, e.g. a RatingCache's) is shared across revisions."""
     cache = {} if cache is None else cache
-
-    def syntax_of(
-        source_file: SourceFile,
-    ) -> FileSyntax:
-        key = source_file.blob or source_file.text
-        if key not in cache:
-            cache[key] = parse_syntax(source_file.text)
-        return cache[key]
-
     py = [f for f in files if f.path.endswith(".py")]
-    syntax = {f.path: syntax_of(f) for f in py}
+    syntax = {f.path: cached_syntax(f, cache) for f in py}
     index = module_index(syntax)
     nodes, links, tested = {}, defaultdict(set), defaultdict(set)
     for f in py:
@@ -542,4 +565,9 @@ def builtin_graph(
                     tested["%s::%s" % (tgt, qual)].add(t.path)
     links = {k: v for k, v in links.items() if v}
     stats = {"source": "built-in ast", "nodes": len(nodes), "edges": sum(len(v) for v in links.values())}
-    return Graph(nodes=nodes, links=links, tested=dict(tested), stats=stats)
+    return Graph(
+        nodes=nodes,
+        links=links,
+        tested=dict(tested),
+        stats=stats,
+    )

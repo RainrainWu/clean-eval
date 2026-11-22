@@ -3,23 +3,13 @@ records of a change's risk, and a reviewer's judgement, whose levels that don't 
 
 import pytest
 from pydantic import ValidationError
+from pytest_lazy_fixtures import lf
 
-from clean_eval.domain.rating import Facts, ModuleRecord, Scores
-
-# A reviewer's judgement: one valid level, among an unknown level, an unknown aspect, a level that isn't an int, a
-# module that isn't an object and a module name that isn't a string.
-UNTIDY_JUDGEMENT = {
-    "modules": {
-        "a": {
-            "business": {"level": 1, "reason": "core path " * 50},
-            "effects": {"level": 9},
-            "nope": {"level": 0},
-        },
-        "b": {"entropy": {"level": True}},
-        "c": "x",
-        7: {"business": {"level": 0}},
-    }
-}
+from clean_eval.domain.rating import (
+    Facts,
+    ModuleRecord,
+    Scores,
+)
 
 
 class TestScores:
@@ -115,7 +105,7 @@ class TestModuleRecord:
 class TestJudgement:
     """A reviewer's judgement is untrusted: an entry that doesn't validate is dropped rather than failing it all."""
 
-    @pytest.mark.parametrize("judgement", [UNTIDY_JUDGEMENT], indirect=True, ids=["untidy"])
+    @pytest.mark.parametrize("judgement", [lf("untidy_judgement")], indirect=True, ids=["untidy"])
     def test_invalid_entries_are_dropped_not_fatal(
         self,
         judgement,

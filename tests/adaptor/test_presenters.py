@@ -2,17 +2,14 @@
 summary."""
 
 import pytest
+from pytest_lazy_fixtures import lf
 
-from clean_eval.adaptor.presenters import MarkdownReportPresenter, SvgDiagramPresenter, squarify
+from clean_eval.adaptor.presenters import (
+    MarkdownReportPresenter,
+    SvgDiagramPresenter,
+    squarify,
+)
 from clean_eval.use_cases.rules.heatmap import MARKERS
-
-# The `ratings` of a heat map with three kinds of module: a risky one, one whose name must be escaped, and one whose
-# Unverified aspect is N/A.
-MIXED = [
-    {"name": "src/api", "loc": 3000, "biz": 90, "effects": 80, "entropy": 30, "unverified": 70},
-    {"name": "src/<x>&y|z", "loc": 500, "biz": 10, "effects": 5, "entropy": 5, "unverified": 20},
-    {"name": "terraform/lambda", "loc": 700, "biz": 20, "effects": 20, "entropy": 10, "unverified": None},
-]
 
 
 class TestSquarify:
@@ -26,7 +23,7 @@ class TestSquarify:
         assert sum(width * height for payload, left, top, width, height in rects) == pytest.approx(10000.0)
 
 
-@pytest.mark.parametrize("ratings", [MIXED], indirect=True, ids=["mixed"])
+@pytest.mark.parametrize("ratings", [lf("mixed_ratings")], indirect=True, ids=["mixed"])
 class TestSvgDiagramPresenter:
     """The README diagram: the SVG treemap, one tile per module with its name escaped, and the README block around
     it."""
@@ -59,7 +56,7 @@ class TestMarkdownReportPresenter:
     """The Markdown summary: the modules ranked by overall score with their names escaped, or a note that there are
     none."""
 
-    @pytest.mark.parametrize("ratings", [MIXED], indirect=True, ids=["mixed"])
+    @pytest.mark.parametrize("ratings", [lf("mixed_ratings")], indirect=True, ids=["mixed"])
     def test_modules_are_ranked_and_their_names_escaped(
         self,
         heatmap,

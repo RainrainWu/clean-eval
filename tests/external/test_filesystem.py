@@ -27,7 +27,10 @@ class TestFileSystemGateway:
         fs,
         root,
     ):
-        Path(root, "bad.txt").write_bytes(b"ok \xff\xfe")
+        Path(
+            root,
+            "bad.txt",
+        ).write_bytes(b"ok \xff\xfe")
         assert fs.read_text(fs.join(root, "bad.txt")) == "ok ��"
 
     def test_a_missing_file_cannot_be_read(
@@ -45,7 +48,13 @@ class TestFileSystemGateway:
     ):
         fs.append_text(fs.join(root, "out.txt"), "a=1\n")
         fs.append_text(fs.join(root, "out.txt"), "b=2\n")
-        assert Path(root, "out.txt").read_text() == "a=1\nb=2\n"
+        assert (
+            Path(
+                root,
+                "out.txt",
+            ).read_text()
+            == "a=1\nb=2\n"
+        )
 
     @pytest.mark.parametrize(
         ("files", "links"),
@@ -58,7 +67,15 @@ class TestFileSystemGateway:
         fs,
         root,
     ):
-        assert sorted(fs.files_under(fs.join(root, "t"))) == [str(Path("sub", "y.py")), "x.py"]  # not the linked one
+        assert sorted(fs.files_under(fs.join(root, "t"))) == [
+            str(
+                Path(
+                    "sub",
+                    "y.py",
+                )
+            ),
+            "x.py",
+        ]  # not the linked one
         assert fs.files_under(fs.join(root, "nope")) == []
         fs.copy_tree(fs.join(root, "t"), fs.join(root, "copy"))
         assert fs.is_link(fs.join(root, "copy", "linked"))  # links stay links
@@ -84,7 +101,10 @@ class TestFileSystemGateway:
         fs,
         root,
     ):
-        Path(root, "bin").mkdir()
+        Path(
+            root,
+            "bin",
+        ).mkdir()
         FakeBin.make_executable(fs.join(root, "bin", "tool"), "print(1)\n")
         assert fs.find_executable("tool", fs.join(root, "bin")) == fs.join(root, "bin", "tool")
         assert fs.find_executable("tool", fs.join(root, "empty")) is None

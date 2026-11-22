@@ -1,28 +1,49 @@
 """Fixtures for the domain's tests: the raw input of the models that validate what comes from outside (an agent's
-result.json, the code host's JSON, a stored result), one valid example per model.
+result.json, the code host's JSON, a stored result), one valid example per model; and the static assets the tests
+compare with or feed those models.
 
-Each fixture returns a fresh dict of a model's fields: a valid default, with the fields in `request.param` ({field:
-value}) replaced. A test sets them with `@pytest.mark.parametrize("<fixture>", [{...}], indirect=True)` and validates
-the dict itself (`PullRequest.model_validate(pull_request)`), so an input the model must refuse is refused inside the
-test's `pytest.raises`, not while the fixture is set up. The models every layer's tests build (`policy`, `facts`,
-`ratings`, `rating`, `heatmap`, `judgement`) are in tests/conftest.py."""
+Each model's fixture returns a fresh dict of the model's fields: a valid default, with the fields in `request.param`
+({field: value}) replaced. A test sets them with `@pytest.mark.parametrize("<fixture>", [{...}], indirect=True)` and
+validates the dict itself (`PullRequest.model_validate(pull_request)`), so an input the model must refuse is refused
+inside the test's `pytest.raises`, not while the fixture is set up.
+
+A static asset (the default policy, an untidy judgement, a finding, an accepted model change) takes no param: a test
+takes it as an argument, or a decorator names it with pytest-lazy-fixtures' `lf`, in another fixture's param
+(`{"findings": [lf("trusted_major")]}`). The models every layer's tests build (`policy`, `facts`, `ratings`, `rating`,
+`heatmap`, `judgement`) are in tests/conftest.py."""
 
 import copy
 from typing import Any
 
 import pytest
 
+from clean_eval.domain.evaluation import ModelChange
+from clean_eval.domain.policy import Policy
+
 # The fields of one valid example of each model, which `request.param` overrides.
 
 # domain/rating.py: a module's scores, and a module a change touched, rated at the change's base.
-SCORES: dict[str, Any] = {"biz": 40, "effects": 10, "entropy": 20, "unverified": 30, "overall": 40}
-MODULE_RECORD: dict[str, Any] = {"module": "m", "band": "Low", "score": 10, "rated": True}
-STORED_REVIEW: dict[str, Any] = {"max_tier": "High", "max_score": 52, "findings": []}
-REVIEW_RULE: dict[str, Any] = {"id": "CA-01", "severity": "blocker", "min_tier": "Low"}
+SCORES: frozendict[str, Any] = frozendict({"biz": 40, "effects": 10, "entropy": 20, "unverified": 30, "overall": 40})
+MODULE_RECORD: frozendict[str, Any] = frozendict({"module": "m", "band": "Low", "score": 10, "rated": True})
+STORED_REVIEW: frozendict[str, Any] = frozendict({"max_tier": "High", "max_score": 52, "findings": []})
+REVIEW_RULE: frozendict[str, Any] = frozendict({"id": "CA-01", "severity": "blocker", "min_tier": "Low"})
 # domain/evaluation.py: the period an eval looks back over, a merged PR, and an eval's outcome.
-PERIOD: dict[str, Any] = {"since": "2026-01-01", "until": "2026-01-31"}
-MERGED_PR: dict[str, Any] = {"sha": "a" * 40, "base": "b" * 40, "author": "a", "ts": 1, "subject": "s"}
-EVAL_RESULT: dict[str, Any] = {"since": "2026-01-01", "until": "2026-02-01", "prs": 30, "defective_prs": 6, "auc": 0.7}
+PERIOD: frozendict[str, Any] = frozendict({"since": "2026-01-01", "until": "2026-01-31"})
+MERGED_PR: frozendict[str, Any] = frozendict(
+    {"sha": "a" * 40, "base": "b" * 40, "author": "a", "ts": 1, "subject": "s"}
+)
+EVAL_RESULT: frozendict[str, Any] = frozendict(
+    {"since": "2026-01-01", "until": "2026-02-01", "prs": 30, "defective_prs": 6, "auc": 0.7}
+)
+
+
+# domain/policy.py
+
+
+@pytest.fixture
+def default_policy():
+    """The risk policy's defaults, Policy() without overrides: what an overridden `policy` is compared with."""
+    return Policy()
 
 
 # domain/rating.py
@@ -46,6 +67,25 @@ def module_record(
     return copy.deepcopy({**MODULE_RECORD, **getattr(request, "param", {})})
 
 
+@pytest.fixture
+def untidy_judgement():
+    """A reviewer's judgement as raw data (a `judgement` param): one valid level (module a's business, with a reason
+    longer than the 240 characters kept), among an unknown level, an unknown aspect, a level that isn't an int, a
+    module that isn't an object and a module name that isn't a string."""
+    return {
+        "modules": {
+            "a": {
+                "business": {"level": 1, "reason": "core path " * 50},
+                "effects": {"level": 9},
+                "nope": {"level": 0},
+            },
+            "b": {"entropy": {"level": True}},
+            "c": "x",
+            7: {"business": {"level": 0}},
+        }
+    }
+
+
 # domain/review.py
 
 
@@ -65,6 +105,18 @@ def review_rule(
     """One row of a rules table (ReviewRule's fields): CA-01, a blocker from the Low band up, with the fields in
     `request.param` replaced."""
     return copy.deepcopy({**REVIEW_RULE, **getattr(request, "param", {})})
+
+
+@pytest.fixture
+def trusted_blocker():
+    """A finding CI trusts (Finding's fields) of the blocker severity: rule CA-01."""
+    return {"rule": "CA-01", "severity": "blocker"}
+
+
+@pytest.fixture
+def trusted_major():
+    """A finding CI trusts (Finding's fields) of the major severity: rule Q-02."""
+    return {"rule": "Q-02", "severity": "major"}
 
 
 # domain/evaluation.py
@@ -95,3 +147,14 @@ def eval_result(
     """An EvalResult's fields: 2026-01-01 to 2026-02-01, 30 PRs of which 6 defective, AUC 0.7, with no change kept,
     with the fields in `request.param` replaced (`model_change`, `rules_change`: a model or a dict of its fields)."""
     return copy.deepcopy({**EVAL_RESULT, **getattr(request, "param", {})})
+
+
+@pytest.fixture
+def accepted_model_change():
+    """An edit of the risk model that the replay accepted (a ModelChange): of knob x, lifting the AUC from 0.6 to
+    0.7."""
+    return ModelChange(
+        changed_keys=["x"],
+        auc_before=0.6,
+        auc_after=0.7,
+    )

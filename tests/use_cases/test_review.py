@@ -4,51 +4,26 @@ the CI reviewer reads."""
 from unittest.mock import call
 
 import pytest
+from pytest_lazy_fixtures import lf
 
-from clean_eval.domain.errors import HeatmapError, RunFailed
+from clean_eval.domain.errors import (
+    HeatmapError,
+    RunFailed,
+)
 from clean_eval.domain.policy import Policy
-from clean_eval.domain.review import DiffIndex, RunFolders
-from clean_eval.use_cases.review import assess_change, policy_at, run_review_action, write_split_diff
-
-CORE = "def g(con):\n    con.execute('INSERT INTO t VALUES (1)')\n    con.commit()\n"
-TREE = {
-    "src/api/a.py": "a = 1\n" * 150,
-    "src/api/b.py": "b = 1\n" * 150,
-    "src/core/c.py": CORE,
-    "tests/test_a.py": "x = 1\n",
-}
-# A change of the core module and the README, on a base that holds TREE.
-CORE_CHANGE = [
-    {"subject": "base", "files": TREE},
-    {"subject": "change", "files": {"src/core/c.py": CORE + "# more\n", "README.md": "# r\n"}},
-]
-# A change that adds the first Python file.
-FIRST_PYTHON = [
-    {"subject": "base", "files": {"README.md": "# r\n"}},
-    {"subject": "change", "files": {"src/new.py": "x = 1\n"}},
-]
-# A change that edits one file, removes one and adds one with an awkward name.
-THREE_FILES = [
-    {"subject": "init", "files": {"src/a/old.py": "line\n" * 30, "src/a/keep.py": "k\n"}},
-    {
-        "subject": "change",
-        "files": {"src/a/keep.py": "k2\n", 'src/a/we"ird name.py': "w\n"},
-        "remove": ["src/a/old.py"],
-    },
-]
-CHANGED = ["src/a/keep.py", "src/a/old.py", 'src/a/we"ird name.py']
-# A rename, which `git diff` shows as one section for two paths, and the per-path diffs.
-RENAMED = "diff --git a/old.py b/new.py\nsimilarity index 100%\nrename from old.py\nrename to new.py\n"
-NEW_PATCH = "diff --git a/new.py b/new.py\n--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+x\n"
-OLD_PATCH = "diff --git a/old.py b/old.py\n--- a/old.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
-POLICY_FILE = ".clean-eval/risk-model.json"
-RUN_FOLDERS = RunFolders(workspace="/repo", out="/out", context="/out/context", agent="/out/agent")
+from clean_eval.domain.review import DiffIndex
+from clean_eval.use_cases.review import (
+    assess_change,
+    policy_at,
+    run_review_action,
+    write_split_diff,
+)
 
 
 class TestAssessChange:
     """A change's risk, from the heat map of its base."""
 
-    @pytest.mark.parametrize("history", [CORE_CHANGE], indirect=True)
+    @pytest.mark.parametrize("history", [lf("core_change")], indirect=True)
     def test_the_risk_comes_from_the_heat_map_of_the_base(
         self,
         git,
@@ -62,7 +37,7 @@ class TestAssessChange:
         assert risk.ignored == ["README.md"]
         git.diff_files.assert_called_once_with(shas[0], shas[1])
 
-    @pytest.mark.parametrize("history", [FIRST_PYTHON], indirect=True)
+    @pytest.mark.parametrize("history", [lf("first_python_change")], indirect=True)
     def test_a_base_without_python_rates_everything_unrated(
         self,
         git,
@@ -79,16 +54,19 @@ class TestAssessChange:
 class TestWriteSplitDiff:
     """The CI reviewer's diff: one patch per changed file, and an index of them."""
 
-    @pytest.mark.parametrize("history", [THREE_FILES], indirect=True)
+    @pytest.mark.parametrize("history", [lf("three_file_change")], indirect=True)
     def test_one_patch_per_changed_file_and_an_index(
         self,
         git,
         fs,
         memory_fs,
         shas,
+        three_changed_paths,
     ):
-        index = write_split_diff(git, fs, "/ctx", shas[0], shas[1], CHANGED, dict.fromkeys(CHANGED, "src/a"))
-        assert [e.file for e in index] == CHANGED
+        index = write_split_diff(
+            git, fs, "/ctx", shas[0], shas[1], three_changed_paths, dict.fromkeys(three_changed_paths, "src/a")
+        )
+        assert [e.file for e in index] == three_changed_paths
         for e in index:
             assert memory_fs.read_text("/ctx/" + e.patch).startswith("diff --git a/%s " % e.file), e
             assert (e.module, e.truncated) == ("src/a", False)
@@ -96,7 +74,7 @@ class TestWriteSplitDiff:
         assert counts == {"src/a/keep.py": (1, 1), "src/a/old.py": (0, 30), 'src/a/we"ird name.py': (1, 0)}
         assert DiffIndex.model_validate_json(memory_fs.read_text("/ctx/diff/index.json")).root == index
 
-    @pytest.mark.parametrize("git", [{"diff.side_effect": [RENAMED, NEW_PATCH, OLD_PATCH]}], indirect=True)
+    @pytest.mark.parametrize("git", [{"diff.side_effect": lf("rename_diffs")}], indirect=True)
     def test_a_diff_that_does_not_split_per_file_falls_back_to_one_diff_per_path(
         self,
         git,
@@ -125,7 +103,7 @@ class TestPolicyAt:
             [
                 {
                     "subject": "base",
-                    "files": {POLICY_FILE: '{"unrated_band": "High", "business_weights": {"dependents": 0.4}}'},
+                    "files": {lf("policy_file"): '{"unrated_band": "High", "business_weights": {"dependents": 0.4}}'},
                 }
             ]
         ],
@@ -135,17 +113,18 @@ class TestPolicyAt:
         self,
         git,
         shas,
+        policy_file,
     ):
         policy, source, raw, note = policy_at(git, shas[0])
         assert (policy.unrated_band, policy.business_weights["dependents"]) == ("High", 0.4)
-        assert (source, raw, note) == (POLICY_FILE + "@" + shas[0][:8], git.show(shas[0], POLICY_FILE), None)
+        assert (source, raw, note) == (policy_file + "@" + shas[0][:8], git.show(shas[0], policy_file), None)
 
     @pytest.mark.parametrize(
         "history",
         [
             [
                 {"subject": "base", "files": {"a.py": "x = 1\n"}},
-                {"subject": "weaken", "files": {POLICY_FILE: '{"unrated_band": "Low"}'}},
+                {"subject": "weaken", "files": {lf("policy_file"): '{"unrated_band": "Low"}'}},
             ]
         ],
         indirect=True,
@@ -157,7 +136,17 @@ class TestPolicyAt:
     ):
         assert policy_at(git, shas[0])[0] == Policy()
 
-    @pytest.mark.parametrize("git", [{"show.side_effect": HeatmapError("git show failed")}], indirect=True)
+    @pytest.mark.parametrize(
+        "git",
+        [
+            {
+                "show.side_effect": HeatmapError(
+                    "git show failed",
+                )
+            }
+        ],
+        indirect=True,
+    )
     def test_a_git_failure_is_not_mistaken_for_no_policy(
         self,
         git,
@@ -168,9 +157,9 @@ class TestPolicyAt:
     @pytest.mark.parametrize(
         ("history", "expect"),
         [
-            ([{"subject": "base", "files": {POLICY_FILE: '{"window_days": 30}'}}], "v1 model"),
-            ([{"subject": "base", "files": {POLICY_FILE: '{"effects_scale": 0}'}}], "greater than 0"),
-            ([{"subject": "base", "files": {POLICY_FILE: "{not json"}}], "not valid JSON"),
+            ([{"subject": "base", "files": {lf("policy_file"): '{"window_days": 30}'}}], "v1 model"),
+            ([{"subject": "base", "files": {lf("policy_file"): '{"effects_scale": 0}'}}], "greater than 0"),
+            ([{"subject": "base", "files": {lf("policy_file"): "{not json"}}], "not valid JSON"),
         ],
         indirect=["history"],
         ids=["v1 model", "out of range", "not JSON"],
@@ -189,14 +178,10 @@ class TestPolicyAt:
 
 
 class TestRunReviewAction:
-    """The review's CI run refuses inputs it can't run on before it touches the code host or the agent."""
+    """The review's CI run refuses to run without a PR number before it touches the code host or the agent. (The
+    settings refuse an unknown fail-on: tests/test_settings.py.)"""
 
-    @pytest.mark.parametrize(
-        ("pr", "fail_on", "message"),
-        [(7, "sometimes", "unknown fail-on"), (None, "never", "needs a PR number")],
-        ids=["an unknown fail-on", "no PR number"],
-    )
-    def test_bad_inputs_are_refused_first(
+    def test_a_run_without_a_pr_number_is_refused_first(
         self,
         host,
         git,
@@ -205,13 +190,10 @@ class TestRunReviewAction:
         env,
         agent,
         run_log,
-        pr,
-        fail_on,
-        message,
+        settings,
+        run_folders,
     ):
-        with pytest.raises(RunFailed, match=message):
-            run_review_action(
-                host, git, fs, clock, env, agent, run_log, RUN_FOLDERS, pr, True, fail_on, "", "", "/out/o", "/out/s"
-            )
+        with pytest.raises(RunFailed, match="needs a PR number"):
+            run_review_action(host, git, fs, clock, env, agent, run_log, run_folders, settings, "")
         host.pull_request.assert_not_called()
         agent.run.assert_not_called()
