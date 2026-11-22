@@ -18,14 +18,14 @@ Optional: the `code-review-graph` CLI, for call and execution-flow data in the h
 ### Code layout
 
 The skills hold only instructions; the logic is the `clean_eval/` package, in Clean Architecture layers whose
-dependencies point inward. The GitHub Action is the same package behind one entry script, `action.sh`:
+dependencies point inward. The GitHub Action is the same package: `action.yml` runs its `action` command:
 
 | Layer | Holds | May import |
 |---|---|---|
 | `clean_eval/domain/` | data models only: pydantic models of the policy, the source read, the ratings and heat map, a change's risk, reviews, merged-PR history and an eval's outcome. Every invariant is a validator: score ranges, the policy's knobs, an agent finding's rule, severity and line, commit ids, step outputs | pure stdlib modules and pydantic |
-| `clean_eval/use_cases/` | two things. `interfaces.py`: the abstract classes of every external utility the business logic uses (`Git`, `CodeHost`, `FileSystem`, `KnowledgeGraph`, `Environment`, `Clock`, `DiagramPresenter`, `ReportPresenter`). Everything else: module-level functions that take implementations of those interfaces as parameters and call only their abstract methods. These are the use cases (rate a repository, assess a change, refresh the README section, collect history; for CI: prepare the agent's context, finalize its output, post the review), what they share (sources, run files, the `.clean-eval/` snapshot), and `rules/`: the business rules as pure functions over the models (the four aspects, scoring, judgement, review, redaction, calibration, tuning, the built-in knowledge graph) | `domain`, the same |
+| `clean_eval/use_cases/` | two things. `interfaces.py`: the abstract classes of every external utility the business logic uses (`Git`, `CodeHost`, `FileSystem`, `KnowledgeGraph`, `Agent`, `Environment`, `Clock`, `DiagramPresenter`, `ReportPresenter`, `RunLog`). Everything else: module-level functions that take implementations of those interfaces as parameters and call only their abstract methods. These are the use cases (rate a repository, assess a change, refresh the README section, collect history; for CI: run a skill, prepare the agent's context, finalize its output, post the review), what they share (sources, run files, the `.clean-eval/` snapshot), and `rules/`: the business rules as pure functions over the models (the four aspects, scoring, judgement, review, redaction, calibration, tuning, the built-in knowledge graph) | `domain`, the same |
 | `clean_eval/adaptor/` | the presenters (SVG treemap, Markdown summary), implementing `DiagramPresenter` and `ReportPresenter`; rendering only, never I/O | `domain`, `use_cases` |
-| `clean_eval/external/` | everything that touches the outside world: one gateway class per external dependency, each implementing its interface (`GitGateway`, `GitHubGateway`, `CodeReviewGraphGateway`, `FileSystemGateway`, `EnvironmentGateway`, `ClockGateway`), the command line (with the CI commands and the agent's guard hook) and the composition root that hands the gateways and presenters to the use cases | everything |
+| `clean_eval/external/` | everything that touches the outside world: one gateway class per external dependency, each implementing its interface (`GitGateway`, `GitHubGateway`, `CodeReviewGraphGateway`, `ClaudeCodeGateway`, `FileSystemGateway`, `EnvironmentGateway`, `ClockGateway`), the command line (with the CI commands and the agent's guard hook) and the composition root that hands the gateways and presenters to the use cases | everything |
 
 `tests/test_architecture.py` enforces the layering (every import absolute, never relative), the purity of the two inner
 layers (no I/O, no clock), that the domain holds only data models (no functions; model methods are validators, computed
@@ -38,7 +38,8 @@ line).
 Run it as `uv run python -I clean_eval <rate|readme|report|assess|history> ...` from this checkout; from another
 repository, `uv run --frozen --no-config --project <clean-eval> python -I <clean-eval>/clean_eval ...`. `-I` keeps the
 rated repository off `sys.path`, so none of its code can be imported, and `--no-config` keeps its uv settings out.
-`action.sh` also runs `prepare`, `finalize`, `post`, `redact` and `guard`.
+The GitHub Action runs `clean_eval action <skill>`, which runs the CI steps (`prepare`, the agent, `finalize`, `post`)
+in-process; `redact` and `guard` are commands too, and the agent's hook runs `guard`.
 
 ### Per-repo configuration
 
@@ -92,7 +93,7 @@ The agent reads untrusted text (PR diffs and descriptions, commit messages, comm
 1. **Precompute** (`clean_eval prepare`): the PR diff, per-file history, the change's risk from the heat map of its
    base commit, and the `.clean-eval/` config **from the base commit** (a PR can't relax the rules it's judged by);
    for `eval`, the history (every PR rated against its base), defect patches and one-knob sensitivity replays.
-2. **Sandboxed agent** (`action.sh`): `claude --restricted --strict-mcp-config` — no shell, no web, no MCP, and
+2. **Sandboxed agent** (the Claude Code gateway, `clean_eval/external/claude_code.py`): `claude --restricted --strict-mcp-config` — no shell, no web, no MCP, and
    no user/project settings or hooks from the checkout — with a scrubbed environment (no `GH_TOKEN` or runner
    tokens) and stdin from `/dev/null`. It takes no instructions from the checkout either: no `CLAUDE.md`,
    `AGENTS.md` or `.claude/rules/`, and no skills, which a PR could otherwise edit to steer its own review.
@@ -131,7 +132,7 @@ classes. Their fixtures live in the `conftest.py` at the level of the tests that
 fixture through `request.param` (indirect parametrization). External dependencies are MagicMocks injected into the code
 under test; the use cases' git and file system answer through in-memory fakes that run through the same contract
 checks as the real gateways. The tests at the top of `tests/` span the layers: the architecture and code-style rules,
-`action.sh` end to end, and the release check. The `tests` workflow runs the suite, both ruff checks and ty's type check
+the GitHub Action's command end to end, and the release check. The `tests` workflow runs the suite, both ruff checks and ty's type check
 on every push to a pull request and to `master`.
 
 Coding agents: `AGENTS.md` at the root and in each layer folder (and `tests/`) holds the commands and the rules that

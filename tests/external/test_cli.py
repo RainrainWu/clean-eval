@@ -19,7 +19,7 @@ from tests.helpers import Dates
 pytestmark = pytest.mark.e2e  # the command line's tests: most run `python -I clean_eval ...` in a subprocess
 
 # The commands `clean_eval --help` lists, in its order.
-COMMANDS = ["assess", "finalize", "guard", "history", "post", "prepare", "rate", "readme", "redact", "report"]
+COMMANDS = ["action", "assess", "finalize", "guard", "history", "post", "prepare", "rate", "readme", "redact", "report"]
 # A review-rules.md: a blocker rule from the Low band, and a major and a minor one from Moderate.
 RULES = """
 | ID | Severity | Min tier | Rule |

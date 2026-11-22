@@ -8,9 +8,11 @@ import pytest
 
 from clean_eval.domain.errors import NoPythonSource
 from clean_eval.domain.rating import Graph, Snapshot
+from clean_eval.domain.review import RunFolders
 from clean_eval.use_cases.heatmap import (
     GENERATED,
     MAX_FILE_BYTES,
+    agent_judgement,
     content_id,
     count_loc,
     coverage_line_rates,
@@ -466,3 +468,49 @@ class TestUpdateReadme:
         text = memory_fs.read_text("/repo/docs/README.md")
         assert "![map](risk-heatmap.svg)" in text
         assert text.endswith("\n")
+
+
+# A CI run's folders, and what the agent may write into its own: levels with a token in them, or no judgement at all.
+RUN_FOLDERS = RunFolders(workspace="/repo", out="/out", context="/out/context", agent="/out/agent")
+TOKEN = "ghs_" + "t" * 36
+LEVELS = '{"modules": {"m": {"business": {"level": 0, "reason": "read %s"}, "nope": {"level": 9}}}}' % TOKEN
+
+
+class TestAgentJudgement:
+    """The levels the agent wrote are read redacted, entry by entry; without a JSON object, the static levels stay."""
+
+    @pytest.mark.parametrize("files", [{"/out/agent/judgement.json": LEVELS}], indirect=True)
+    @pytest.mark.parametrize("environ", [{"GH_TOKEN": TOKEN}], indirect=True)
+    def test_the_levels_are_read_redacted(
+        self,
+        fs,
+        memory_fs,
+        env,
+        run_log,
+    ):
+        judgement = agent_judgement(fs, env, run_log, RUN_FOLDERS)
+        assert judgement is not None
+        assert list(judgement.modules["m"]) == ["business"]  # the invalid entry is dropped
+        assert judgement.modules["m"]["business"].reason == "read [REDACTED]"
+        assert TOKEN not in memory_fs.read_text("/out/agent/judgement.json")
+        run_log.warning.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("files", "warning"),
+        [
+            ({"/out/agent/.keep": ""}, "the agent wrote no judgement.json"),
+            ({"/out/agent/judgement.json": "[1, 2]"}, "not a JSON object"),
+            ({"/out/agent/judgement.json": "{not json"}, "not a JSON object"),
+        ],
+        indirect=["files"],
+        ids=["none", "not an object", "not JSON"],
+    )
+    def test_without_a_judgement_the_static_levels_stay(
+        self,
+        fs,
+        env,
+        run_log,
+        warning,
+    ):
+        assert agent_judgement(fs, env, run_log, RUN_FOLDERS) is None
+        assert warning in run_log.warning.call_args.args[0]

@@ -22,21 +22,21 @@ uv run pytest tests/use_cases/test_heatmap.py            # one module; ::TestCla
 - **Fakes and gateways agree.** In `tests/external/test_git.py` and `test_filesystem.py`, the contract checks take a
   fixture parametrized over the in-memory fake and the gateway, so each check runs on both. When either changes,
   extend the contract.
-- **Top-level tests** span the layers: `test_architecture.py` (the architecture rules), `test_action_sh.py`
-  (`action.sh` end to end, with fake `claude` and `gh`) and `test_release.py` (the release check).
+- **Top-level tests** span the layers: `test_architecture.py` (the architecture rules), `test_action.py`
+  (the GitHub Action's command end to end, with fake `claude` and `gh`) and `test_release.py` (the release check).
 - **Packages.** Every test folder needs an `__init__.py`: the layers' test modules share names (`test_review.py`,
   `test_heatmap.py`), and the tests import `tests.*`.
 - **Support** holds classes and constants only, no functions. Read and write files with pathlib.
   - `tests/helpers.py` (no package imports): `Repo`, `FakeBin`, `Dates`.
   - `tests/use_cases/fakes.py`: `MemoryFileSystem`, `MemoryGit`.
   - `tests/architecture.py`: `Codebase`, the code as `test_architecture.py` reads it.
-  - `tests/action.py`: `Action`, which runs `action.sh` for `test_action_sh.py`.
+  - `tests/action.py`: `Action`, which runs the action's command for `test_action.py`.
 
 ## Where the fixtures are
 
 | conftest.py | Fixtures |
 |---|---|
-| `tests/` | The machine: `repo`, `fake_bin`, the autouse `hermetic_git`. Domain models: `today`, `policy`, `facts`, `source_files`, `ratings`, `rating`, `heatmap`, `judgement`. A change under review: `review_rules`, `finding`, `agent_review`, `risk_report`, `pull_request`. The top-level tests: `codebase`; action.sh's `workspace`, `action`, `action_run` and the fakes' replies; the release check's `released`, `release_check`. |
+| `tests/` | The machine: `repo`, `fake_bin`, the autouse `hermetic_git`. Domain models: `today`, `policy`, `facts`, `source_files`, `ratings`, `rating`, `heatmap`, `judgement`. A change under review: `review_rules`, `finding`, `agent_review`, `risk_report`, `pull_request`. The top-level tests: `codebase`; the action's `workspace`, `action`, `action_run` and the fakes' replies; the release check's `released`, `release_check`. |
 | `tests/domain/` | Raw field dicts of a valid example per model (`scores`, `module_record`, `stored_review`, `review_rule`, `period`, `merged_pr`, `eval_result`), which a test validates itself, so a refused input fails inside `pytest.raises`. |
 | `tests/use_cases/` | The interfaces as MagicMocks (`fs`, `git`, `clock`, `env`, `host`, `knowledge_graph`, `diagram_presenter`, `report_presenter`) and the data they answer from (`files`, `links`, `history`, `shas`, `environ`); `graph`, `rating_cache`, `period`; the class-scoped `collected` history. |
 | `tests/use_cases/rules/` | The rules' inputs as models: `aspect_scores`, `inline_comment`, `merged_prs`. |
@@ -96,8 +96,9 @@ uv run pytest tests/use_cases/test_heatmap.py            # one module; ::TestCla
     is about the gateway's own logic.
   - The git and file-system gateways run against real throwaway repositories and folders. Their contract tests check
     that the in-memory fakes behave like the real thing, which a mock can't.
-- **End to end** (`test_action_sh.py`): `action.sh` runs fake `gh` and `claude` executables (`fake_bin`), since a
-  shell script can't take a MagicMock.
+- **End to end** (`test_action.py`): the action's command runs in a subprocess with fake `gh` and `claude`
+  executables (`fake_bin`), so the real Claude Code gateway's sandbox (flags, environment, settings, hook) is checked
+  as a whole.
 
 ### Strictness and types
 

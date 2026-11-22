@@ -7,6 +7,7 @@ prints the outcome.
 `clean_eval --help` lists the commands, and `clean_eval <command> --help` their options."""
 
 import json
+import shlex
 import sys
 from collections.abc import Callable
 from typing import IO, Any, Optional
@@ -19,22 +20,41 @@ from clean_eval.adaptor.presenters import DIAGRAM_PATH, MarkdownReportPresenter,
 from clean_eval.domain.errors import HeatmapError, InvalidOutput, InvalidRequest
 from clean_eval.domain.evaluation import EvalHistory, Period
 from clean_eval.domain.rating import Heatmap, Judgement, RatingCache
+from clean_eval.domain.review import RunFolders
 from clean_eval.external import agent_guard
+from clean_eval.external.claude_code import MAX_TURNS, VERSION, ClaudeCodeGateway
 from clean_eval.external.code_review_graph import CodeReviewGraphGateway
 from clean_eval.external.environment import ClockGateway, EnvironmentGateway
 from clean_eval.external.filesystem import FileSystemGateway
 from clean_eval.external.git import GitGateway
 from clean_eval.external.github import GitHubGateway
-from clean_eval.use_cases.evaluation import collect_history, finalize_eval, prepare_eval
+from clean_eval.use_cases.ci import start_run
+from clean_eval.use_cases.evaluation import collect_history, finalize_eval, prepare_eval, run_eval_action
 from clean_eval.use_cases.heatmap import (
     finalize_heatmap_report,
     rate_revision,
     rate_working_tree,
+    run_heatmap_action,
     summarize_heatmap,
     update_readme,
 )
-from clean_eval.use_cases.interfaces import CodeHost, DiagramPresenter, Git, KnowledgeGraph, ReportPresenter
-from clean_eval.use_cases.review import assess_change, finalize_pr_review, post_review, prepare_review
+from clean_eval.use_cases.interfaces import (
+    Agent,
+    CodeHost,
+    DiagramPresenter,
+    Git,
+    KnowledgeGraph,
+    ReportPresenter,
+    RunLog,
+)
+from clean_eval.use_cases.review import (
+    FAIL_ON,
+    assess_change,
+    finalize_pr_review,
+    post_review,
+    prepare_review,
+    run_review_action,
+)
 from clean_eval.use_cases.rules.evaluation import replay, rules_warning, sensitivity
 from clean_eval.use_cases.rules.review import redact as redact_text
 from clean_eval.use_cases.rules.review import secret_values
@@ -53,10 +73,13 @@ GRAPHS = ("builtin", "code-review-graph")
 FS, ENV, CLOCK = FileSystemGateway(), EnvironmentGateway(), ClockGateway()
 CHECKOUT = FS.parent(FS.parent(FS.parent(FS.real_path(__file__))))  # the clean-eval checkout: package and skills
 DEFAULT_RULES = FS.join(CHECKOUT, ".claude", "skills", "pr-review", "review-rules.md")
+SKILLS_DIR = FS.join(CHECKOUT, ".claude", "skills")  # what a CI run copies into the agent's context
+PACKAGE_DIR = FS.join(CHECKOUT, "clean_eval")
 HELP = """Rate how risky each sub-module of a repository is to change, put the heat map into its README, and assess and
 review changes by that risk.
 
-The commands marked CI are the ones the GitHub Action (action.sh) runs around its agent, which only proposes: they
+The commands marked CI are the ones the GitHub Action runs (`action` runs the others around its agent, which only
+proposes): they
 decide and act."""
 
 
@@ -102,6 +125,23 @@ def default_rules() -> str:
     return FS.read_text(DEFAULT_RULES)
 
 
+def agent_for(
+    folders: RunFolders,
+    version: str,
+    model: Optional[str],
+    max_turns: int,
+) -> Agent:
+    """Claude Code for a CI run, sandboxed: its PreToolUse hook is this checkout's guard, run by this Python, and a
+    failing hook denies the call (`|| exit 2`); npm installs it from the run's output folder, away from the checkout."""
+    guard = "%s -I %s guard || exit 2" % (shlex.quote(sys.executable), shlex.quote(PACKAGE_DIR))
+    return ClaudeCodeGateway(FS, ENV.variables(), guard, folders.out, version, model, max_turns)
+
+
+def default_output_dir() -> str:
+    """Where a CI run's outputs go by default: under the runner's temporary folder, else under /tmp."""
+    return FS.join(ENV.get("RUNNER_TEMP") or "/tmp", "clean-eval")
+
+
 def repository_root(
     path: str,
 ) -> str:
@@ -130,6 +170,37 @@ def heatmap_and_judgement(
 
 
 # The command line.
+
+
+class ConsoleRunLog(RunLog):
+    """A CI run's log, on this process's stderr in GitHub Actions' workflow commands: each step opens a collapsible
+    group (`in_group` says whether one is open), and a warning is an annotation."""
+
+    def __init__(
+        self,
+    ) -> None:
+        self.in_group = False
+
+    def step(
+        self,
+        title: str,
+    ) -> None:
+        if self.in_group:
+            print("::endgroup::", file=sys.stderr)
+        print("::group::%s" % title, file=sys.stderr)
+        self.in_group = True
+
+    def warning(
+        self,
+        message: str,
+    ) -> None:
+        print("::warning::%s" % message, file=sys.stderr)
+
+    def show(
+        self,
+        text: str,
+    ) -> None:
+        print(text, file=sys.stderr)
 
 
 class UserError(click.ClickException):
@@ -592,6 +663,166 @@ def guard(
     context: click.Context,
 ) -> None:
     context.exit(agent_guard.hook())
+
+
+@clean_eval.command(
+    short_help="CI: run a skill as the GitHub Action does.",
+    help="CI: run SKILL (risk-heat-map, pr-review or eval) on a checkout, as the GitHub Action does. action.yml runs "
+    "this with the action's inputs as CE_* variables, which the options read; GITHUB_OUTPUT and GITHUB_STEP_SUMMARY "
+    "take the step outputs and the job summary. A run that fails reports an ::error:: and exits with status 1.",
+)
+@click.argument("skill", envvar="CE_SKILL", type=click.Choice(SKILLS))
+@click.option(
+    "--workspace", envvar=["CE_WORKSPACE", "GITHUB_WORKSPACE"], default=".", help="the checkout the skill runs on"
+)
+@click.option(
+    "--output-dir",
+    envvar="CE_OUTPUT_DIR",
+    default=default_output_dir,
+    show_default="$RUNNER_TEMP/clean-eval",
+    help="where report.md, result.json and claude.log go",
+)
+@click.option("--pr", envvar="CE_PR", type=int, help="pr-review: the PR number")
+@click.option(
+    "--post", envvar="CE_POST", type=click.BOOL, default=True, show_default=True, help="pr-review: post the review"
+)
+@click.option(
+    "--fail-on",
+    envvar="CE_FAIL_ON",
+    type=click.Choice(FAIL_ON),
+    default="never",
+    show_default=True,
+    help="pr-review: fail the run on a request_changes verdict, or on a blocker finding",
+)
+@click.option("--since", envvar="CE_SINCE", help="eval: YYYY-MM-DD (default: 90 days ago)")
+@click.option("--until", envvar="CE_UNTIL", help="eval: YYYY-MM-DD (default: today)")
+@click.option(
+    "--apply",
+    "apply_edits",
+    envvar="CE_APPLY",
+    type=click.BOOL,
+    default=False,
+    show_default=True,
+    help="eval: let the agent edit .clean-eval/ (an edit is kept only when it validates)",
+)
+@click.option(
+    "--readme",
+    "readme_path",
+    envvar="CE_README",
+    default="README.md",
+    show_default=True,
+    help="risk-heat-map: README path, relative to the workspace",
+)
+@click.option(
+    "--diagram",
+    "diagram_path",
+    envvar="CE_DIAGRAM",
+    default=DIAGRAM_PATH,
+    show_default=True,
+    help="risk-heat-map: diagram path, relative to the workspace",
+)
+@click.option(
+    "--use-claude",
+    envvar="CE_USE_CLAUDE",
+    type=click.BOOL,
+    default=False,
+    show_default=True,
+    help="risk-heat-map: let the agent level the four aspects",
+)
+@click.option("--model", "agent_model", envvar="CE_MODEL", help="the agent's model (default: Claude Code's)")
+@click.option("--max-turns", envvar="CE_MAX_TURNS", type=int, default=MAX_TURNS, show_default=True)
+@click.option("--claude-code-version", envvar="CE_CLAUDE_VERSION", default=VERSION, show_default=True)
+@click.option("--extra-prompt", envvar="CE_EXTRA_PROMPT", default="", help="added to the agent's prompt")
+@click.option("--gh-output", envvar="GITHUB_OUTPUT", default="/dev/null", help="the step-outputs file")
+@click.option("--summary", envvar="GITHUB_STEP_SUMMARY", default="/dev/null", help="the job-summary file")
+@click.pass_context
+def action(
+    context: click.Context,
+    skill: str,
+    workspace: str,
+    output_dir: str,
+    pr: Optional[int],
+    post: bool,
+    fail_on: str,
+    since: Optional[str],
+    until: Optional[str],
+    apply_edits: bool,
+    readme_path: str,
+    diagram_path: str,
+    use_claude: bool,
+    agent_model: Optional[str],
+    max_turns: int,
+    claude_code_version: str,
+    extra_prompt: str,
+    gh_output: str,
+    summary: str,
+) -> None:
+    log = ConsoleRunLog()
+    failure = None
+    try:
+        folders = start_run(git(workspace), FS, workspace, output_dir, SKILLS_DIR, gh_output)
+        agent = agent_for(folders, claude_code_version, agent_model, max_turns)
+        if skill == "risk-heat-map":
+            run_heatmap_action(
+                git(folders.workspace),
+                FS,
+                CLOCK,
+                ENV,
+                agent,
+                diagram_presenter(),
+                report_presenter(),
+                log,
+                folders,
+                readme_path,
+                diagram_path,
+                use_claude,
+                extra_prompt,
+                gh_output,
+                summary,
+            )
+        elif skill == "pr-review":
+            run_review_action(
+                github(),
+                git(repository_root(folders.workspace)),
+                FS,
+                CLOCK,
+                ENV,
+                agent,
+                log,
+                folders,
+                pr,
+                post,
+                fail_on,
+                default_rules(),
+                extra_prompt,
+                gh_output,
+                summary,
+            )
+        else:
+            run_eval_action(
+                git(repository_root(folders.workspace)),
+                FS,
+                CLOCK,
+                ENV,
+                github(),
+                agent,
+                log,
+                folders,
+                since,
+                until,
+                apply_edits,
+                default_rules(),
+                extra_prompt,
+                gh_output,
+                summary,
+            )
+    except HeatmapError as error:
+        failure = error
+    if log.in_group:
+        print("::endgroup::", file=sys.stderr)
+    if failure is not None:
+        print("::error::clean-eval: %s" % failure, file=sys.stderr)
+        context.exit(1)
 
 
 def main(

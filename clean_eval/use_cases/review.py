@@ -1,9 +1,9 @@
-"""Use cases of the PR review: the risk a change carries, the context the CI reviewer reads, and posting the review
-CI trusts."""
+"""Use cases of the PR review: the risk a change carries, the context the CI reviewer reads, posting the review CI
+trusts, and the review's run in CI."""
 
 from typing import Optional
 
-from clean_eval.domain.errors import InvalidPolicy, NoPythonSource, RemoteError
+from clean_eval.domain.errors import InvalidOutput, InvalidPolicy, NoPythonSource, RemoteError, RunFailed
 from clean_eval.domain.policy import REPO_POLICY, REPO_RULES, Policy
 from clean_eval.domain.rating import ChangeRisk, Heatmap, RatingCache
 from clean_eval.domain.review import (
@@ -16,10 +16,12 @@ from clean_eval.domain.review import (
     ReviewContext,
     ReviewPost,
     RiskReport,
+    RunFolders,
     StepOutputs,
 )
+from clean_eval.use_cases.ci import report_run, run_agent
 from clean_eval.use_cases.heatmap import rate_revision, revision_snapshot
-from clean_eval.use_cases.interfaces import Clock, CodeHost, Environment, FileSystem, Git
+from clean_eval.use_cases.interfaces import Agent, Clock, CodeHost, Environment, FileSystem, Git, RunLog
 from clean_eval.use_cases.rules.review import (
     change_risk,
     commentable_lines,
@@ -36,7 +38,15 @@ from clean_eval.use_cases.rules.review import (
     stale_reviews,
     truncate,
 )
-from clean_eval.use_cases.store import JUDGING_ERRORS, invalid, read_json, validated, write_json, write_run_output
+from clean_eval.use_cases.store import (
+    JUDGING_ERRORS,
+    invalid,
+    read_json,
+    validated,
+    write_json,
+    write_run_output,
+    write_step_outputs,
+)
 
 # Use case: the risk a change carries, from the heat map of its base. The PR review scales its depth by this.
 
@@ -284,3 +294,72 @@ def finalize_pr_review(
     outputs = review_outputs(review)
     write_run_output(fs, out, fs.join(agent, "report.md"), review, secrets)
     return review, outputs
+
+
+# Use case: the PR review's CI run (the action's pr-review skill): prepare the context, let the agent review the
+# change, finalize the review CI trusts, post it, and fail the run as configured. Through the CodeHost, Git,
+# FileSystem, Clock, Environment, Agent and RunLog interfaces.
+
+FAIL_ON = ("never", "request_changes", "blocker")  # what a review run may fail on
+REVIEW_PROMPT = (
+    "Review pull request #%(pr)d. Read %(context)s/skills/pr-review/SKILL.md and follow its 'CI mode' section. "
+    "Precomputed context: %(context)s/context.json, %(context)s/pr.json, %(context)s/risk.json, "
+    "%(context)s/review-rules.md, %(context)s/diff/index.json (one patch per changed file — read them all), "
+    "%(context)s/file-history.txt. Write %(agent)s/report.md and %(agent)s/result.json. %(extra)s"
+)
+
+
+def run_review_action(
+    host: CodeHost,
+    git: Git,
+    fs: FileSystem,
+    clock: Clock,
+    env: Environment,
+    agent: Agent,
+    log: RunLog,
+    folders: RunFolders,
+    pr: Optional[int],
+    post: bool,
+    fail_on: str,
+    default_rules: str,
+    extra_prompt: str,
+    gh_output: str,
+    summary: str,
+) -> None:
+    """The PR review's CI run for PR `pr`: prepare its context, let the agent review it, finalize the review CI trusts
+    and, with `post`, post it; report its step outputs, and its report in the job summary `summary`. RunFailed as
+    `fail_on` (one of FAIL_ON) says: `request_changes` on that verdict, `blocker` on a blocker finding, and either on
+    agent output that can't be trusted. With `never`, such output is a warning, and nothing is posted."""
+    if fail_on not in FAIL_ON:
+        raise RunFailed("unknown fail-on %r (%s)" % (fail_on, " | ".join(FAIL_ON)))
+    if pr is None:
+        raise RunFailed("pr-review needs a PR number (input 'pr', or run on pull_request events)")
+    log.step("Prepare the review context of #%d" % pr)
+    context = prepare_review(host, git, fs, clock, folders.context, pr, default_rules)
+    agent.require()
+    prompt = REVIEW_PROMPT % {"pr": pr, "context": folders.context, "agent": folders.agent, "extra": extra_prompt}
+    run_agent(agent, fs, env, log, folders, prompt.strip())
+    try:
+        review, outputs = finalize_pr_review(fs, env, folders.context, folders.agent, folders.out)
+    except InvalidOutput as error:
+        if fail_on == "never":
+            log.warning("invalid agent output, so nothing is posted: %s" % error)
+            return
+        raise RunFailed("invalid agent output with fail-on=%s (failing closed): %s" % (fail_on, error))
+    if review.redactions:
+        log.warning("clean-eval redacted %d secret-looking value(s) from agent output" % review.redactions)
+    write_step_outputs(fs, gh_output, outputs)
+    report_run(fs, summary, "PR Review #%d" % pr, folders)
+    if post:
+        posted = post_review(host, fs, env, folders.out, pr, context.head, folders.context)
+        for level, message in posted.log:
+            if level == "warning":
+                log.warning(message)
+            else:
+                log.show(message)
+        if not posted.posted:
+            log.warning("could not post the review (the token needs pull-requests: write)")
+    if fail_on == "request_changes" and review.verdict == "request_changes":
+        raise RunFailed("review verdict: request_changes")
+    if fail_on == "blocker" and review.blockers:
+        raise RunFailed("%d blocker finding(s)" % review.blockers)

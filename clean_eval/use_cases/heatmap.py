@@ -2,6 +2,7 @@
 built-in graph or a KnowledgeGraph), apply a reviewer's levels, summarize it, and put it into the README."""
 
 import hashlib
+import json
 import re
 from collections import Counter
 from typing import Optional
@@ -20,8 +21,10 @@ from clean_eval.domain.rating import (
     SourceFile,
     TopFile,
 )
-from clean_eval.domain.review import StepOutputs
+from clean_eval.domain.review import RunFolders, StepOutputs
+from clean_eval.use_cases.ci import report_run, run_agent
 from clean_eval.use_cases.interfaces import (
+    Agent,
     Clock,
     DiagramPresenter,
     Environment,
@@ -29,6 +32,7 @@ from clean_eval.use_cases.interfaces import (
     Git,
     KnowledgeGraph,
     ReportPresenter,
+    RunLog,
 )
 from clean_eval.use_cases.rules import analysis
 from clean_eval.use_cases.rules.analysis import (
@@ -48,8 +52,8 @@ from clean_eval.use_cases.rules.heatmap import (
     rate_module,
     refresh_overall,
 )
-from clean_eval.use_cases.rules.review import secret_values
-from clean_eval.use_cases.store import write_run_output
+from clean_eval.use_cases.rules.review import redact, secret_values
+from clean_eval.use_cases.store import load_policy, save_heatmap, write_run_output, write_step_outputs
 
 # The sources to rate, through the Git and FileSystem interfaces: the Python files of a working tree, or of any revision
 # read straight from git objects. Files are only read as text; nothing from the repository is imported or run.
@@ -406,3 +410,94 @@ def finalize_heatmap_report(
     levels), written to `out`/report.md. No result and no step outputs."""
     write_run_output(fs, out, fs.join(out, "heatmap.md"), None, secret_values(env.variables()))
     return None, StepOutputs({})
+
+
+# Use case: the risk heat map's CI run (the action's risk-heat-map skill): rate every module, let the agent level the
+# four aspects when asked to, publish the heat map into the README and its diagram, and report. Through the Git,
+# FileSystem, Clock, Environment, Agent and RunLog interfaces and the two presenters.
+
+LEVEL_PROMPT = (
+    "Level the four risk aspects of every module in the heat map. Read %(context)s/skills/risk-heat-map/SKILL.md and "
+    "follow its 'CI mode' section; the level standards are in %(context)s/skills/risk-heat-map/references/rate.md. "
+    "Input: %(context)s/heatmap/data.json; the repository is checked out in the current directory. Write "
+    "%(agent)s/judgement.json. %(extra)s"
+)
+
+
+def agent_judgement(
+    fs: FileSystem,
+    env: Environment,
+    log: RunLog,
+    folders: RunFolders,
+) -> Optional[Judgement]:
+    """The levels the agent wrote (judgement.json in its folder), redacted of the environment's secrets first. None,
+    with a warning, when it wrote none or wrote something other than a JSON object: the heat map then keeps its static
+    levels. The Judgement drops any entry that doesn't validate."""
+    path = fs.join(folders.agent, "judgement.json")
+    if not fs.is_file(path):
+        log.warning("the agent wrote no judgement.json; publishing the static levels")
+        return None
+    text, _ = redact(fs.read_text(path), secret_values(env.variables()))
+    fs.write_text(path, text)
+    try:
+        levels = json.loads(text)
+    except ValueError:
+        levels = None
+    if not isinstance(levels, dict):
+        log.warning("the agent's judgement.json is not a JSON object; publishing the static levels")
+        return None
+    return Judgement.model_validate(levels)
+
+
+def run_heatmap_action(
+    git: Git,
+    fs: FileSystem,
+    clock: Clock,
+    env: Environment,
+    agent: Agent,
+    diagram: DiagramPresenter,
+    report: ReportPresenter,
+    log: RunLog,
+    folders: RunFolders,
+    readme_path: str,
+    svg_path: str,
+    use_agent: bool,
+    extra_prompt: str,
+    gh_output: str,
+    summary: str,
+) -> None:
+    """The risk heat map's CI run on `folders.workspace`: rate every module; with `use_agent`, let the agent level the
+    four aspects; put the heat map into the README (`readme_path`) and its diagram (`svg_path`), both relative to the
+    workspace; and report: the summary as the run's report, the finalized heat map as its result, `readme-changed` as a
+    step output, and the report in the job summary `summary`."""
+    log.step("Rate every module")
+    policy, source = load_policy(fs, folders.workspace)
+    heatmap = rate_working_tree(git, fs, clock, policy)
+    heatmap.notes.append("Policy: %s" % source)
+    save_heatmap(fs, heatmap, fs.join(folders.context, "heatmap", "data.json"))
+    judgement = None
+    if use_agent:
+        agent.require()
+        prompt = LEVEL_PROMPT % {"context": folders.context, "agent": folders.agent, "extra": extra_prompt}
+        run_agent(agent, fs, env, log, folders, prompt.strip())
+        judgement = agent_judgement(fs, env, log, folders)
+    log.step("Publish the heat map")
+    # each takes its own copy: finalizing a heat map applies the levels to it in place
+    update = update_readme(
+        fs,
+        diagram,
+        fs.join(folders.workspace, readme_path),
+        fs.join(folders.workspace, svg_path),
+        heatmap.model_copy(deep=True),
+        judgement,
+        policy,
+    )
+    final, text = summarize_heatmap(report, heatmap.model_copy(deep=True), judgement, policy)
+    log.show(
+        "%s: %s (fingerprint %s)" % (readme_path, "updated" if update.changed else "unchanged", update.fingerprint)
+    )
+    fs.write_text(fs.join(folders.out, "heatmap.md"), text)
+    save_heatmap(fs, final, fs.join(folders.out, "result.json"))
+    finalize_heatmap_report(fs, env, folders.out)
+    write_step_outputs(fs, gh_output, StepOutputs({"readme-changed": "true" if update.changed else "false"}))
+    report_run(fs, summary, "Risk Heat Map", folders)

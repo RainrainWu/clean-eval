@@ -1,5 +1,5 @@
-"""Support for the end-to-end tests of action.sh (tests/test_action_sh.py): the action, run as a GitHub runner runs it,
-with fake `gh` and `claude` (tests.helpers.FakeBin) and fake credentials. Classes and constants only; the fixtures
+"""Support for the end-to-end tests of the GitHub Action (tests/test_action.py): its command, `clean_eval action`, run as
+action.yml runs it on a GitHub runner, with fake `gh` and `claude` (tests.helpers.FakeBin) and fake credentials. Classes and constants only; the fixtures
 that hand them out (`action`, `action_run`) are in tests/conftest.py."""
 
 import json
@@ -10,14 +10,14 @@ from pathlib import Path
 
 from tests.helpers import ROOT
 
-ACTION_SH = Path(ROOT) / "action.sh"
+PACKAGE = Path(ROOT) / "clean_eval"
 FAKE_KEY = "sk-ant-api03-" + "k" * 40  # the Anthropic API key the agent may see
 GH_TOKEN = "ghs_" + "t" * 36  # the GitHub token the agent must never see, and no report may leak
 RUNNER_TOKEN = "x" * 20  # some other secret of the runner's environment
 
 
 class Action:
-    """action.sh on `workspace` (a tests.helpers.Repo), run as a GitHub runner runs it: the action's inputs as CE_*
+    """The action's command on `workspace` (a tests.helpers.Repo), run as action.yml runs it on a GitHub runner: the action's inputs as CE_*
     variables, fake credentials, the fake `gh` and `claude` of `fake_bin` first on PATH, and the runner's files in
     `folder`: the output folder `out`, the step outputs `gh_out` and the step summary `summary`.
 
@@ -60,7 +60,7 @@ class Action:
         checkout=None,
         **inputs,
     ):
-        """Run action.sh in `checkout` (by default the workspace) with `inputs` as the action's inputs
+        """Run the action's command in `checkout` (by default the workspace) with `inputs` as the action's inputs
         (`fail_on="blocker"` sets CE_FAIL_ON), and return the finished process."""
         self.configure_fakes()
         where = str(checkout or self.workspace.path)
@@ -68,8 +68,6 @@ class Action:
         env.update(self.fake_bin.env())
         env.update(
             {
-                "CE_ACTION_DIR": ROOT,
-                "CE_PYTHON": sys.executable,
                 "CE_WORKSPACE": where,
                 "CE_OUTPUT_DIR": str(self.out),
                 "GITHUB_OUTPUT": str(self.gh_out),
@@ -81,7 +79,8 @@ class Action:
         )
         env.update({"CE_" + name.upper(): value for name, value in inputs.items()})
         self.gh_out.write_text("")
-        return subprocess.run(["bash", str(ACTION_SH)], capture_output=True, text=True, env=env, cwd=where)
+        command = [sys.executable, "-I", str(PACKAGE), "action"]
+        return subprocess.run(command, capture_output=True, text=True, env=env, cwd=where)
 
     def outputs(
         self,

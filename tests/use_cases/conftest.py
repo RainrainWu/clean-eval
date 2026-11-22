@@ -24,8 +24,10 @@ import pytest
 from clean_eval.domain.evaluation import Period
 from clean_eval.domain.policy import Policy
 from clean_eval.domain.rating import Graph, RatingCache
+from clean_eval.domain.review import AgentRun
 from clean_eval.use_cases.evaluation import collect_history
 from clean_eval.use_cases.interfaces import (
+    Agent,
     Clock,
     CodeHost,
     DiagramPresenter,
@@ -34,6 +36,7 @@ from clean_eval.use_cases.interfaces import (
     Git,
     KnowledgeGraph,
     ReportPresenter,
+    RunLog,
 )
 from tests.use_cases.fakes import MemoryFileSystem, MemoryGit
 
@@ -276,3 +279,24 @@ def collected_prs(
 ):
     """The PRs of `collected_json`, by PR number."""
     return {entry["pr"]: entry for entry in collected_json["prs"]}
+
+
+# A CI run's agent and log.
+
+
+@pytest.fixture
+def agent(
+    request,
+):
+    """An Agent, which finishes (status 0) with an empty transcript unless `request.param` configures it (configure_mock's
+    keywords), e.g. `{"run.return_value": AgentRun(status=1, transcript="...")}` or `{"require.side_effect": ...}`."""
+    mock = create_autospec(Agent, instance=True)
+    mock.run.return_value = AgentRun(status=0, transcript="")
+    mock.configure_mock(**getattr(request, "param", {}))
+    return mock
+
+
+@pytest.fixture
+def run_log():
+    """A RunLog, recording the steps, warnings and texts a CI run reports."""
+    return create_autospec(RunLog, instance=True)

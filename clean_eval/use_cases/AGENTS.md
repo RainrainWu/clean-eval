@@ -4,16 +4,21 @@ This layer holds exactly two things; `UseCasesHoldInterfacesAndFunctions` in `te
 
 **1. `interfaces.py`:** the abstract classes of every external utility the business logic uses. Every method is an
 `@abstractmethod`, and its docstring is the contract implementations follow.
-- `Git`, `CodeHost`, `FileSystem`, `KnowledgeGraph`, `Environment` and `Clock` are implemented by the gateways in
-  `clean_eval/external/`.
+- `Git`, `CodeHost`, `FileSystem`, `KnowledgeGraph`, `Agent`, `Environment` and `Clock` are implemented by the
+  gateways in `clean_eval/external/`.
 - `DiagramPresenter` and `ReportPresenter` are implemented by the presenters in `clean_eval/adaptor/`.
+- `RunLog`, a CI run's log, is implemented by the command line (`clean_eval/external/cli.py`): the console is the
+  driver's.
 
 **2. Everything else: module-level functions, no classes.**
 - **Use cases** take implementations of the interfaces as parameters, e.g. `rate_working_tree(git, fs, clock,
   policy)`. They call only the interfaces' abstract methods, and never build a gateway or import an outer layer.
 - **One module per feature:** `heatmap.py` (rate, level, summarize and publish the heat map), `review.py` (a change's
   risk, the CI reviewer's context, finalizing and posting the review) and `evaluation.py` (the merged-PR history, the
-  eval's context and tuning files, finalizing the eval). `store.py` holds the files of a run they share.
+  eval's context and tuning files, finalizing the eval). Each also holds its skill's CI run (`run_heatmap_action`,
+  `run_review_action`, `run_eval_action`), which the `action` command runs.
+- **Shared:** `store.py` holds the files of a run, and `ci.py` the steps every CI run shares (its folders, the agent's
+  run and redacted transcript, the job summary).
 - **`rules/`** holds the business rules: pure functions over domain models that take no interfaces. They follow the
   same features (`heatmap.py`, `review.py`, `evaluation.py`), plus `analysis.py` for reading code.
 

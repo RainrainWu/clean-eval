@@ -127,8 +127,9 @@ runs:
     - id: run
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      # The inputs reach the command as CE_* variables, never interpolated into this script, so no input can inject
+      # shell code; clean_eval's `action` command reads them (`clean_eval action --help`).
       env:
-        CE_ACTION_DIR: ${{ github.action_path }}
         CE_PYTHON: ${{ steps.env.outputs.python }}
         CE_SKILL: ${{ inputs.skill }}
         CE_WORKSPACE: ${{ inputs.working-directory }}
@@ -149,4 +150,4 @@ runs:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key || env.ANTHROPIC_API_KEY }}
         CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token || env.CLAUDE_CODE_OAUTH_TOKEN }}
         GH_TOKEN: ${{ inputs.github-token }}
-      run: bash "$GITHUB_ACTION_PATH/action.sh"
+      run: '"$CE_PYTHON" -I "$GITHUB_ACTION_PATH/clean_eval" action'

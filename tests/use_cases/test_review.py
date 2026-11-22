@@ -5,10 +5,10 @@ from unittest.mock import call
 
 import pytest
 
-from clean_eval.domain.errors import HeatmapError
+from clean_eval.domain.errors import HeatmapError, RunFailed
 from clean_eval.domain.policy import Policy
-from clean_eval.domain.review import DiffIndex
-from clean_eval.use_cases.review import assess_change, policy_at, write_split_diff
+from clean_eval.domain.review import DiffIndex, RunFolders
+from clean_eval.use_cases.review import assess_change, policy_at, run_review_action, write_split_diff
 
 CORE = "def g(con):\n    con.execute('INSERT INTO t VALUES (1)')\n    con.commit()\n"
 TREE = {
@@ -42,6 +42,7 @@ RENAMED = "diff --git a/old.py b/new.py\nsimilarity index 100%\nrename from old.
 NEW_PATCH = "diff --git a/new.py b/new.py\n--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+x\n"
 OLD_PATCH = "diff --git a/old.py b/old.py\n--- a/old.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
 POLICY_FILE = ".clean-eval/risk-model.json"
+RUN_FOLDERS = RunFolders(workspace="/repo", out="/out", context="/out/context", agent="/out/agent")
 
 
 class TestAssessChange:
@@ -185,3 +186,32 @@ class TestPolicyAt:
         assert note is not None
         assert note.startswith("ignored .clean-eval/risk-model.json at the base:"), note
         assert expect in note
+
+
+class TestRunReviewAction:
+    """The review's CI run refuses inputs it can't run on before it touches the code host or the agent."""
+
+    @pytest.mark.parametrize(
+        ("pr", "fail_on", "message"),
+        [(7, "sometimes", "unknown fail-on"), (None, "never", "needs a PR number")],
+        ids=["an unknown fail-on", "no PR number"],
+    )
+    def test_bad_inputs_are_refused_first(
+        self,
+        host,
+        git,
+        fs,
+        clock,
+        env,
+        agent,
+        run_log,
+        pr,
+        fail_on,
+        message,
+    ):
+        with pytest.raises(RunFailed, match=message):
+            run_review_action(
+                host, git, fs, clock, env, agent, run_log, RUN_FOLDERS, pr, True, fail_on, "", "", "/out/o", "/out/s"
+            )
+        host.pull_request.assert_not_called()
+        agent.run.assert_not_called()

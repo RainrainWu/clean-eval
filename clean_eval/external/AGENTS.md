@@ -4,7 +4,8 @@ The only code that touches anything outside the process.
 
 **Gateways:** one public `*Gateway` class per external dependency.
 - **Modules:** `git.py` (the git CLI), `github.py` (the gh CLI), `code_review_graph.py` (its CLI and the SQLite
-  `graph.db` it builds), `filesystem.py`, and `environment.py` (environment variables, and the clock).
+  `graph.db` it builds), `claude_code.py` (the CI agent: the claude CLI, run sandboxed, and its npm install),
+  `filesystem.py`, and `environment.py` (environment variables, and the clock).
 - **One interface each.** A gateway implements exactly one interface from `clean_eval/use_cases/interfaces.py` and
   exposes nothing beyond it.
 - **Failures** map to the domain's errors: `HeatmapError`, or `RemoteError` with `kind` `not_found` or `error`.
@@ -12,8 +13,9 @@ The only code that touches anything outside the process.
 
 **Drivers:** only they use the console (`print`, `sys.stdin`/`stdout`/`exit`).
 - `cli.py` is the command line, built on click, and the entry point of every utility: the user commands, and the
-  CI commands the action runs (`prepare`, `finalize`, `post`, `redact`, `guard`). It is also the composition root: it
-  builds the gateways and presenters it hands to the use cases.
+  CI commands (`action`, which action.yml runs, and `prepare`, `finalize`, `post`, `redact`, `guard`). It is also the
+  composition root: it builds the gateways and presenters it hands to the use cases. A CI run's log (`RunLog`) is its
+  console.
   - A new utility is a new click command of the `clean_eval` group, with its options declared on it.
   - A command that fails with a status calls `context.exit(<status>)`. A `HeatmapError` it raises reads
     `clean_eval: <message>` with status 1, never a traceback.

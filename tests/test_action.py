@@ -1,9 +1,9 @@
-"""End-to-end tests of action.sh with fake `claude` and `gh` executables (no network, no tokens). The fixtures build the
+"""End-to-end tests of the GitHub Action's command, `clean_eval action` (what action.yml runs), with fake `claude` and
+`gh` executables (no network, no tokens). The fixtures build the
 workspace the action runs on, tell the fakes what to do, and run it: `action_run` once with the inputs it is
 parametrized with, `action.run` again from a test (tests.action.Action)."""
 
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -13,7 +13,7 @@ import pytest
 from tests.action import GH_TOKEN
 from tests.helpers import ROOT, Dates
 
-pytestmark = pytest.mark.e2e  # every test runs action.sh in a subprocess
+pytestmark = pytest.mark.e2e  # every test runs the action's command in a subprocess
 
 SINCE = Dates.days_ago(90).date().isoformat()  # the start of eval's period
 
@@ -116,15 +116,15 @@ STRUCTURAL_EDIT = {  # an edit of the risk model that changes what is measured: 
 
 
 class TestInputsAndCheckout:
-    """action.sh refuses bad inputs and a shallow checkout before it runs anything."""
+    """The action refuses bad inputs and a shallow checkout before it runs anything."""
 
     @pytest.mark.parametrize(
         ("action_run", "error"),
         [
-            ({"skill": "nope"}, "unknown skill"),
-            ({"skill": "pr-review", "pr": "1; rm -rf /"}, "numeric PR"),
+            ({"skill": "nope"}, "is not one of"),
+            ({"skill": "pr-review", "pr": "1; rm -rf /"}, "is not a valid integer"),
             ({"skill": "eval", "since": "yesterday"}, "YYYY-MM-DD"),
-            ({"skill": "pr-review", "pr": "7", "fail_on": "sometimes"}, "unknown fail-on"),
+            ({"skill": "pr-review", "pr": "7", "fail_on": "sometimes"}, "is not one of"),
         ],
         indirect=["action_run"],
         ids=["skill", "pr", "since", "fail-on"],
@@ -146,30 +146,6 @@ class TestInputsAndCheckout:
         result = action.run(shallow_clone, skill="risk-heat-map")
         assert result.returncode != 0
         assert "shallow clone" in result.stderr
-
-
-class TestInterpreter:
-    """The Python clean-eval runs with: the one given, else the checkout's uv environment; never one that can't
-    import its dependencies."""
-
-    @pytest.mark.skipif(not shutil.which("uv"), reason="uv is not installed")
-    @pytest.mark.parametrize("workspace", [ONE_FUNCTION], indirect=True)
-    @pytest.mark.parametrize("action_run", [{"skill": "risk-heat-map", "python": ""}], indirect=True)
-    def test_without_an_interpreter_it_uses_the_checkouts_uv_environment(
-        self,
-        action_run,
-    ):
-        assert action_run.returncode == 0, action_run.stderr
-
-    @pytest.mark.parametrize("workspace", [ONE_CONSTANT], indirect=True)
-    def test_an_interpreter_without_pydantic_is_refused(
-        self,
-        action,
-        fake_python,
-    ):
-        result = action.run(skill="risk-heat-map", python=str(fake_python))
-        assert result.returncode != 0
-        assert "can't import clean-eval's dependencies (pydantic, click)" in result.stderr
 
 
 class TestRiskHeatMap:

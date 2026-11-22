@@ -52,3 +52,7 @@ class RemoteError(HeatmapError):
     ) -> None:
         super().__init__(message)
         self.kind = kind
+
+
+class RunFailed(HeatmapError):
+    """A CI run that must fail: a bad input, a checkout it can't run on, or a review its fail-on setting fails on."""

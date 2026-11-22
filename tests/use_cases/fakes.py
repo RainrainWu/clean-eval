@@ -382,6 +382,11 @@ class MemoryGit(Git):
     ):
         return self.root
 
+    def is_shallow(
+        self,
+    ):
+        return False  # a memory repository holds its whole history
+
     def rev_parse(
         self,
         rev,

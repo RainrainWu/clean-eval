@@ -1,12 +1,13 @@
 """Use cases of the eval: keep or restore the tuning files the CI agent edits, collect the merged-PR history of a
-period, and prepare the agent's context."""
+period, prepare the agent's context, and run the eval in CI."""
 
+import datetime as dt
 from collections.abc import Callable, Collection
 from typing import Optional, Union
 
 from pydantic import ValidationError
 
-from clean_eval.domain.errors import InvalidOutput, NoPythonSource, RemoteError
+from clean_eval.domain.errors import HeatmapError, InvalidOutput, NoPythonSource, RemoteError, RunFailed
 from clean_eval.domain.evaluation import (
     DefectPatch,
     EvalContext,
@@ -22,9 +23,10 @@ from clean_eval.domain.evaluation import (
 )
 from clean_eval.domain.policy import REPO_DIR, Policy
 from clean_eval.domain.rating import Heatmap, ModuleRecord, RatingCache
-from clean_eval.domain.review import StepOutputs
+from clean_eval.domain.review import RunFolders, StepOutputs
+from clean_eval.use_cases.ci import report_run, run_agent
 from clean_eval.use_cases.heatmap import rate_revision
-from clean_eval.use_cases.interfaces import Clock, CodeHost, Environment, FileSystem, Git
+from clean_eval.use_cases.interfaces import Agent, Clock, CodeHost, Environment, FileSystem, Git, RunLog
 from clean_eval.use_cases.rules.evaluation import (
     MODEL_FILE,
     RULES_FILE,
@@ -43,7 +45,17 @@ from clean_eval.use_cases.rules.evaluation import (
     sensitivity,
 )
 from clean_eval.use_cases.rules.review import change_risk, secret_values, truncate
-from clean_eval.use_cases.store import JUDGING_ERRORS, invalid, read_json, validated, write_json, write_run_output
+from clean_eval.use_cases.store import (
+    JUDGING_ERRORS,
+    clear_path,
+    invalid,
+    load_policy,
+    read_json,
+    validated,
+    write_json,
+    write_run_output,
+    write_step_outputs,
+)
 
 # The repository's tuning files (`.clean-eval/` in the working tree) and the snapshot of them taken before the CI agent
 # ran, through the FileSystem interface: what an eval may change, and how anything it may not keep is put back.
@@ -56,16 +68,6 @@ def text_or_none(
     path: str,
 ) -> Optional[str]:
     return fs.read_text(path) if fs.is_file(path) else None
-
-
-def clear_path(
-    fs: FileSystem,
-    path: str,
-) -> None:
-    if fs.is_dir(path) and not fs.is_link(path):
-        fs.remove_tree(path)
-    elif fs.lexists(path):
-        fs.remove(path)
 
 
 def snapshot_tuning(
@@ -381,3 +383,90 @@ def judge_tuning_edit[T](
     except JUDGING_ERRORS as e:
         restore_tuning(fs, workspace, snapshot_dir, name)
         return Rejection(reason=str(invalid(e)) if isinstance(e, ValidationError) else str(e))
+
+
+# Use case: the eval's CI run (the action's eval skill): collect the history of a period, let the agent evaluate it and,
+# when allowed, edit the tuning files, then keep only the edits that pass the eval's checks. Through the Git,
+# FileSystem, Clock, Environment, CodeHost, Agent and RunLog interfaces.
+
+LOOKBACK_DAYS = 90  # the period an eval looks back over by default
+EVAL_PROMPT = (
+    "Evaluate the merged PRs from %(since)s to %(until)s with apply=%(apply)s. Read %(context)s/skills/eval/SKILL.md "
+    "and follow its 'CI mode' section. Precomputed context: %(context)s/context.json, %(context)s/eval-history.json, "
+    "%(context)s/sensitivity.json, %(context)s/defects/index.json (patches alongside), %(context)s/risk-model.orig.json, "
+    "%(context)s/review-rules.orig.md. Write %(agent)s/report.md and %(agent)s/result.json. %(extra)s"
+)
+
+
+def run_eval_action(
+    git: Git,
+    fs: FileSystem,
+    clock: Clock,
+    env: Environment,
+    host: CodeHost,
+    agent: Agent,
+    log: RunLog,
+    folders: RunFolders,
+    since: Optional[str],
+    until: Optional[str],
+    apply: bool,
+    default_rules: str,
+    extra_prompt: str,
+    gh_output: str,
+    summary: str,
+) -> None:
+    """The eval's CI run over the PRs merged from `since` (default: LOOKBACK_DAYS ago) to `until` (default: today):
+    collect their history (with their review signal when the code host is signed in), let the agent evaluate it and,
+    with `apply`, edit .clean-eval/; keep only the edits that pass the eval's checks, and report: the result's step
+    outputs, and the report in the job summary `summary`. RunFailed on dates that aren't YYYY-MM-DD, on a symlinked
+    .clean-eval with `apply`, or on agent output that can't be trusted (every edit is reverted then)."""
+    today = dt.date.fromisoformat(clock.today())
+    since = since or (today - dt.timedelta(days=LOOKBACK_DAYS)).isoformat()
+    until = until or today.isoformat()
+    try:
+        period = Period(since=since, until=until)
+    except ValidationError:
+        raise RunFailed("since/until must be YYYY-MM-DD")
+    writable = []
+    if apply:
+        tuning = fs.join(folders.workspace, REPO_DIR)
+        if fs.is_link(tuning):  # its target would be writable for the agent
+            raise RunFailed("refusing apply=true: .clean-eval is a symlink")
+        writable = [tuning]
+    try:
+        host.require_auth()
+        signed_in = True
+    except HeatmapError:
+        signed_in = False
+    log.step("Collect the history from %s to %s" % (since, until))
+    policy, source = load_policy(fs, folders.workspace)
+    prepare_eval(
+        git,
+        fs,
+        clock,
+        folders.context,
+        folders.workspace,
+        policy,
+        source,
+        period,
+        default_rules,
+        host=host if signed_in else None,
+    )
+    agent.require()
+    prompt = EVAL_PROMPT % {
+        "since": since,
+        "until": until,
+        "apply": "true" if apply else "false",
+        "context": folders.context,
+        "agent": folders.agent,
+        "extra": extra_prompt,
+    }
+    run_agent(agent, fs, env, log, folders, prompt.strip(), writable)
+    try:
+        result, outputs = finalize_eval(fs, env, folders.context, folders.agent, folders.out, apply, folders.workspace)
+    except InvalidOutput as error:
+        raise RunFailed("invalid agent output (any .clean-eval/ edits were reverted): %s" % error)
+    if result.redactions:
+        log.warning("clean-eval redacted %d secret-looking value(s) from agent output" % result.redactions)
+    write_step_outputs(fs, gh_output, outputs)
+    report_run(fs, summary, "Eval %s → %s" % (since, until), folders)
