@@ -5,18 +5,19 @@ cases' CodeHost interface: what it reads is validated into domain models. Failur
 import json
 import re
 import subprocess
+from typing import Any, Optional
 
 from pydantic import ValidationError
 
 from clean_eval.domain.errors import HeatmapError, RemoteError
-from clean_eval.domain.review import HostReview, PullRequest
+from clean_eval.domain.review import HostReview, PullRequest, ReviewPost
 from clean_eval.use_cases.interfaces import CodeHost
 
 NOT_FOUND = re.compile(r"Could not resolve to a PullRequest|HTTP 404|Not Found", re.I)
 PR_FIELDS = "number,title,body,author,url,baseRefName,headRefName,baseRefOid,headRefOid,isCrossRepository"
 
 
-def loads_multi(text):
+def loads_multi(text: str) -> object:
     """Parse gh output; `gh api --paginate` concatenates one JSON document per page."""
     dec, i, docs, text = json.JSONDecoder(), 0, [], text.strip()
     while i < len(text):
@@ -32,7 +33,7 @@ def loads_multi(text):
 
 
 class GitHubGateway(CodeHost):
-    def _run(self, *args, stdin=None):
+    def _run(self, *args: str, stdin: Optional[str] = None) -> str:
         r = subprocess.run(["gh", *args], input=stdin, capture_output=True, text=True)
         if r.returncode != 0:
             err = (r.stderr or r.stdout).strip()[:300]
@@ -41,7 +42,7 @@ class GitHubGateway(CodeHost):
             )
         return r.stdout
 
-    def _json(self, *args, stdin=None):
+    def _json(self, *args: str, stdin: Optional[str] = None) -> object:
         out = self._run(*args, stdin=stdin)
         try:
             return loads_multi(out)
@@ -49,27 +50,29 @@ class GitHubGateway(CodeHost):
             raise RemoteError("unparseable output of gh %s: %s" % (" ".join(args[:2]), e))
 
     @staticmethod
-    def _reviews(number):
+    def _reviews(number: int) -> str:
         return "repos/{owner}/{repo}/pulls/%s/reviews" % number
 
-    def pull_request(self, number):
+    def pull_request(self, number: int) -> PullRequest:
         try:
             return PullRequest.model_validate(self._json("pr", "view", str(number), "--json", PR_FIELDS))
         except ValidationError as e:
             raise RemoteError.from_validation(e, "gh pr view %s returned an unexpected pull request" % number)
 
-    def require_auth(self):
+    def require_auth(self) -> None:
         try:
             self._run("auth", "status")
         except RemoteError as e:
             raise HeatmapError("--with-gh needs an authenticated gh CLI: %s" % e)
 
-    def review_threads(self, number):
+    def review_threads(self, number: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         view = self._json("pr", "view", str(number), "--json", "reviews,comments,labels,additions,deletions,url")
+        if not isinstance(view, dict):
+            raise RemoteError("gh pr view %s returned no pull request object" % number)
         inline = self._json("api", "--paginate", "repos/{owner}/{repo}/pulls/%s/comments" % number)
         return view, inline if isinstance(inline, list) else []
 
-    def post_review(self, number, post):
+    def post_review(self, number: int, post: ReviewPost) -> HostReview:
         out = self._run(
             "api",
             "-X",
@@ -84,7 +87,7 @@ class GitHubGateway(CodeHost):
         except ValidationError:
             return HostReview()
 
-    def reviews(self, number):
+    def reviews(self, number: int) -> list[HostReview]:
         found = self._json("api", "--paginate", self._reviews(number))
         out = []
         for r in found if isinstance(found, list) else ():
@@ -94,7 +97,7 @@ class GitHubGateway(CodeHost):
                 continue  # not a review we can read: never one of ours to dismiss
         return out
 
-    def dismiss_review(self, number, review_id, message):
+    def dismiss_review(self, number: int, review_id: int, message: str) -> None:
         self._run(
             "api",
             "-X",

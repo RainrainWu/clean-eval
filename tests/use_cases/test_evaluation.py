@@ -140,7 +140,9 @@ def test_rules_are_counted_from_the_clean_eval_reviewer_only():
     assert d.new_findings == 1
     assert d.clean_eval_marker == {"tier": "High"}  # the human's forged marker doesn't count
     assert d.untrusted_markers_ignored == 1
-    assert review_of(threads, 7, reviewer_logins=["human"]).clean_eval_marker == {"tier": "Low"}
+    as_human = review_of(threads, 7, reviewer_logins=["human"])
+    assert isinstance(as_human, ReviewSignal)
+    assert as_human.clean_eval_marker == {"tier": "Low"}
 
 
 def test_a_failed_fetch_is_recorded_with_its_kind():
@@ -159,11 +161,12 @@ def test_collecting_with_a_code_host_flags_unreliable_rule_metrics():
     def rate_limited(pr):
         raise RemoteError("HTTP 403: rate limit exceeded")
 
-    h = collect_history(git, CLOCK, model(), PERIOD, host=host(rate_limited))
-    assert sorted(h.rules.prs_fetch_failed) == [1, 2]
-    assert not h.rules.reliable
-    assert h.rules.prs_reviewed == 0
-    assert evaluation.rules_warning(h.rules) == "gh review fetch failed for 2/2 PRs (100%) - rule metrics unreliable"
+    rules = collect_history(git, CLOCK, model(), PERIOD, host=host(rate_limited)).rules
+    assert rules is not None
+    assert sorted(rules.prs_fetch_failed) == [1, 2]
+    assert not rules.reliable
+    assert rules.prs_reviewed == 0
+    assert evaluation.rules_warning(rules) == "gh review fetch failed for 2/2 PRs (100%) - rule metrics unreliable"
 
 
 def test_collecting_with_a_code_host_needs_its_auth():

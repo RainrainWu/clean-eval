@@ -3,7 +3,7 @@ and the value types and score bands every model uses."""
 
 import json
 import re
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, Optional, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -12,12 +12,12 @@ from clean_eval.domain.errors import InvalidPolicy
 # Value types shared by the data models: constrained scalars whose rules pydantic enforces wherever they are used.
 
 # Score bands, ascending: (upper bound, name). Level n of an aspect takes the band at position 3 - n (0 Critical ... 3 Low).
-BANDS = ((24, "Low"), (49, "Moderate"), (74, "High"), (100, "Critical"))
-BAND_NAMES = tuple(name for _, name in BANDS)
 Band = Literal["Low", "Moderate", "High", "Critical"]
+BANDS: tuple[tuple[int, Band], ...] = ((24, "Low"), (49, "Moderate"), (74, "High"), (100, "Critical"))
+BAND_NAMES: tuple[Band, ...] = tuple(name for _, name in BANDS)
 
-SEVERITIES = ("minor", "major", "blocker")  # ascending
 Severity = Literal["minor", "major", "blocker"]
+SEVERITIES: tuple[Severity, ...] = ("minor", "major", "blocker")  # ascending
 
 Score = Annotated[int, Field(ge=0, le=100)]  # 0-100, as the bands read it
 Level = Annotated[int, Field(ge=0, le=3, strict=True)]  # 0 most severe ... 3 least
@@ -213,7 +213,7 @@ class Policy(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _merge_overrides(cls, data):
+    def _merge_overrides(cls, data: object) -> dict[str, Any]:
         """Overrides are partial: comments (`_*`, `notes`) are dropped, v1 keys are refused with a migration hint, and a
         dictionary knob keeps the defaults of the keys it doesn't name; naming a key it doesn't have is an error."""
         if not isinstance(data, dict):
@@ -236,7 +236,7 @@ class Policy(BaseModel):
 
     @field_validator(*REGEX_KNOBS)
     @classmethod
-    def _compiles(cls, pattern):
+    def _compiles(cls, pattern: str) -> str:
         try:
             re.compile(pattern)
         except re.error as e:
@@ -245,7 +245,7 @@ class Policy(BaseModel):
 
     @field_validator("not_applicable")
     @classmethod
-    def _reasons_compile(cls, rules):
+    def _reasons_compile(cls, rules: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
         for reason, pattern in rules:
             try:
                 re.compile(pattern)
@@ -254,14 +254,14 @@ class Policy(BaseModel):
         return rules
 
     @model_validator(mode="after")
-    def _weights_mix_something(self):
+    def _weights_mix_something(self) -> Self:
         for name in WEIGHT_GROUPS:
             if sum(getattr(self, name).values()) <= 0:
                 raise ValueError("%s must have a positive sum" % name)
         return self
 
     @classmethod
-    def from_overrides(cls, overrides=None, source=None):
+    def from_overrides(cls, overrides: Optional[dict[str, Any]] = None, source: Optional[str] = None) -> Self:
         """The default policy with `overrides` (a JSON object) applied; InvalidPolicy tells what the validators refused."""
         try:
             return cls.model_validate({} if overrides is None else overrides)
@@ -269,7 +269,7 @@ class Policy(BaseModel):
             raise InvalidPolicy.from_validation(e, source)
 
     @classmethod
-    def from_text(cls, text, source):
+    def from_text(cls, text: str, source: str) -> Self:
         """The policy an overrides file describes (empty text: the defaults); `source` names the file in errors."""
         try:
             overrides = json.loads(text) if text and text.strip() else {}

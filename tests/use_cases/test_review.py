@@ -123,5 +123,6 @@ def test_an_invalid_or_v1_policy_falls_back_to_the_defaults_with_a_note(git, tex
     base = base_with(git, {"a.py": "x = 1\n", ".clean-eval/risk-model.json": text})
     policy, source, raw, note = policy_at(git, base)
     assert (policy, source, raw) == (Policy(), "clean-eval default", "{}")
+    assert note is not None
     assert note.startswith("ignored .clean-eval/risk-model.json at the base:"), note
     assert expect in note

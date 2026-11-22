@@ -113,10 +113,12 @@ def test_unverified_rules():
     assert (neutral, info["coverage"]) == (P.unverified_no_functions, None)
     base, _, _ = unverified(facts(test_scales=Counter(unit=3)), 10, P)
     risky, ev, _ = unverified(facts(test_scales=Counter(unit=3)), 80, P)
+    assert base is not None
     assert risky == base + P.no_integration_penalty
     untested, _, _ = unverified(
         facts(linked_functions=0, linked_test_files=0, linked_test_loc=0.0, test_scales=Counter()), 0, P
     )
+    assert untested is not None
     assert untested >= 99
     na, ev, _ = unverified(facts(na_reason="Infrastructure manifest"), 90, P)
     assert na is None
@@ -129,6 +131,7 @@ def test_unverified_rules():
 def test_stored_facts_reproduce_the_rating():
     f = facts(effect_counts=Counter(db_write=2), test_scales=Counter(unit=1), funcs=[(70, 18), (5, 1)])
     r = rate_module(f, [], P)
+    assert r.facts is not None
     stored = Facts.model_validate_json(r.facts.model_dump_json())  # as data.json or a history keeps them
     assert stored == f
     assert rescore(stored, P) == r.scores

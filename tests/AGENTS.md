@@ -42,5 +42,8 @@ uv run pytest tests/use_cases/test_heatmap.py            # one module; ::test_he
 - **Expensive shared state** goes in a wider-scoped fixture: `scope="module"` for a module-level fixture (as
   `collected` in `tests/use_cases/test_evaluation.py`), or a `scope="class"` classmethod fixture.
 - **Strictness.** Warnings fail the suite, and markers must be registered in `pyproject.toml`.
+- **Types.** ty checks the tests too, though their own functions need no annotations.
+  - Narrow a value before you use it: `assert x is not None` for an `Optional`, `isinstance` for a union.
+  - Build a deliberately invalid model with `Model.model_validate({...})`, so the call itself type-checks.
 - **Builders.** `tests/domain/builders.py` builds domain models, and `tests/helpers.py` (no package imports) holds
   `Repo`, `FakeBin` and file helpers.

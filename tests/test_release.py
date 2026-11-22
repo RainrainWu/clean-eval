@@ -12,6 +12,8 @@ from tests.helpers import ROOT, days_ago
 
 SCRIPT = os.path.join(ROOT, ".github", "scripts", "check_release.py")
 _spec = importlib.util.spec_from_file_location("check_release", SCRIPT)
+assert _spec is not None
+assert _spec.loader is not None
 check_release = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check_release)
 

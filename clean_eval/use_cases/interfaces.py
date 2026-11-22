@@ -7,7 +7,7 @@ inherit and implement them:
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Optional
 
 from clean_eval.domain.rating import Graph, Heatmap
 from clean_eval.domain.review import HostReview, PullRequest, ReviewPost
@@ -41,19 +41,19 @@ class Git(ABC):
         """The repository's name (from its origin, else its folder)."""
 
     @abstractmethod
-    def ls_files(self) -> list:
+    def ls_files(self) -> list[str]:
         """The tracked paths of the working tree."""
 
     @abstractmethod
-    def ls_tree(self, rev: str) -> list:
+    def ls_tree(self, rev: str) -> list[tuple[str, str, int]]:
         """[(path, blob id, size)] of the files at `rev`."""
 
     @abstractmethod
-    def read_blobs(self, blob_ids: list) -> dict:
+    def read_blobs(self, blob_ids: list[str]) -> dict[str, str]:
         """{blob id: text} of the given blobs."""
 
     @abstractmethod
-    def diff_files(self, base: str, head: str) -> list:
+    def diff_files(self, base: str, head: str) -> list[str]:
         """The paths changed between two revisions."""
 
     @abstractmethod
@@ -73,7 +73,7 @@ class Git(ABC):
         """One line per commit that touched `path`, up to `rev`, newest first."""
 
     @abstractmethod
-    def commit_patch(self, sha: str, paths: list) -> str:
+    def commit_patch(self, sha: str, paths: list[str]) -> str:
         """A commit's message, stat and patch, limited to `paths`."""
 
     @abstractmethod
@@ -81,7 +81,7 @@ class Git(ABC):
         """The branch PRs are merged into."""
 
     @abstractmethod
-    def first_parent_log(self, branch: str, since: str, until: str) -> list:
+    def first_parent_log(self, branch: str, since: str, until: str) -> list[tuple[str, list[str], str, int, str]]:
         """[(sha, [parent shas], author, unix time, subject)] of the first-parent commits of `branch` in the period."""
 
 
@@ -97,7 +97,7 @@ class CodeHost(ABC):
         """HeatmapError unless the host can be called."""
 
     @abstractmethod
-    def review_threads(self, number: int) -> tuple:
+    def review_threads(self, number: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """(the PR with its reviews, comments, labels and size; its inline review comments), as the host gives them."""
 
     @abstractmethod
@@ -105,7 +105,7 @@ class CodeHost(ABC):
         """Post one review; the review as posted."""
 
     @abstractmethod
-    def reviews(self, number: int) -> "list[HostReview]":
+    def reviews(self, number: int) -> list[HostReview]:
         """Every review of the PR."""
 
     @abstractmethod
@@ -163,11 +163,11 @@ class FileSystem(ABC):
     def size(self, path: str) -> int: ...
 
     @abstractmethod
-    def files_under(self, top: str) -> list:
+    def files_under(self, top: str) -> list[str]:
         """Every file below `top`, as paths relative to it."""
 
     @abstractmethod
-    def glob(self, folder: str, pattern: str) -> list:
+    def glob(self, folder: str, pattern: str) -> list[str]:
         """The paths in `folder` that match `pattern`, sorted."""
 
     @abstractmethod
@@ -217,14 +217,14 @@ class Environment(ABC):
     """The process environment."""
 
     @abstractmethod
-    def variables(self) -> dict:
+    def variables(self) -> dict[str, str]:
         """A copy of every variable, as {name: value}."""
 
     @abstractmethod
     def get(self, name: str, default: Optional[str] = None) -> Optional[str]: ...
 
     @abstractmethod
-    def paths(self, name: str) -> list:
+    def paths(self, name: str) -> list[str]:
         """The paths an os.pathsep-separated variable lists."""
 
     @abstractmethod

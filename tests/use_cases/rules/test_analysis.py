@@ -147,6 +147,7 @@ def loose(x):
 
 def test_python_stats():
     st = python_stats(SAMPLE)
+    assert st is not None
     assert (len(st.funcs), st.typed, st.broad, st.swallow) == (2, 1, 1, 1)
     assert st.funcs[0][1] == 3  # one if and one boolean operator on top of the base path
     assert python_stats("def broken(:") is None

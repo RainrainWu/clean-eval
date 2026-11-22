@@ -70,7 +70,7 @@ def test_the_verdict_and_counts_are_derived():
     assert Review.model_validate(stored).verdict == "request_changes"
     assert Review(max_tier="Low", max_score=0).verdict == "approve"
     with pytest.raises(ValidationError):
-        Review(max_tier="Huge", max_score=10)
+        Review.model_validate({"max_tier": "Huge", "max_score": 10})
 
 
 def test_rules_tables():
@@ -80,6 +80,12 @@ def test_rules_tables():
     for bad in ([], [rule, rule]):
         with pytest.raises(ValidationError):
             CheckedRules(rules=bad)
+
+
+@pytest.mark.parametrize("tier", [[], {}, 3, None], ids=["list", "object", "number", "null"])
+def test_a_rules_row_needs_a_band_name(tier):
+    with pytest.raises(ValidationError):  # a validation error, never a TypeError from the legacy-name lookup
+        ReviewRule.model_validate({"id": "CA-01", "severity": "major", "min_tier": tier})
 
 
 def test_pull_request_commits_are_object_ids():

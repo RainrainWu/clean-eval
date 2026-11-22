@@ -1,9 +1,12 @@
 """The presenters: the README's SVG treemap and the block around it (a DiagramPresenter), and the Markdown summary
 (a ReportPresenter). Rendering only, never I/O."""
 
+from collections.abc import Sequence
+from typing import Optional
 from xml.sax.saxutils import escape
 
 from clean_eval.domain.policy import ASPECTS, BANDS
+from clean_eval.domain.rating import Heatmap
 from clean_eval.use_cases.interfaces import DiagramPresenter, ReportPresenter
 from clean_eval.use_cases.rules.heatmap import MARKERS, band
 
@@ -32,11 +35,13 @@ DIAGRAM_PATH = "docs/risk-heatmap.svg"  # default location of the README diagram
 # Squarified treemap layout.
 
 
-def squarify(items, x, y, w, h):
+def squarify[T](
+    items: Sequence[tuple[T, float]], x: float, y: float, w: float, h: float
+) -> list[tuple[T, float, float, float, float]]:
     """`items` is [(payload, area)] sorted by area descending; returns [(payload, x, y, w, h)] filling the rectangle."""
     out, rest = [], list(items)
 
-    def worst(row, side):
+    def worst(row: list[tuple[T, float]], side: float) -> float:
         s, mx, mn = sum(a for _, a in row), max(a for _, a in row), min(a for _, a in row)
         return max(side * side * mx / (s * s), s * s / (side * side * mn))
 
@@ -69,22 +74,22 @@ TEXT_MIN_W, TEXT_MIN_H = 96, 44
 COLUMNS = tuple((key, label) for _, key, label, _, _ in ASPECTS)
 
 
-def _band(score):
+def _band(score: Optional[int]) -> str:
     return "N/A" if score is None else band(score)
 
 
-def _fmt(n):
+def _fmt(n: int) -> str:
     return "%dk" % round(n / 1000) if n >= 10000 else "%.1fk" % (n / 1000) if n >= 1000 else str(n)
 
 
-def legend():
+def legend() -> str:
     return " · ".join(
         "%s %s %d-%d" % (BAND_STYLE[n][1], n, (BANDS[i - 1][0] + 1) if i else 0, hi) for i, (hi, n) in enumerate(BANDS)
     )
 
 
 class SvgDiagramPresenter(DiagramPresenter):
-    def svg(self, heatmap):
+    def svg(self, heatmap: Heatmap) -> str:
         mods = sorted(heatmap.modules, key=lambda m: -m.loc)
         total = sum(m.loc for m in mods) or 1
         weights = [max(m.loc, total * MIN_TILE_SHARE) for m in mods]
@@ -129,7 +134,7 @@ class SvgDiagramPresenter(DiagramPresenter):
         out.append("</svg>")
         return "\n".join(out) + "\n"
 
-    def readme_block(self, heatmap, image_link, fingerprint):
+    def readme_block(self, heatmap: Heatmap, image_link: str, fingerprint: str) -> str:
         start, end = MARKERS
         return "\n".join(
             [
@@ -154,18 +159,18 @@ class SvgDiagramPresenter(DiagramPresenter):
 TOP = 10
 
 
-def _cell(score):
+def _cell(score: Optional[int]) -> str:
     if score is None:
         return "%s N/A" % BAND_STYLE["N/A"][1]
     return "%s %d" % (BAND_STYLE[band(score)][1], score)
 
 
-def _name(name):
+def _name(name: str) -> str:
     return "`%s`" % name.replace("`", "'").replace("|", "\\|")
 
 
 class MarkdownReportPresenter(ReportPresenter):
-    def report(self, heatmap):
+    def report(self, heatmap: Heatmap) -> str:
         mods = sorted(heatmap.modules, key=lambda m: (-m.scores.overall, m.name))
         head = [
             "**%s** risk heat map · `%s` @ `%s` · %s · %d modules · %d lines%s"

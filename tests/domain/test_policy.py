@@ -96,4 +96,4 @@ def test_tunable_and_structural_knobs_partition_the_policy():
 
 def test_the_policy_is_immutable():
     with pytest.raises(ValidationError):
-        P.depth = 1
+        P.depth = 1  # ty: ignore[invalid-assignment]  # the assignment the model must refuse
