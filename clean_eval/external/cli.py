@@ -1,4 +1,5 @@
-"""The command line: parse arguments, wire adaptors into a use case, run it and print the outcome.
+"""The command line: parse arguments, hand a use case the gateways and presenters from wiring.py, run it and print the
+outcome.
 
     uv run python -I <clean-eval checkout>/clean_eval <command> ...
 

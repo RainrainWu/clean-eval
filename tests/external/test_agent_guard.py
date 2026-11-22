@@ -1,3 +1,4 @@
+"""The CI agent's PreToolUse guard (external/agent_guard.py): an allowlist that resolves real paths and fails closed."""
 import json
 import os
 import shutil
@@ -6,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-from helpers import ROOT, write
+from tests.helpers import ROOT, write
 
 from clean_eval.external import agent_guard as guard
 
@@ -70,9 +71,9 @@ class GuardTest(unittest.TestCase):
         self.assertIn("missing", self.decide("Write"))
 
     def test_other_tools_denied(self):
-        for tool in ("Bash", "WebFetch", "WebSearch", "Task", "NotebookEdit", "mcp__github__create_issue"):
+        for tool in ("Bash", "WebFetch", "WebSearch", "Task", "NotebookEdit", "Skill", "mcp__github__create_issue"):
             self.assertIsNotNone(self.decide(tool, command="echo hi"), tool)
-        for tool in ("Skill", "TodoWrite", "ToolSearch"):
+        for tool in ("TodoWrite", "ToolSearch"):
             self.assertIsNone(self.decide(tool), tool)
 
     def run_hook(self, payload, env=None):

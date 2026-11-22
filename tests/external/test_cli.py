@@ -1,4 +1,5 @@
-"""The external layer end to end: `python -I clean_eval <command>` (the environment uv.lock pins) on a throwaway repository."""
+"""The command line end to end: `python -I clean_eval <command>` (the environment uv.lock pins) on throwaway repositories."""
+import datetime as dt
 import json
 import os
 import shutil
@@ -7,13 +8,16 @@ import sys
 import tempfile
 import unittest
 
-from helpers import ROOT, Repo, days_ago, read
+from tests.helpers import ROOT, Repo, days_ago, read, write_json
 
 CE = os.path.join(ROOT, "clean_eval")
 
 
 def run(repo, *args):
     return subprocess.run([sys.executable, "-I", CE, *args], cwd=repo, capture_output=True, text=True)
+
+
+D = lambda s: dt.datetime.fromisoformat(s + "T12:00:00+00:00")  # noqa: E731
 
 
 class CliTest(unittest.TestCase):
@@ -101,6 +105,43 @@ class CliTest(unittest.TestCase):
             self.assertNotIn("Traceback", r.stderr)
         finally:
             repo.cleanup()
+
+
+class HistoryCommandTest(unittest.TestCase):
+    """The eval skill runs `uv run ... python -I <checkout>/clean_eval history ...` from the repository it evaluates."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def run_ce(self, *args):
+        return subprocess.run([sys.executable, "-I", CE, "history", *args], cwd=self.dir, capture_output=True, text=True)
+
+    def test_replay_and_sensitivity_from_any_folder(self):
+        r = Repo(self.dir)
+        r.commit("init", {"src/a/x.py": "1\n"}, when=D("2026-01-01"))
+        r.commit("feat: a (#1)", {"src/a/x.py": "2\n"}, when=D("2026-02-01"))
+        r.commit("fix: a (#2)", {"src/a/x.py": "3\n"}, when=D("2026-02-02"))
+        out = os.path.join(self.dir, "h.json")
+        res = self.run_ce("--since", "2026-01-15", "--until", "2026-02-28", "--out", out)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("2 PRs, 1 with escaped defects", res.stderr)
+        write_json(os.path.join(self.dir, "candidate.json"), {"business_weights": {"dependents": 0.4}})
+        replayed = self.run_ce("--from-history", out, "--replay", os.path.join(self.dir, "candidate.json"))
+        self.assertEqual(set(json.loads(replayed.stdout)), {"auc_max_score", "by_band", "band_mix"})
+        rows = json.loads(self.run_ce("--from-history", out, "--sensitivity").stdout)
+        self.assertEqual(rows[0]["change"], "baseline")
+
+    def test_usage_errors_are_reported_not_raised(self):
+        Repo(self.dir)
+        for args, message in ((["--sensitivity"], "need --from-history"), ([], "--since is required"),
+                              (["--since", "last week"], "YYYY-MM-DD")):
+            res = self.run_ce(*args)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn(message, res.stderr)
+            self.assertNotIn("Traceback", res.stderr)
 
 
 if __name__ == "__main__":

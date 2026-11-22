@@ -6,7 +6,7 @@ import subprocess
 import sys
 import unittest
 
-from helpers import ROOT, Repo, days_ago
+from tests.helpers import ROOT, Repo, days_ago
 
 SCRIPT = os.path.join(ROOT, ".github", "scripts", "check_release.py")
 _spec = importlib.util.spec_from_file_location("check_release", SCRIPT)
