@@ -6,7 +6,7 @@ The tests are written for pytest, laid out like the package, and held to the sam
 ```bash
 uv run pytest                                            # everything, ~30 s; no network (fake gh and claude)
 uv run pytest -m "not e2e"                               # skip the subprocess end-to-end tests, ~5 s
-uv run pytest tests/use_cases/test_sources.py            # one module; ::test_helpers for one test, -k <words> to filter
+uv run pytest tests/use_cases/test_heatmap.py            # one module; ::test_helpers for one test, -k <words> to filter
 ```
 
 ## Layout
@@ -40,7 +40,7 @@ uv run pytest tests/use_cases/test_sources.py            # one module; ::test_he
   `ids`.
 - **Mark subprocess end-to-end tests `e2e`** (`pytestmark = pytest.mark.e2e`), so `-m "not e2e"` stays fast.
 - **Expensive shared state** goes in a wider-scoped fixture: `scope="module"` for a module-level fixture (as
-  `collected` in `tests/use_cases/test_collect_history.py`), or a `scope="class"` classmethod fixture.
+  `collected` in `tests/use_cases/test_evaluation.py`), or a `scope="class"` classmethod fixture.
 - **Strictness.** Warnings fail the suite, and markers must be registered in `pyproject.toml`.
 - **Builders.** `tests/domain/builders.py` builds domain models, and `tests/helpers.py` (no package imports) holds
   `Repo`, `FakeBin` and file helpers.

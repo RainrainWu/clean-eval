@@ -1,12 +1,14 @@
-"""The rating models (domain/rating.py): score ranges, facts that survive JSON, assignments that are validated."""
+"""The rating models (domain/rating.py): the code read, the knowledge graph, rated modules and heat maps, a reviewer's
+judgement, and a change's risk."""
 
 import pytest
 from pydantic import ValidationError
 
-from clean_eval.domain.change import ModuleRecord
-from clean_eval.domain.rating import Facts, Scores
-from clean_eval.domain.values import BAND_NAMES, Band
+from clean_eval.domain.policy import BAND_NAMES, Band
+from clean_eval.domain.rating import Facts, Judgement, ModuleRecord, Scores
 from tests.domain.builders import facts, rating
+
+# The rating models (domain/rating.py): score ranges, facts that survive JSON, assignments that are validated.
 
 
 def test_scores_are_0_to_100_and_only_unverified_may_be_na():
@@ -51,3 +53,27 @@ def test_a_record_is_scored_exactly_when_rated(bad):
 
 def test_the_band_type_matches_the_bands():
     assert Band.__args__ == BAND_NAMES
+
+
+# A reviewer's judgement (domain/rating.py): levels that don't validate are dropped, not raised.
+
+
+def test_invalid_entries_are_dropped_not_fatal():
+    j = Judgement.model_validate(
+        {
+            "modules": {
+                "a": {
+                    "business": {"level": 1, "reason": "core path " * 50},
+                    "effects": {"level": 9},
+                    "nope": {"level": 0},
+                },
+                "b": {"entropy": {"level": True}},
+                "c": "x",
+                7: {"business": {"level": 0}},
+            }
+        }
+    )
+    assert list(j.modules) == ["a"]
+    assert list(j.modules["a"]) == ["business"]
+    assert len(j.modules["a"]["business"].reason) == 240
+    assert Judgement.model_validate("not an object").modules == {}

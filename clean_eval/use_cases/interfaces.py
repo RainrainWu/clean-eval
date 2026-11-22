@@ -9,8 +9,7 @@ inherit and implement them:
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from clean_eval.domain.graph import Graph
-from clean_eval.domain.rating import Heatmap
+from clean_eval.domain.rating import Graph, Heatmap
 from clean_eval.domain.review import HostReview, PullRequest, ReviewPost
 
 

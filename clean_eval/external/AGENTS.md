@@ -2,31 +2,32 @@
 
 The only code that touches anything outside the process.
 
-**Gateways:** one module, and one public `*Gateway` class, per external dependency.
+**Gateways:** one public `*Gateway` class per external dependency.
 - **Modules:** `git.py` (the git CLI), `github.py` (the gh CLI), `code_review_graph.py` (its CLI and the SQLite
-  `graph.db` it builds), `filesystem.py`, `environment.py` and `clock.py`.
+  `graph.db` it builds), `filesystem.py`, and `environment.py` (environment variables, and the clock).
 - **One interface each.** A gateway implements exactly one interface from `clean_eval/use_cases/interfaces.py` and
   exposes nothing beyond it.
 - **Failures** map to the domain's errors: `HeatmapError`, or `RemoteError` with `kind` `not_found` or `error`.
 - **What a gateway reads** is validated into domain models.
 
 **Drivers:** only they use the console (`print`, `sys.stdin`/`stdout`/`exit`).
-- `cli.py` is the command line.
-- `ci.py` holds the action's `prepare`, `finalize`, `post` and `redact` steps.
+- `cli.py` is the command line: the user commands, and the CI commands the action runs (`prepare`, `finalize`,
+  `post`, `redact`, `guard`). It is also the composition root: it builds the gateways and presenters it hands to the use
+  cases.
 - `agent_guard.py` is the CI agent's PreToolUse hook: an allowlist that fails closed.
 
-**`wiring.py`:** the composition root. It builds the gateways and presenters the drivers hand to the use cases.
-
 **What `ExternalDependenciesStayInTheirGateways` enforces** (in `tests/test_architecture.py`)
-- Only a gateway imports modules that reach outside (`subprocess`, `sqlite3`, `os`, `shutil`, `pathlib`, ...), and only
-  those its entry in `GATEWAYS` allows.
-- `open()` appears only in `filesystem.py`, clock reads only in `clock.py`, and `os.environ` only in `environment.py`.
+- Only a gateway module imports modules that reach outside (`subprocess`, `sqlite3`, `os`, `shutil`, `pathlib`, ...),
+  and only those its entry in `GATEWAYS` allows.
+- A gateway module holds exactly the gateway classes its `GATEWAYS` entry lists.
+- `open()` appears only in `filesystem.py`, and clock reads and `os.environ` only in `environment.py`.
 
 **To add an external dependency**
 1. Define its interface in `use_cases/interfaces.py`.
 2. Write `<dependency>.py` here, with one `*Gateway(<Interface>)` class.
-3. Register its imports in `GATEWAYS` and the pair in `IMPLEMENTATIONS` (`tests/test_architecture.py`).
-4. Build it in `wiring.py`.
+3. Register the module's imports and gateway classes in `GATEWAYS`, and the pair in `IMPLEMENTATIONS`
+   (`tests/test_architecture.py`).
+4. Build it in `cli.py`, the composition root.
 
 **Safety rules** (`README.md` "Trust model")
 - Git takes paths literally (`--literal-pathspecs`, NUL-delimited output).

@@ -1,8 +1,12 @@
-"""The process environment: its variables (secrets to redact, the guard's roots, PATH) and the home folder."""
+"""The process environment and the clock: environment variables and the home folder (EnvironmentGateway), and
+today's date (ClockGateway)."""
 
+import datetime as dt
 import os
 
-from clean_eval.use_cases.interfaces import Environment
+from clean_eval.use_cases.interfaces import Clock, Environment
+
+# The process environment: its variables (secrets to redact, the guard's roots, PATH) and the home folder.
 
 
 class EnvironmentGateway(Environment):
@@ -19,3 +23,12 @@ class EnvironmentGateway(Environment):
 
     def home(self):
         return os.path.expanduser("~")
+
+
+# The clock: today's date, the only time clean-eval reads it (the inner layers are given dates, never ask for them).
+
+
+class ClockGateway(Clock):
+    def today(self):
+        """Today, as YYYY-MM-DD."""
+        return dt.date.today().isoformat()

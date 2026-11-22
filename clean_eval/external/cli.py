@@ -1,5 +1,5 @@
-"""The command line: parse arguments, hand a use case the gateways and presenters from wiring.py, run it and print the
-outcome.
+"""The command line: parse arguments, hand a use case the gateways and presenters this module builds (it is the
+composition root), run it and print the outcome.
 
     uv run python -I <clean-eval checkout>/clean_eval <command> ...
 
@@ -10,7 +10,13 @@ outcome.
   history   merged PRs of a period, each rated at its base, with escaped defects and calibration (for the eval);
             --replay / --sensitivity re-score a collected history under candidate policies
 
-The GitHub Action also runs prepare, finalize, post, redact and guard around its agent (see ci.py).
+The GitHub Action (action.sh) runs these around its agent, which only *proposes*; they decide and act:
+
+  prepare pr-review|eval   precompute what the agent reads, so it runs with no shell, no network and no token
+  finalize --skill S       validate what it proposed and write the result CI trusts, redacted, plus the step outputs
+  post                     post the validated review on the PR
+  redact FILE              scrub secrets from a file in place (e.g. the agent transcript)
+  guard                    the agent's PreToolUse hook: allow or deny one tool call
 """
 
 import argparse
@@ -20,20 +26,201 @@ import sys
 from pydantic import ValidationError
 from pydantic_core import to_jsonable_python
 
-from clean_eval.adaptor.presenters.style import DIAGRAM_PATH
-from clean_eval.domain.errors import HeatmapError, InvalidRequest
-from clean_eval.domain.history import EvalHistory
+from clean_eval.adaptor.presenters import DIAGRAM_PATH, MarkdownReportPresenter, SvgDiagramPresenter
+from clean_eval.domain.errors import HeatmapError, InvalidOutput, InvalidRequest
+from clean_eval.domain.evaluation import EvalHistory, Period
 from clean_eval.domain.rating import RatingCache
-from clean_eval.external import ci, wiring
-from clean_eval.external.wiring import CLOCK, FS
-from clean_eval.use_cases.assess_change import assess_change
-from clean_eval.use_cases.collect_history import collect_history
-from clean_eval.use_cases.rate_repository import rate_revision, rate_working_tree
-from clean_eval.use_cases.rules.calibration import replay, sensitivity
-from clean_eval.use_cases.rules.history import rules_warning
-from clean_eval.use_cases.store import load_heatmap, load_judgement, load_policy, read_json, save_heatmap
-from clean_eval.use_cases.summarize_heatmap import summarize_heatmap
-from clean_eval.use_cases.update_readme import update_readme
+from clean_eval.external import agent_guard
+from clean_eval.external.code_review_graph import CodeReviewGraphGateway
+from clean_eval.external.environment import ClockGateway, EnvironmentGateway
+from clean_eval.external.filesystem import FileSystemGateway
+from clean_eval.external.git import GitGateway
+from clean_eval.external.github import GitHubGateway
+from clean_eval.use_cases.evaluation import collect_history, finalize_eval, prepare_eval
+from clean_eval.use_cases.heatmap import (
+    finalize_heatmap_report,
+    rate_revision,
+    rate_working_tree,
+    summarize_heatmap,
+    update_readme,
+)
+from clean_eval.use_cases.review import assess_change, finalize_pr_review, post_review, prepare_review
+from clean_eval.use_cases.rules.evaluation import replay, rules_warning, sensitivity
+from clean_eval.use_cases.rules.review import redact as redact_text
+from clean_eval.use_cases.rules.review import secret_values
+from clean_eval.use_cases.store import (
+    load_heatmap,
+    load_judgement,
+    load_policy,
+    read_json,
+    save_heatmap,
+    write_step_outputs,
+)
+
+SKILLS = ("pr-review", "eval", "risk-heat-map")  # what `finalize --skill` accepts
+GRAPHS = ("builtin", "code-review-graph")
+# The stateless gateways, shared; git is per repository, gh per use.
+FS, ENV, CLOCK = FileSystemGateway(), EnvironmentGateway(), ClockGateway()
+CHECKOUT = FS.parent(FS.parent(FS.parent(FS.real_path(__file__))))  # the clean-eval checkout: package and skills
+DEFAULT_RULES = FS.join(CHECKOUT, ".claude", "skills", "pr-review", "review-rules.md")
+
+
+def git(repo):
+    return GitGateway(repo)
+
+
+def github():
+    return GitHubGateway()
+
+
+def knowledge_graph():
+    """The code-review-graph CLI: on PATH, else where its installer puts it."""
+    return CodeReviewGraphGateway(
+        FS.find_executable("code-review-graph", ENV.get("PATH"))
+        or FS.join(ENV.home(), ".local", "bin", "code-review-graph")
+    )
+
+
+def diagram_presenter():
+    return SvgDiagramPresenter()
+
+
+def report_presenter():
+    return MarkdownReportPresenter()
+
+
+def today():
+    return CLOCK.today()
+
+
+def secrets():
+    """The values to redact: the secret-looking variables of this process's environment."""
+    return secret_values(ENV.variables())
+
+
+def default_rules():
+    return FS.read_text(DEFAULT_RULES)
+
+
+def repository_root(path):
+    return GitGateway(path).toplevel()
+
+
+def period(since, until, window_days=30):
+    """The Period of PRs merged from `since` to `until` (YYYY-MM-DD, inclusive), with `window_days` of look-ahead."""
+    try:
+        return Period(since=since, until=until, window_days=window_days)
+    except ValidationError as e:
+        raise InvalidRequest.from_validation(e, "since/until must be dates as YYYY-MM-DD")
+
+
+def prepare(args):
+    repo = repository_root(args.repo)
+    FS.make_dirs(args.ctx)
+    if args.skill == "pr-review":
+        context = prepare_review(github(), git(repo), FS, CLOCK, args.ctx, args.pr, default_rules())
+    else:
+        policy, source = load_policy(FS, repo)
+        context = prepare_eval(
+            git(repo),
+            FS,
+            CLOCK,
+            args.ctx,
+            repo,
+            policy,
+            source,
+            period(args.since, args.until),
+            default_rules(),
+            host=github() if args.with_gh else None,
+            branch=args.branch,
+        )
+    print(context.model_dump_json())
+
+
+def finalize(args):
+    try:
+        if args.skill == "pr-review":
+            result, outputs = finalize_pr_review(FS, ENV, args.ctx, args.agent, args.out)
+        elif args.skill == "eval":
+            result, outputs = finalize_eval(FS, ENV, args.ctx, args.agent, args.out, args.apply, args.workspace)
+        else:
+            result, outputs = finalize_heatmap_report(FS, ENV, args.out)
+    except InvalidOutput as e:
+        print("::error::clean-eval: invalid agent output: %s" % e, file=sys.stderr)
+        return 2
+    if result is not None and result.redactions:
+        print(
+            "::warning::clean-eval redacted %d secret-looking value(s) from agent output" % result.redactions,
+            file=sys.stderr,
+        )
+    write_step_outputs(FS, args.gh_output, outputs)
+    print(outputs.model_dump_json())
+
+
+def post(args):
+    outcome = post_review(github(), FS, ENV, args.out, args.pr, args.head, args.ctx)
+    for level, message in outcome.log:
+        if level == "warning":
+            print("::warning::" + message, file=sys.stderr)
+        else:
+            print(message)
+    return 0 if outcome.posted else 1
+
+
+def redact(args):
+    if FS.exists(args.path):
+        text, n = redact_text(FS.read_text(args.path), secrets())
+        if n:
+            FS.write_text(args.path, text)
+            print(
+                "::warning::clean-eval redacted %d secret-looking value(s) from %s" % (n, FS.name(args.path)),
+                file=sys.stderr,
+            )
+
+
+def guard(args):
+    return agent_guard.hook()
+
+
+def register(sub):
+    p = sub.add_parser("prepare", help="CI: precompute the agent's context")
+    kinds = p.add_subparsers(dest="skill", required=True)
+    for skill in ("pr-review", "eval"):
+        k = kinds.add_parser(skill)
+        k.add_argument("--repo", default=".", help="repository root (default: current folder)")
+        k.add_argument("--ctx", required=True, help="folder for the context")
+        if skill == "pr-review":
+            k.add_argument("--pr", type=int, required=True)
+        else:
+            k.add_argument("--since", required=True, help="YYYY-MM-DD")
+            k.add_argument("--until", required=True, help="YYYY-MM-DD")
+            k.add_argument("--with-gh", action="store_true", help="fetch review comments with gh")
+            k.add_argument("--branch", help="default: origin/HEAD, origin/main|master, or HEAD")
+    p.set_defaults(run=prepare)
+
+    p = sub.add_parser("finalize", help="CI: validate the agent's output and write the result CI trusts")
+    p.add_argument("--skill", choices=SKILLS, required=True)
+    p.add_argument("--ctx", required=True)
+    p.add_argument("--agent", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--workspace", default=".")
+    p.add_argument("--apply", action="store_true", help="eval: keep the edits of .clean-eval/ that pass validation")
+    p.add_argument("--gh-output", required=True, help="the step-outputs file ($GITHUB_OUTPUT)")
+    p.set_defaults(run=finalize)
+
+    p = sub.add_parser("post", help="CI: post the validated review on the PR")
+    p.add_argument("--pr", required=True)
+    p.add_argument("--ctx", help="context folder with diff/index.json, to attach only comments on diff lines")
+    p.add_argument("--out", required=True)
+    p.add_argument("--head", required=True)
+    p.set_defaults(run=post)
+
+    p = sub.add_parser("redact", help="CI: scrub secrets from a file in place")
+    p.add_argument("path")
+    p.set_defaults(run=redact)
+
+    p = sub.add_parser("guard", help="CI: the agent's PreToolUse hook (tool call on stdin; exit 0 allow, 2 deny)")
+    p.set_defaults(run=guard)
 
 
 def _policy(args):
@@ -50,24 +237,20 @@ def rate(args):
     if args.rev:
         if args.graph != "builtin":
             raise HeatmapError("--rev reads git objects; only --graph builtin works there")
-        heatmap = rate_revision(
-            wiring.git(args.repo), CLOCK, args.rev, policy, RatingCache(), args.depth, args.max_modules
-        )
+        heatmap = rate_revision(git(args.repo), CLOCK, args.rev, policy, RatingCache(), args.depth, args.max_modules)
     elif args.graph == "code-review-graph":
         heatmap = rate_working_tree(
-            wiring.git(args.repo),
+            git(args.repo),
             FS,
             CLOCK,
             policy,
-            wiring.knowledge_graph(),
+            knowledge_graph(),
             FS.join(args.out, "graph"),
             args.depth,
             args.max_modules,
         )
     else:
-        heatmap = rate_working_tree(
-            wiring.git(args.repo), FS, CLOCK, policy, depth=args.depth, max_modules=args.max_modules
-        )
+        heatmap = rate_working_tree(git(args.repo), FS, CLOCK, policy, depth=args.depth, max_modules=args.max_modules)
     heatmap.notes.append("Policy: %s" % source)
     save_heatmap(FS, heatmap, FS.join(args.out, "data.json"))
     print(
@@ -96,7 +279,7 @@ def readme(args):
     root = FS.absolute(args.repo)
     result = update_readme(
         FS,
-        wiring.diagram_presenter(),
+        diagram_presenter(),
         FS.join(root, args.readme),
         FS.join(root, args.svg),
         heatmap,
@@ -124,7 +307,7 @@ def readme(args):
 
 def report(args):
     heatmap, judgement = _loaded(args)
-    final, text = summarize_heatmap(wiring.report_presenter(), heatmap, judgement, _policy(args)[0])
+    final, text = summarize_heatmap(report_presenter(), heatmap, judgement, _policy(args)[0])
     if args.json_out:
         save_heatmap(FS, final, args.json_out)
     if args.out:
@@ -135,7 +318,7 @@ def report(args):
 
 def assess(args):
     policy, source = _policy(args)
-    heatmap, risk = assess_change(wiring.git(args.repo), CLOCK, args.base, args.head, policy)
+    heatmap, risk = assess_change(git(args.repo), CLOCK, args.base, args.head, policy)
     out = risk.model_dump(mode="json")
     out.update(base=args.base, head=args.head, model_source=source, model_version=policy.version, notes=heatmap.notes)
     text = json.dumps(out, indent=1)
@@ -150,7 +333,7 @@ def assess(args):
 
 
 def history(args):
-    root = wiring.repository_root(args.repo)
+    root = repository_root(args.repo)
     policy, source = load_policy(FS, root, args.model)
     if args.replay or args.sensitivity:
         if not args.from_history:
@@ -166,11 +349,11 @@ def history(args):
         if not args.since:
             raise InvalidRequest("--since is required (or --from-history with --replay/--sensitivity)")
         out = collect_history(
-            wiring.git(root),
+            git(root),
             CLOCK,
             policy,
-            wiring.period(args.since, args.until, args.defect_window_days),
-            host=wiring.github() if args.with_gh else None,
+            period(args.since, args.until, args.defect_window_days),
+            host=github() if args.with_gh else None,
             branch=args.branch,
             model_source=source,
             reviewer_logins=args.reviewer_login,
@@ -212,7 +395,7 @@ def parser():
     p.add_argument(
         "--graph",
         default="builtin",
-        choices=wiring.GRAPHS,
+        choices=GRAPHS,
         help="builtin: imports and test links from ast; code-review-graph: calls and execution flows (must be installed)",
     )
     p.add_argument(
@@ -249,7 +432,7 @@ def parser():
     )
     common(p)
     p.add_argument("--since", help="YYYY-MM-DD (required unless --from-history)")
-    p.add_argument("--until", default=wiring.today(), help="YYYY-MM-DD (default today)")
+    p.add_argument("--until", default=today(), help="YYYY-MM-DD (default today)")
     p.add_argument("--branch", help="default: origin/HEAD, origin/main|master, or HEAD")
     p.add_argument("--defect-window-days", type=int, default=30)
     p.add_argument("--with-gh", action="store_true", help="fetch review comments with gh (rule metrics)")
@@ -266,7 +449,7 @@ def parser():
     p.add_argument("--out", help="write the JSON here instead of stdout")
     p.set_defaults(run=history)
 
-    ci.register(sub)
+    register(sub)
     return ap
 
 

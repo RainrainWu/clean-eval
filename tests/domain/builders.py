@@ -2,8 +2,16 @@
 
 from collections import Counter
 
-from clean_eval.domain.rating import AspectScores, Evidence, Facts, Heatmap, ModuleRating, ModuleTests, Scores
-from clean_eval.domain.source import SourceFile
+from clean_eval.domain.rating import (
+    AspectScores,
+    Evidence,
+    Facts,
+    Heatmap,
+    ModuleRating,
+    ModuleTests,
+    Scores,
+    SourceFile,
+)
 
 
 def facts(**kw):
@@ -43,7 +51,7 @@ def sf(path, loc, text="", test=False, blob=""):
 
 
 def rating(name="m", loc=100, biz=40, effects=10, entropy=20, unverified=30, fact=None, overall=None):
-    """A ModuleRating. Its overall score is the rules' to compute (use_cases/rules/scoring.py); here it is `overall`, by
+    """A ModuleRating. Its overall score is the rules' to compute (use_cases/rules/heatmap.py); here it is `overall`, by
     default the worst aspect."""
     aspect = AspectScores(biz=biz, effects=effects, entropy=entropy, unverified=unverified)
     worst = max(v for v in (biz, effects, entropy, unverified) if v is not None)

@@ -16,7 +16,7 @@ This file is the big picture. Each layer's own rules are in its `AGENTS.md`: `cl
 uv sync                                                  # Python 3.15 and the locked dependencies (pydantic) in .venv
 uv run pytest                                            # the whole suite, ~30 s; no network (fake gh and claude)
 uv run pytest -m "not e2e"                               # without the subprocess end-to-end tests, ~5 s
-uv run pytest tests/use_cases/test_sources.py            # one module (::test_helpers for one test, -k to filter)
+uv run pytest tests/use_cases/test_heatmap.py            # one module (::test_helpers for one test, -k to filter)
 uv run ruff check --fix .                                # lint: pycodestyle, pyflakes, isort's import order
 uv run ruff format .                                     # format: Black's style, 120 columns
 uv run python -I clean_eval rate --out <dir>             # rate this repository -> <dir>/data.json
@@ -37,14 +37,14 @@ The package is in four layers. Imports point inward only: domain ‚Üê use_cases ‚
 | Layer | Holds |
 |---|---|
 | `domain/` | pydantic data models only; every invariant is a validator |
-| `use_cases/` | `interfaces.py` (the abstract classes of every external utility), plus module-level functions that take implementations of them; `rules/` holds the pure business rules |
+| `use_cases/` | `interfaces.py` (the abstract classes of every external utility), plus module-level functions that take implementations of them: `heatmap.py`, `review.py`, `evaluation.py` and the shared `store.py`; `rules/` holds the pure business rules, by the same features plus `analysis.py` |
 | `adaptor/` | the presenters (SVG treemap, Markdown summary) |
-| `external/` | one gateway per external dependency, the drivers (`cli.py`, `ci.py`, `agent_guard.py`) and `wiring.py` |
+| `external/` | one gateway per external dependency, the command line `cli.py` (also the composition root) and the CI agent's guard `agent_guard.py` |
 
 A command runs in this order:
 1. `__main__.py` puts the checkout on `sys.path`.
 2. A driver parses the arguments.
-3. The driver takes gateways and presenters from `wiring.py` and calls a use-case function with them.
+3. The driver builds the gateways and presenters (`cli.py` is the composition root) and calls a use-case function with them.
 4. The driver prints the outcome.
 
 The skills chain the commands:

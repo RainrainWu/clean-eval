@@ -11,8 +11,11 @@ This layer holds exactly two things; `UseCasesHoldInterfacesAndFunctions` in `te
 **2. Everything else: module-level functions, no classes.**
 - **Use cases** take implementations of the interfaces as parameters, e.g. `rate_working_tree(git, fs, clock,
   policy)`. They call only the interfaces' abstract methods, and never build a gateway or import an outer layer.
-- **Shared helpers** sit beside them: `sources.py`, `store.py`, `coverage.py`, `tuning_files.py`.
-- **`rules/`** holds the business rules: pure functions over domain models that take no interfaces.
+- **One module per feature:** `heatmap.py` (rate, level, summarize and publish the heat map), `review.py` (a change's
+  risk, the CI reviewer's context, finalizing and posting the review) and `evaluation.py` (the merged-PR history, the
+  eval's context and tuning files, finalizing the eval). `store.py` holds the files of a run they share.
+- **`rules/`** holds the business rules: pure functions over domain models that take no interfaces. They follow the
+  same features (`heatmap.py`, `review.py`, `evaluation.py`), plus `analysis.py` for reading code.
 
 **Constraints**
 - Import only the domain, this layer, the stdlib modules in `PURE_IMPORTS`, and pydantic.

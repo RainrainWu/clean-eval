@@ -23,7 +23,7 @@ unexpected denies; action.sh also turns any other exit status of the hook comman
 
 import sys
 
-from clean_eval.domain.ci import ToolCall
+from clean_eval.domain.review import ToolCall
 from clean_eval.external.environment import EnvironmentGateway
 from clean_eval.external.filesystem import FileSystemGateway
 

@@ -1,9 +1,21 @@
-"""The review models (domain/review.py): what an agent's proposed review may hold, and the review CI derives."""
+"""The PR review models (domain/review.py): what an agent's proposed review may hold, the review CI derives, and
+the CI run's step outputs and tool calls."""
 
 import pytest
 from pydantic import ValidationError
 
-from clean_eval.domain.review import AgentReview, CheckedRules, Finding, PullRequest, Review, ReviewRule
+from clean_eval.domain.review import (
+    AgentReview,
+    CheckedRules,
+    Finding,
+    PullRequest,
+    Review,
+    ReviewRule,
+    StepOutputs,
+    ToolCall,
+)
+
+# The review models (domain/review.py): what an agent's proposed review may hold, and the review CI derives.
 
 SHA = "a" * 40
 
@@ -87,3 +99,27 @@ def test_a_pull_requests_head_must_be_an_object_id(bad):
     pr = {"number": 7, "baseRefName": "main", "headRefName": "f", "baseRefOid": SHA, "author": {"login": "dev"}}
     with pytest.raises(ValidationError):
         PullRequest.model_validate({**pr, "headRefOid": bad})
+
+
+# The CI models (domain/review.py): step outputs that carry only enums and numbers, and the tool calls the guard decides.
+
+
+def test_step_outputs_are_names_and_values():
+    assert StepOutputs({"max-tier": "High", "auc": ""}).root == {"max-tier": "High", "auc": ""}
+
+
+@pytest.mark.parametrize("bad", [{"verdict": "approve\nresult=/etc/passwd"}, {"Bad Name": "x"}, {"auc": 0.5}], ids=repr)
+def test_step_outputs_are_single_lines(bad):
+    with pytest.raises(ValidationError):
+        StepOutputs(bad)
+
+
+def test_tool_calls():
+    call = ToolCall.model_validate_json('{"tool_name": "Read", "tool_input": null, "session_id": "s"}')
+    assert (call.tool_name, call.tool_input, call.cwd) == ("Read", {}, None)
+
+
+@pytest.mark.parametrize("bad", ['{"tool_name": ["Read"]}', '{"tool_input": "x"}', "[1, 2]", "not json"])
+def test_malformed_tool_calls_are_refused(bad):
+    with pytest.raises(ValidationError):
+        ToolCall.model_validate_json(bad)

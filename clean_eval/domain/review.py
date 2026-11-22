@@ -1,12 +1,15 @@
-"""A PR review: the rules it applies, the findings the review agent proposes (untrusted, checked field by field), the
-review CI trusts and posts, and the PR and change it is about."""
+"""The PR review in CI: the pull request, what the agent proposes, the review CI derives, posts and reports, and
+the step outputs and tool calls of a CI run."""
 
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, computed_field, field_validator, model_validator
 
-from clean_eval.domain.change import ModuleRisk
-from clean_eval.domain.values import Band, Count, OneLine, Score, Severity, Sha
+from clean_eval.domain.policy import Band, Count, OneLine, Score, Severity, Sha
+from clean_eval.domain.rating import ModuleRisk
+
+# A PR review: the rules it applies, the findings the review agent proposes (untrusted, checked field by field), the
+# review CI trusts and posts, and the PR and change it is about.
 
 RuleId = Annotated[str, Field(pattern=r"^[A-Z]{1,4}-\d{2,3}$")]
 FindingRule = Annotated[str, Field(pattern=r"^(?:[A-Z]{1,4}-\d{2,3}|NEW)$")]  # NEW: a problem no rule covers
@@ -253,3 +256,31 @@ class PostOutcome(BaseModel):
 
     posted: bool = False
     log: list[tuple[Literal["info", "warning"], str]] = []
+
+
+# What crosses into and out of GitHub Actions around the CI agent: the tool calls it asks to make, and step outputs.
+
+OutputName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]*$")]
+OutputValue = Annotated[str, Field(pattern=r"^[^\r\n]*$")]  # one `name=value` line: a line break would start another
+
+
+class StepOutputs(RootModel[dict[OutputName, OutputValue]]):
+    """Step outputs: enums and numbers clean-eval built, never agent text."""
+
+
+class ToolCall(BaseModel):
+    """One tool call the CI agent wants to make, as Claude Code hands it to the PreToolUse hook."""
+
+    tool_name: str = ""
+    tool_input: dict[str, Any] = {}
+    cwd: Optional[str] = None
+
+    @field_validator("tool_name", mode="before")
+    @classmethod
+    def _no_name(cls, name):
+        return "" if name is None else name
+
+    @field_validator("tool_input", mode="before")
+    @classmethod
+    def _no_input(cls, tool_input):
+        return {} if tool_input is None else tool_input

@@ -1,13 +1,79 @@
-"""A rating: the facts the four aspect rules read about one module, the scores they give, and the heat map of a repository.
-Scores are 0-100 wherever they appear, and assignments are validated too, so no rule can push one out of range."""
+"""What a rating reads and produces: the code read from a repository (snapshot, files, per-file signals and
+syntax), its knowledge graph, the rated modules and heat map, a reviewer's judgement of them, and the risk a change
+carries."""
 
 from collections import Counter
-from typing import Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from clean_eval.domain.source import FileSignals, FileSyntax
-from clean_eval.domain.values import Count, Fraction, Score
+from clean_eval.domain.policy import Band, Count, Fraction, Level, Score
+
+# What is read from the code: a snapshot of a repository, its source files, and the signals one file gives.
+
+
+class Snapshot(BaseModel):
+    """The code being rated: a working tree, or a revision read straight from git."""
+
+    model_config = ConfigDict(frozen=True)
+
+    repo: str
+    ref: str
+    sha: str
+    root: str
+
+
+class SourceFile(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    path: Annotated[str, Field(min_length=1)]  # repo-relative, "/"-separated
+    text: str
+    loc: Count
+    is_test: bool
+    blob: str = ""  # content id (git blob sha) when known, so per-file analysis can be reused across revisions
+
+
+class PyStats(BaseModel):
+    """What the syntax tree of one Python file shows."""
+
+    funcs: list[tuple[Count, Count]] = []  # (lines, complexity) per function
+    typed: Count = 0  # functions with every argument and the return annotated
+    broad: Count = 0  # broad exception handlers
+    swallow: Count = 0  # handlers that only pass or continue
+
+
+class FileSignals(BaseModel):
+    """What one file says about risk, computed once per file content."""
+
+    stats: Optional[PyStats]  # None when the file cannot be parsed
+    todo: Count
+    effects: dict[str, tuple[Count, Count]]  # write-call kind -> (count, first line)
+
+
+class FileSyntax(BaseModel):
+    """What the syntax tree of one Python file says about its links: its functions, its imports and the names it uses."""
+
+    model_config = ConfigDict(frozen=True)
+
+    defs: tuple[str, ...] = ()  # functions and methods: "f", "Class.method"
+    imports: tuple[tuple[str, int, tuple[str, ...]], ...] = ()  # (module, level, names)
+    refs: frozenset[str] = frozenset()  # identifiers, attribute names and imported names used
+
+
+# The knowledge graph as the business rules see it: relationships between files, functions, tests and flows.
+
+
+class Graph(BaseModel):
+    nodes: dict[str, tuple[str, str, bool]]  # qualified name -> (kind, repo-relative file, is_test), Python only
+    links: dict[str, set[str]]  # file -> files it imports or calls into (resolved edges only)
+    tested: dict[str, set[str]]  # function qualified name -> test files linked to it
+    flows: list[tuple[float, str, set[str]]]  # (criticality, entry file, files on the flow)
+    stats: dict[str, Any]
+    has_flows: bool = True  # False when the graph source cannot see execution flows
+
+
+# A rating: the facts the four aspect rules read about one module, the scores they give, and the heat map of a repository.
+# Scores are 0-100 wherever they appear, and assignments are validated too, so no rule can push one out of range.
 
 
 class Facts(BaseModel):
@@ -134,3 +200,81 @@ class RatingCache(BaseModel):
     blobs: dict[str, str] = {}
     syntax: dict[str, FileSyntax] = {}
     signals: dict[str, FileSignals] = {}
+
+
+# A reviewer's judgement of a heat map: one level (0 most severe ... 3 least) per module and aspect, with a reason.
+
+AspectName = Literal["business", "effects", "entropy", "unverified"]
+MAX_REASON = 240
+
+
+class AspectLevel(BaseModel):
+    level: Level
+    reason: str = ""
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _short_text(cls, reason):
+        return ("" if reason is None else str(reason))[:MAX_REASON]
+
+
+class Judgement(BaseModel):
+    """{"modules": {name: {aspect: {"level": 0-3, "reason": ...}}}}. The levelling agent's output is untrusted: an entry
+    that doesn't validate is dropped rather than failing the whole judgement, as the skill documents."""
+
+    modules: dict[str, dict[AspectName, AspectLevel]] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _keep_valid_entries(cls, data):
+        modules = data.get("modules") if isinstance(data, dict) else None
+        kept = {}
+        for name, aspects in modules.items() if isinstance(modules, dict) else ():
+            if not isinstance(name, str) or not isinstance(aspects, dict):
+                continue
+            levels = {}
+            for aspect, entry in aspects.items():
+                if aspect not in AspectName.__args__:
+                    continue
+                try:
+                    levels[aspect] = AspectLevel.model_validate(entry)
+                except ValidationError:
+                    continue
+            if levels:
+                kept[name] = levels
+        return {"modules": kept}
+
+
+# The risk a change carries: every module it touches, as rated at the change's base.
+
+
+class ModuleRecord(BaseModel):
+    """A module a change touched, with its band at the change's base. A path no rated module covers (a new module, or
+    non-Python code) is unrated: it has a band (the policy's unrated band) but no score."""
+
+    module: str
+    band: Band
+    score: Optional[Score] = None
+    scores: Optional[Scores] = None
+    rated: bool
+    facts: Optional[Facts] = None  # what a calibration re-scores under another policy
+
+    @model_validator(mode="after")
+    def _rated_means_scored(self):
+        if self.rated != (self.score is not None):
+            raise ValueError("a rated module has a score and an unrated one has none")
+        return self
+
+
+class ModuleRisk(ModuleRecord):
+    evidence: Optional[Evidence] = None
+
+
+class ChangeRisk(BaseModel):
+    """The risk of a change: every touched module, and the most severe band among them."""
+
+    files: dict[str, Optional[str]]  # changed path -> module name (None when unrated or ignored)
+    modules: list[ModuleRisk]
+    ignored: list[str]  # changed paths that carry no risk of their own (docs, images)
+    max_band: Band
+    max_score: Score

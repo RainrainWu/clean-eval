@@ -3,9 +3,10 @@
 interfaces.py   the abstract classes of every external utility the business logic uses (Git, CodeHost, FileSystem,
                 KnowledgeGraph, Environment, Clock, and the DiagramPresenter and ReportPresenter), inherited and
                 implemented by the outer layers: the external layer's gateways and the adaptor layer's presenters
-every module    module-level functions: the use cases (rate a repository, assess a change, refresh the README, collect
-else            history; for CI: prepare the agent's context, finalize its output, post the review) and what they share
-                (sources, run files, tuning files, coverage), taking implementations of the interfaces as parameters
-                and calling only their abstract methods, plus rules/: the business rules, pure functions over the
-                domain models
+every module    module-level functions that take implementations of the interfaces as parameters and call only their
+else            abstract methods: one module per feature (heatmap.py: rate, level, summarize and publish the heat map;
+                review.py: a change's risk, the CI reviewer's context, finalizing and posting the review;
+                evaluation.py: the merged-PR history, the eval's context and tuning files, finalizing the eval) and
+                store.py, the files of a run they share; plus rules/: the business rules, pure functions over the
+                domain models (heatmap.py, review.py, evaluation.py, and analysis.py for reading code)
 """

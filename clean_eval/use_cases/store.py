@@ -6,10 +6,10 @@ import json
 from pydantic import ValidationError
 from pydantic_core import to_jsonable_python
 
-from clean_eval.domain.errors import HeatmapError
-from clean_eval.domain.judgement import Judgement
+from clean_eval.domain.errors import HeatmapError, InvalidOutput
 from clean_eval.domain.policy import REPO_POLICY, Policy
-from clean_eval.domain.rating import Heatmap
+from clean_eval.domain.rating import Heatmap, Judgement
+from clean_eval.use_cases.rules.review import sanitize_report
 
 
 def read_json(fs, path):
@@ -54,3 +54,32 @@ def load_judgement(fs, path):
 def write_step_outputs(fs, path, outputs):
     """Append the StepOutputs (validated: one line each) as `name=value` lines to a GitHub Actions step-outputs file."""
     fs.append_text(path, "".join("%s=%s\n" % kv for kv in outputs.root.items()))
+
+
+# What judging a malformed agent output (or edit) can raise: it then counts as invalid and is restored, never a crash.
+JUDGING_ERRORS = (HeatmapError, ArithmeticError, ValueError, KeyError, TypeError, AttributeError)
+
+
+def invalid(e, suffix=""):
+    """The InvalidOutput that a failure to judge the CI agent's output becomes."""
+    if isinstance(e, ValidationError):
+        return InvalidOutput(str(InvalidOutput.from_validation(e)) + suffix)
+    return InvalidOutput((str(e) if isinstance(e, HeatmapError) else "%s: %s" % (type(e).__name__, e)) + suffix)
+
+
+def validated(model, fs, folder, name):
+    """`name` in `folder`, validated as `model`; InvalidOutput says which file and what is wrong."""
+    try:
+        return model.model_validate(read_json(fs, fs.join(folder, name)))
+    except ValidationError as e:
+        raise InvalidOutput.from_validation(e, name)
+
+
+def write_run_output(fs, out, report_path, result, secrets):
+    """report.md (`report_path` redacted, or a note that there is none) and, when there is a result, result.json into
+    `out`. The result counts the report's redactions too."""
+    report, n = sanitize_report(fs.read_text(report_path) if fs.exists(report_path) else "_no report written_", secrets)
+    fs.write_text(fs.join(out, "report.md"), report)
+    if result is not None:
+        result.redactions += n
+        write_json(fs, fs.join(out, "result.json"), result)

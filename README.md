@@ -119,7 +119,7 @@ The agent reads untrusted text (PR diffs and descriptions, commit messages, comm
 uv sync                                                # Python 3.15 and the locked dependencies, in .venv
 uv run pytest                                          # every test: fake gh/claude, no network
 uv run pytest -m "not e2e"                             # skip the subprocess end-to-end tests (seconds, not ~30 s)
-uv run pytest tests/use_cases/test_sources.py          # one module (::test_helpers for one test, -k to filter)
+uv run pytest tests/use_cases/test_heatmap.py          # one module (::test_helpers for one test, -k to filter)
 uv run ruff check --fix .                              # lint: pycodestyle, pyflakes, isort's import order
 uv run ruff format .                                   # format: Black's style, 120 columns
 ```
