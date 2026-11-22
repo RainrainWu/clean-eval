@@ -2,12 +2,12 @@
 coverage, rating a snapshot, a working tree or a revision, summarizing, and refreshing the README."""
 
 from typing import Any
-from unittest.mock import MagicMock, call
+from unittest.mock import call
 
 import pytest
 
 from clean_eval.domain.errors import NoPythonSource
-from clean_eval.domain.rating import Graph, Snapshot
+from clean_eval.domain.rating import Snapshot
 from clean_eval.domain.review import RunFolders
 from clean_eval.use_cases.heatmap import (
     GENERATED,
@@ -71,17 +71,14 @@ GRAPH: dict[str, Any] = {
     },
     "links": {"src/api/a.py": {"src/core/c.py"}},
     "tested": {"src/api/a.py::f": {"tests/unit/test_a.py"}},
-    "flows": [(0.9, "src/api/a.py", {"src/api/a.py", "src/core/c.py"})],
-    "stats": {"source": "fake", "nodes": 2, "edges": 1, "flows": 1},
+    "stats": {"source": "fake", "nodes": 2, "edges": 1},
 }
-GRAPH_WITHOUT_FLOWS = {**GRAPH, "flows": [], "stats": {**GRAPH["stats"], "flows": 0}, "has_flows": False}
 
 # Rating a repository: one commit of a module that writes to a database and its test, and its working tree.
 TEST_C = "from src.core.c import g\n"
 REPOSITORY = [{"subject": "init", "files": {"src/core/c.py": CORE, "tests/test_c.py": TEST_C}}]
 CHECKOUT = {"/repo/src/core/c.py": CORE, "/repo/tests/test_c.py": TEST_C}
 COVERAGE = '<coverage><class name="c" filename="src/core/c.py" line-rate="0.5"/></coverage>'
-GRAPH_DIR = "/repo/.git/clean-eval-graph"  # where a KnowledgeGraph builds by default
 # A second commit, which adds one module file.
 NEW_FILE = "def h():\n    pass\n"
 MORE = {"subject": "more", "files": {"src/core/d.py": NEW_FILE}}
@@ -239,18 +236,6 @@ class TestRate:
         assert rated.notes[0].startswith("Knowledge graph (fake): 2 nodes")
         assert rated.loc_total == 700
 
-    @pytest.mark.parametrize(("source_files", "graph"), [(SOURCES, GRAPH_WITHOUT_FLOWS)], indirect=True)
-    def test_without_flows_the_facts_say_so(
-        self,
-        source_files,
-        graph,
-        policy,
-        today,
-    ):
-        module_facts = rate(SNAPSHOT, source_files, graph, policy, today, None, None, 2).modules[0].facts
-        assert module_facts is not None
-        assert not module_facts.flows_available
-
     @pytest.mark.parametrize(
         ("source_files", "graph", "policy"), [(SOURCES, GRAPH, {"exclude": ["src/core/*"]})], indirect=True
     )
@@ -280,7 +265,7 @@ class TestRate:
 
 
 class TestRateWorkingTree:
-    """A working tree is read through Git and the FileSystem, and rated with the built-in graph or a KnowledgeGraph."""
+    """A working tree is read through Git and the FileSystem, and rated with the built-in graph."""
 
     @pytest.mark.parametrize(
         ("history", "files"), [(REPOSITORY, {**CHECKOUT, "/repo/coverage.xml": COVERAGE})], indirect=True
@@ -299,30 +284,6 @@ class TestRateWorkingTree:
         assert module_facts is not None
         assert (module_facts.line_rate, rated.modules[0].tests.tested) == (0.5, 1)
         assert rated.notes[0].startswith("Knowledge graph (built-in ast)")
-
-    @pytest.mark.parametrize(
-        ("history", "files", "knowledge_graph"),
-        [(REPOSITORY, CHECKOUT, {"graph_of.return_value": Graph.model_validate(GRAPH)})],
-        indirect=True,
-    )
-    def test_with_a_knowledge_graph(
-        self,
-        git,
-        fs,
-        clock,
-        policy,
-        knowledge_graph,
-    ):
-        calls = MagicMock()  # records the calls of both, in order
-        calls.attach_mock(fs.make_dirs, "make_dirs")
-        calls.attach_mock(knowledge_graph.graph_of, "graph_of")
-        rated = rate_working_tree(git, fs, clock, policy, knowledge_graph)
-        # built under .git by default, into a folder made for it
-        assert calls.mock_calls == [call.make_dirs(GRAPH_DIR), call.graph_of("/repo", GRAPH_DIR)]
-        assert rated.notes[0].startswith("Knowledge graph (fake)")
-        module_facts = rated.modules[0].facts
-        assert module_facts is not None
-        assert module_facts.flows_available
 
     @pytest.mark.parametrize(("history", "files"), [(DOCS_ONLY, DOCS_CHECKOUT)], indirect=True)
     def test_without_python_source(

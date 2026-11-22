@@ -38,9 +38,9 @@ uv run pytest tests/use_cases/test_heatmap.py            # one module; ::TestCla
 |---|---|
 | `tests/` | The machine: `repo`, `fake_bin`, the autouse `hermetic_git`. Domain models: `today`, `policy`, `facts`, `source_files`, `ratings`, `rating`, `heatmap`, `judgement`. A change under review: `review_rules`, `finding`, `agent_review`, `risk_report`, `pull_request`. The top-level tests: `codebase`; the action's `workspace`, `action`, `action_run` and the fakes' replies; the release check's `released`, `release_check`. |
 | `tests/domain/` | Raw field dicts of a valid example per model (`scores`, `module_record`, `stored_review`, `review_rule`, `period`, `merged_pr`, `eval_result`), which a test validates itself, so a refused input fails inside `pytest.raises`. |
-| `tests/use_cases/` | The interfaces as MagicMocks (`fs`, `git`, `clock`, `env`, `host`, `knowledge_graph`, `diagram_presenter`, `report_presenter`) and the data they answer from (`files`, `links`, `history`, `shas`, `environ`); `graph`, `rating_cache`, `period`; the class-scoped `collected` history. |
+| `tests/use_cases/` | The interfaces as MagicMocks (`fs`, `git`, `clock`, `env`, `host`, `agent`, `run_log`, `diagram_presenter`, `report_presenter`) and the data they answer from (`files`, `links`, `history`, `shas`, `environ`); `graph`, `rating_cache`, `period`; the class-scoped `collected` history. |
 | `tests/use_cases/rules/` | The rules' inputs as models: `aspect_scores`, `inline_comment`, `merged_prs`. |
-| `tests/external/` | The real gateways and repositories of the contract tests (`git`, `fs`, `repo`, `history`, `files`); the mocked CLIs (`gh`, `graph_build`, with a real `graph_db`); the guard's `sandbox`, `stdin`, `guard_env`; the command line's `run_cli` (a subprocess), `cli_runner` (click, in-process), `host` and the CI commands' files and arguments. |
+| `tests/external/` | The real gateways and repositories of the contract tests (`git`, `fs`, `repo`, `history`, `files`); the mocked CLIs (`gh`, and `claude_runs` for the Claude Code gateway); the guard's `sandbox`, `stdin`, `guard_env`; the command line's `run_cli` (a subprocess), `cli_runner` (click, in-process), `host` and the CI commands' files and arguments. |
 
 ## Writing tests
 
@@ -85,14 +85,14 @@ uv run pytest tests/use_cases/test_heatmap.py            # one module; ::TestCla
   - `fs` and `git` are `MagicMock(spec=<interface>, wraps=<in-memory fake>)`. They answer like a file system and a
     repository, with contents from `files` / `links` and `history`. `memory_fs` and `memory_git` are the fakes
     behind them, to check what was left behind without recording a call.
-  - `clock` (from `today`), `env` (from `environ`), `host`, `knowledge_graph`, `diagram_presenter` and
+  - `clock` (from `today`), `env` (from `environ`), `host`, `agent`, `run_log`, `diagram_presenter` and
     `report_presenter` are `create_autospec(<interface>, instance=True)`, so a call that doesn't match the interface
     fails. `request.param` configures them, as `configure_mock`'s keywords:
     `{"review_threads.return_value": (view, inline), "post_review.side_effect": RemoteError("...")}`.
 - **Assert on the calls** (`host.dismiss_review.assert_called_once_with(...)`, `git.diff.call_args_list`), and make
   one call fail with `side_effect`.
 - **Gateways** (`tests/external/`):
-  - Mock what a gateway calls out to (`subprocess.run` of `gh` or code-review-graph, the environment) when the test
+  - Mock what a gateway calls out to (`subprocess.run` of `gh` or `claude`, the environment) when the test
     is about the gateway's own logic.
   - The git and file-system gateways run against real throwaway repositories and folders. Their contract tests check
     that the in-memory fakes behave like the real thing, which a mock can't.

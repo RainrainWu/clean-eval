@@ -1,10 +1,10 @@
 """Fixtures for the external layer's tests (clean_eval/external/): the real things the gateways wrap, made in temporary
-folders (throwaway repositories, files and links, the CI agent's folders, a graph.db), MagicMocks of what the gateways
+folders (throwaway repositories, files and links, the CI agent's folders), MagicMocks of what the gateways
 call out to, and the CI commands' arguments over real folders.
 
 - `git` and `fs` are the real gateways, holding `history` and `files` / `links`. The contract tests parametrize them
   with the in-memory fakes of tests/use_cases/fakes.py too, so each check runs on each.
-- `gh` and `graph_build` replace subprocess.run where the GitHub and code-review-graph gateways call it. `host` is the
+- `gh` and `claude_runs` replace subprocess.run where the GitHub and Claude Code gateways call it. `host` is the
   CodeHost the command line's cli.github() hands out, and `guard_env` the Environment the guard's hook reads.
 - `run_cli` runs `python -I <checkout>/clean_eval ...` in a subprocess, for the end-to-end tests, and `cli_runner`
   runs a command in-process through click, with the CI commands' arguments (argv lists) over real folders.
@@ -17,10 +17,8 @@ the data of their run (`tuning`, `eval_history`, `agent_files`, `context_files`,
 import io
 import json
 import os
-import sqlite3
 import subprocess
 import sys
-from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -185,7 +183,7 @@ def fs(
     return FileSystemGateway()
 
 
-# The CLIs the gateways run, mocked: gh, and code-review-graph's build (with the graph.db it leaves, made for real).
+# The CLI the GitHub gateway runs, mocked.
 
 
 @pytest.fixture
@@ -215,49 +213,6 @@ def gh(
     else:
         run.return_value = subprocess.CompletedProcess(["gh"], 0, "{}", "")
     monkeypatch.setattr("clean_eval.external.github.subprocess", SimpleNamespace(**{**vars(subprocess), "run": run}))
-    return run
-
-
-@pytest.fixture
-def graph_dir(
-    tmp_path,
-):
-    """The data folder of a code-review-graph build, where its graph.db goes: a temporary folder, as its real path."""
-    return str(tmp_path.resolve())
-
-
-@pytest.fixture
-def graph_db(
-    request,
-    graph_dir,
-):
-    """The graph.db a code-review-graph build leaves in `graph_dir`, made for real (in-process, with sqlite3) by the
-    SQL script in `request.param`; no database when not parametrized, or for None. Its path."""
-    path = Path(graph_dir, "graph.db")
-    script = getattr(request, "param", None)
-    if script is not None:
-        with closing(sqlite3.connect(path)) as connection:
-            connection.executescript(script)
-            connection.commit()
-    return str(path)
-
-
-@pytest.fixture
-def graph_build(
-    request,
-    monkeypatch,
-):
-    """The code-review-graph CLI's build as CodeReviewGraphGateway runs it: an autospecced MagicMock of subprocess.run,
-    patched into clean_eval.external.code_review_graph only (as `gh` is into the GitHub gateway), that succeeds and
-    writes nothing (`graph_db` stands for what a build leaves). `request.param` configures it (configure_mock's
-    keywords): a failing build is `{"side_effect": subprocess.CalledProcessError(1, "build", stderr="boom")}`, a
-    missing CLI a FileNotFoundError."""
-    run = create_autospec(subprocess.run)
-    run.return_value = subprocess.CompletedProcess(["code-review-graph"], 0, "", "")
-    run.mock.configure_mock(**getattr(request, "param", {}))
-    monkeypatch.setattr(
-        "clean_eval.external.code_review_graph.subprocess", SimpleNamespace(**{**vars(subprocess), "run": run})
-    )
     return run
 
 

@@ -359,7 +359,6 @@ class TestBuiltinGraph:
         assert built.links["src/pkg/__init__.py"] == {"src/pkg/core.py"}
         assert built.links["tests/test_core.py"] == {"src/pkg/__init__.py", "src/pkg/core.py"}  # src layout
         assert built.links["lambdas/x/handler.py"] == {"lambdas/x/utils.py"}  # sibling, not other/deep
-        assert not built.has_flows
         assert built.stats["source"] == "built-in ast"
 
     def test_tests_link_to_the_functions_they_import_and_name(

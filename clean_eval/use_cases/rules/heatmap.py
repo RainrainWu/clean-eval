@@ -90,42 +90,25 @@ def severity(
 # The four risk aspects. Each is a pure function of one module's Facts and the Policy, and returns
 # (score 0-100, evidence lines).
 
-FLOW_TERMS = ("flow_weight", "entry")
-
 
 def business(
     facts: Facts,
     policy: Policy,
 ) -> tuple[float, list[str]]:
-    w, sat = dict(policy.business_weights), policy.business_saturation
-    entry = max(facts.entry_flows, default=0.0)
+    """Business Impact: the weighted mean of how many modules depend on it, a core-flow name and its share of the code;
+    the weights are relative (the policy keeps their sum positive)."""
+    weights, saturation = policy.business_weights, policy.business_saturation
     terms = {
-        "dependents": clamp(facts.fan_in / sat["dependents"]),
-        "flow_weight": clamp(facts.flow_touch / sat["flow_weight"]),
-        "entry": entry,
+        "dependents": clamp(facts.fan_in / saturation["dependents"]),
         "keyword": 1.0 if facts.keyword else 0.0,
-        "size": clamp(facts.share / sat["size"]),
+        "size": clamp(facts.share / saturation["size"]),
     }
+    score = 100 * sum(weight * terms[key] for key, weight in weights.items()) / sum(weights.values())
     ev = []
-    if not facts.flows_available:  # no flow data: the other terms carry the flow terms' weight, instead of scoring 0
-        total = sum(w.values())
-        w = {k: v for k, v in w.items() if k not in FLOW_TERMS}
-        scale = total / (sum(w.values()) or 1)
-        w = {k: v * scale for k, v in w.items()}
-    score = 100 * sum(v * terms[k] for k, v in w.items())
     if facts.tooling:
         score *= policy.tooling_factor
         ev.append("Tooling path: business impact x %g" % policy.tooling_factor)
-    if facts.flows_available:
-        ev.append(
-            "%d modules depend on it; entry point of %d flows (top criticality %.2f); on %d%% of flow weight; %d%% of repo code"
-            % (facts.fan_in, len(facts.entry_flows), entry, round(facts.flow_touch * 100), round(facts.share * 100))
-        )
-    else:
-        ev.append(
-            "%d modules depend on it; %d%% of repo code; no execution-flow data, so dependents, name and size carry the score"
-            % (facts.fan_in, round(facts.share * 100))
-        )
+    ev.append("%d modules depend on it; %d%% of repo code" % (facts.fan_in, round(facts.share * 100)))
     if facts.keyword:
         ev.append("Name matches a core-flow keyword (pipeline, api, agent, ...)")
     return score, ev

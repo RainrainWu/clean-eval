@@ -533,19 +533,6 @@ class TestRate:
         assert rated.returncode == 0, rated.stderr
         assert json.loads((tmp_path / "data.json").read_text())["ref"] == shas[0]
 
-    def test_a_past_revision_takes_only_the_builtin_graph(
-        self,
-        repo,
-        shas,
-        run_cli,
-        tmp_path,
-    ):
-        refused = run_cli(
-            "rate", "--rev", shas[0], "--graph", "code-review-graph", "--out", str(tmp_path), cwd=repo.path
-        )
-        assert refused.returncode != 0
-        assert "only --graph builtin" in refused.stderr
-
 
 @pytest.mark.parametrize("history", [BILLING], indirect=True)
 class TestAssess:

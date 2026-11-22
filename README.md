@@ -13,7 +13,6 @@ Claude Code skills in `.claude/skills/` form a feedback loop:
 
 Requires [uv](https://docs.astral.sh/uv/) (it provides Python 3.15 and the locked dependencies, pydantic and click among them) and
 git; `gh` (authenticated) for PR-number reviews, posting, and rule metrics in `/eval`.
-Optional: the `code-review-graph` CLI, for call and execution-flow data in the heat map (`--graph code-review-graph`).
 
 ### Code layout
 
@@ -23,15 +22,15 @@ dependencies point inward. The GitHub Action is the same package: `action.yml` r
 | Layer | Holds | May import |
 |---|---|---|
 | `clean_eval/domain/` | data models only: pydantic models of the policy, the source read, the ratings and heat map, a change's risk, reviews, merged-PR history and an eval's outcome. Every invariant is a validator: score ranges, the policy's knobs, an agent finding's rule, severity and line, commit ids, step outputs | pure stdlib modules and pydantic |
-| `clean_eval/use_cases/` | two things. `interfaces.py`: the abstract classes of every external utility the business logic uses (`Git`, `CodeHost`, `FileSystem`, `KnowledgeGraph`, `Agent`, `Environment`, `Clock`, `DiagramPresenter`, `ReportPresenter`, `RunLog`). Everything else: module-level functions that take implementations of those interfaces as parameters and call only their abstract methods. These are the use cases (rate a repository, assess a change, refresh the README section, collect history; for CI: run a skill, prepare the agent's context, finalize its output, post the review), what they share (sources, run files, the `.clean-eval/` snapshot), and `rules/`: the business rules as pure functions over the models (the four aspects, scoring, judgement, review, redaction, calibration, tuning, the built-in knowledge graph) | `domain`, the same |
+| `clean_eval/use_cases/` | two things. `interfaces.py`: the abstract classes of every external utility the business logic uses (`Git`, `CodeHost`, `FileSystem`, `Agent`, `Environment`, `Clock`, `DiagramPresenter`, `ReportPresenter`, `RunLog`). Everything else: module-level functions that take implementations of those interfaces as parameters and call only their abstract methods. These are the use cases (rate a repository, assess a change, refresh the README section, collect history; for CI: run a skill, prepare the agent's context, finalize its output, post the review), what they share (sources, run files, the `.clean-eval/` snapshot), and `rules/`: the business rules as pure functions over the models (the four aspects, scoring, judgement, review, redaction, calibration, tuning, the built-in knowledge graph) | `domain`, the same |
 | `clean_eval/adaptor/` | the presenters (SVG treemap, Markdown summary), implementing `DiagramPresenter` and `ReportPresenter`; rendering only, never I/O | `domain`, `use_cases` |
-| `clean_eval/external/` | everything that touches the outside world: one gateway class per external dependency, each implementing its interface (`GitGateway`, `GitHubGateway`, `CodeReviewGraphGateway`, `ClaudeCodeGateway`, `FileSystemGateway`, `EnvironmentGateway`, `ClockGateway`), the command line (with the CI commands and the agent's guard hook) and the composition root that hands the gateways and presenters to the use cases | everything |
+| `clean_eval/external/` | everything that touches the outside world: one gateway class per external dependency, each implementing its interface (`GitGateway`, `GitHubGateway`, `ClaudeCodeGateway`, `FileSystemGateway`, `EnvironmentGateway`, `ClockGateway`), the command line (with the CI commands and the agent's guard hook) and the composition root that hands the gateways and presenters to the use cases | everything |
 
 `tests/test_architecture.py` enforces the layering (every import absolute, never relative), the purity of the two inner
 layers (no I/O, no clock), that the domain holds only data models (no functions; model methods are validators, computed
 fields, properties or constructors), that the use cases hold only the interfaces (abstract classes whose methods are all
 abstract) and module-level functions, that each interface has one implementation exposing nothing beyond it, and that
-each external dependency is reached only through its gateway (no other module may import `subprocess`, `sqlite3`, `os`,
+each external dependency is reached only through its gateway (no other module may import `subprocess`, `os`,
 `shutil`, `filecmp` or `pathlib`, open a file, read the clock or the environment; the console belongs to the command
 line).
 

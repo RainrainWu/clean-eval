@@ -4,7 +4,7 @@ This layer holds exactly two things; `UseCasesHoldInterfacesAndFunctions` in `te
 
 **1. `interfaces.py`:** the abstract classes of every external utility the business logic uses. Every method is an
 `@abstractmethod`, and its docstring is the contract implementations follow.
-- `Git`, `CodeHost`, `FileSystem`, `KnowledgeGraph`, `Agent`, `Environment` and `Clock` are implemented by the
+- `Git`, `CodeHost`, `FileSystem`, `Agent`, `Environment` and `Clock` are implemented by the
   gateways in `clean_eval/external/`.
 - `DiagramPresenter` and `ReportPresenter` are implemented by the presenters in `clean_eval/adaptor/`.
 - `RunLog`, a CI run's log, is implemented by the command line (`clean_eval/external/cli.py`): the console is the

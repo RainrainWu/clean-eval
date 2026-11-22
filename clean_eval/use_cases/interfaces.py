@@ -2,8 +2,7 @@
 parameters and call only their abstract methods, so they never know (or import) what is behind them; the outer layers
 inherit and implement them:
 
-  Git, CodeHost, FileSystem, KnowledgeGraph, Environment, Clock,   the external layer's gateways (external/*.py)
-  Agent
+  Git, CodeHost, FileSystem, Agent, Environment, Clock           the external layer's gateways (external/*.py)
   DiagramPresenter, ReportPresenter                              the adaptor layer's presenters (rendering only)
   RunLog                                                         the command line's console (external/cli.py)
 """
@@ -11,7 +10,7 @@ inherit and implement them:
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-from clean_eval.domain.rating import Graph, Heatmap
+from clean_eval.domain.rating import Heatmap
 from clean_eval.domain.review import AgentRun, HostReview, PullRequest, ReviewPost, RunFolders
 
 
@@ -374,18 +373,6 @@ class FileSystem(ABC):
         self,
         path: str,
     ) -> None: ...
-
-
-class KnowledgeGraph(ABC):
-    """A tool that builds the knowledge graph of a working tree (code-review-graph): calls and execution flows."""
-
-    @abstractmethod
-    def graph_of(
-        self,
-        repo_root: str,
-        data_dir: str,
-    ) -> Graph:
-        """The graph of the working tree at `repo_root`, built into `data_dir`."""
 
 
 class Agent(ABC):

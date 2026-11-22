@@ -1,5 +1,5 @@
 """Use cases of the risk heat map: rate a working tree or a revision (read through Git and the FileSystem, with the
-built-in graph or a KnowledgeGraph), apply a reviewer's levels, summarize it, and put it into the README."""
+built-in graph), apply a reviewer's levels, summarize it, and put it into the README."""
 
 import hashlib
 import json
@@ -30,7 +30,6 @@ from clean_eval.use_cases.interfaces import (
     Environment,
     FileSystem,
     Git,
-    KnowledgeGraph,
     ReportPresenter,
     RunLog,
 )
@@ -158,8 +157,7 @@ def coverage_line_rates(
 
 
 # Use cases: rate every sub-module of a repository on the four aspects. The working tree is read through the Git and
-# FileSystem interfaces, with the built-in graph or a KnowledgeGraph (code-review-graph); a revision is read straight
-# from git objects. The rating date comes from the Clock.
+# FileSystem interfaces, with the built-in graph; a revision is read straight from git objects. The rating date comes from the Clock.
 
 
 def rated_sources(
@@ -194,20 +192,14 @@ def rate(
         raise no_python_error(snapshot)
     notes.insert(
         0,
-        "Knowledge graph (%s): %d nodes, %d edges, %d flows"
-        % (
-            graph.stats.get("source", "graph"),
-            graph.stats.get("nodes", 0),
-            graph.stats.get("edges", 0),
-            graph.stats.get("flows", 0),
-        ),
+        "Knowledge graph (%s): %d nodes, %d edges"
+        % (graph.stats.get("source", "graph"), graph.stats.get("nodes", 0), graph.stats.get("edges", 0)),
     )
     line_rates = coverage or {}
     file_mod = {f.path: m for m, fl in mods.items() for f in fl}
     fan_in, fan_out = dependents(graph, file_mod)
     funcs_of, test_mods = functions_by_module(graph, file_mod), test_files_to_modules(graph, file_mod)
     test_loc = {f.path: f.loc for f in files if f.is_test}
-    total_crit = sum(c for c, _, _ in graph.flows) or 1
     total_loc = sum(f.loc for f in src) or 1
     signals = {f.path: file_signals(f, signals_cache) for fl in mods.values() for f in fl}
 
@@ -243,9 +235,6 @@ def rate(
             effect_counts=counts,
             effect_examples=examples,
             migrations=sum(1 for f in mod_files if analysis.is_migration(f.path, policy)),
-            entry_flows=[crit for crit, entry, _ in graph.flows if file_mod.get(entry) == name],
-            flow_touch=sum(crit for crit, _, fs in graph.flows if any(file_mod.get(x) == name for x in fs))
-            / total_crit,
             keyword=analysis.has_core_keyword(name, policy),
             tooling=analysis.looks_like_tooling(name, mod_files[0].path, policy),
             graph_functions=len(functions),
@@ -255,7 +244,6 @@ def rate(
             test_scales=Counter(analysis.classify_scale(t) for t in sorted(test_files)),
             line_rate=sum(r * w for r, w in rates) / max(sum(w for _, w in rates), 1) if rates else None,
             na_reason=analysis.not_applicable(name, policy),
-            flows_available=graph.has_flows,
         )
 
     def top_files(
@@ -291,26 +279,17 @@ def rate_working_tree(
     fs: FileSystem,
     clock: Clock,
     policy: Policy,
-    knowledge_graph: Optional[KnowledgeGraph] = None,
-    graph_dir: Optional[str] = None,
     depth: Optional[int] = None,
     max_modules: Optional[int] = None,
 ) -> Heatmap:
-    """The Heatmap of the working tree as it is on disk. With a KnowledgeGraph, its graph (built into `graph_dir`, by
-    default under .git) replaces the built-in one."""
+    """The Heatmap of the working tree as it is on disk."""
     snapshot, files = read_working_tree(git, fs, policy)
     if not rated_sources(files, policy):
         raise no_python_error(snapshot)
-    if knowledge_graph is None:
-        graph = builtin_graph(files)
-    else:
-        data_dir = graph_dir or fs.join(snapshot.root, ".git", "clean-eval-graph")
-        fs.make_dirs(data_dir)
-        graph = knowledge_graph.graph_of(snapshot.root, data_dir)
     return rate(
         snapshot,
         files,
-        graph,
+        builtin_graph(files),
         policy,
         clock.today(),
         coverage_line_rates(fs, snapshot.root),

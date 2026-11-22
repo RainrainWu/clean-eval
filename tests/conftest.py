@@ -62,8 +62,6 @@ FACTS: dict[str, Any] = {
     "effect_counts": {},
     "effect_examples": {},
     "migrations": 0,
-    "entry_flows": [],
-    "flow_touch": 0.0,
     "keyword": False,
     "tooling": False,
     "graph_functions": 20,

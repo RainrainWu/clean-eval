@@ -23,7 +23,6 @@ from clean_eval.domain.rating import Heatmap, Judgement, RatingCache
 from clean_eval.domain.review import RunFolders
 from clean_eval.external import agent_guard
 from clean_eval.external.claude_code import MAX_TURNS, VERSION, ClaudeCodeGateway
-from clean_eval.external.code_review_graph import CodeReviewGraphGateway
 from clean_eval.external.environment import ClockGateway, EnvironmentGateway
 from clean_eval.external.filesystem import FileSystemGateway
 from clean_eval.external.git import GitGateway
@@ -43,7 +42,6 @@ from clean_eval.use_cases.interfaces import (
     CodeHost,
     DiagramPresenter,
     Git,
-    KnowledgeGraph,
     ReportPresenter,
     RunLog,
 )
@@ -68,7 +66,6 @@ from clean_eval.use_cases.store import (
 )
 
 SKILLS = ("pr-review", "eval", "risk-heat-map")  # what `finalize --skill` accepts
-GRAPHS = ("builtin", "code-review-graph")
 # The stateless gateways, shared; git is per repository, gh per use.
 FS, ENV, CLOCK = FileSystemGateway(), EnvironmentGateway(), ClockGateway()
 CHECKOUT = FS.parent(FS.parent(FS.parent(FS.real_path(__file__))))  # the clean-eval checkout: package and skills
@@ -94,14 +91,6 @@ def git(
 
 def github() -> CodeHost:
     return GitHubGateway()
-
-
-def knowledge_graph() -> KnowledgeGraph:
-    """The code-review-graph CLI: on PATH, else where its installer puts it."""
-    return CodeReviewGraphGateway(
-        FS.find_executable("code-review-graph", ENV.get("PATH"))
-        or FS.join(ENV.home(), ".local", "bin", "code-review-graph")
-    )
 
 
 def diagram_presenter() -> DiagramPresenter:
@@ -258,12 +247,6 @@ def heatmap_options(
 )
 @repository_options
 @click.option("--rev", help="rate this revision, read from git objects (default: the working tree)")
-@click.option(
-    "--graph",
-    type=click.Choice(GRAPHS),
-    default="builtin",
-    help="builtin: imports and test links from ast; code-review-graph: calls and execution flows (must be installed)",
-)
 @click.option("--depth", type=int, help="levels of modules: 1 is the top-level folders (default from the policy: 3)")
 @click.option("--max-modules", type=int, help="at most this many modules (default from the policy: 60)")
 @click.option("--out", required=True, help="folder for data.json")
@@ -271,27 +254,13 @@ def rate(
     repo: str,
     model: Optional[str],
     rev: Optional[str],
-    graph: str,
     depth: Optional[int],
     max_modules: Optional[int],
     out: str,
 ) -> None:
     policy, source = load_policy(FS, repo, model)
     if rev:
-        if graph != "builtin":
-            raise HeatmapError("--rev reads git objects; only --graph builtin works there")
         heatmap = rate_revision(git(repo), CLOCK, rev, policy, RatingCache(), depth, max_modules)
-    elif graph == "code-review-graph":
-        heatmap = rate_working_tree(
-            git(repo),
-            FS,
-            CLOCK,
-            policy,
-            knowledge_graph(),
-            FS.join(out, "graph"),
-            depth,
-            max_modules,
-        )
     else:
         heatmap = rate_working_tree(git(repo), FS, CLOCK, policy, depth=depth, max_modules=max_modules)
     heatmap.notes.append("Policy: %s" % source)
