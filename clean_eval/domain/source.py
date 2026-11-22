@@ -3,7 +3,7 @@ from typing import Annotated, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .values import Count
+from clean_eval.domain.values import Count
 
 
 class Snapshot(BaseModel):
@@ -39,3 +39,12 @@ class FileSignals(BaseModel):
     stats: Optional[PyStats]                  # None when the file cannot be parsed
     todo: Count
     effects: dict[str, tuple[Count, Count]]  # write-call kind -> (count, first line)
+
+
+class FileSyntax(BaseModel):
+    """What the syntax tree of one Python file says about its links: its functions, its imports and the names it uses."""
+    model_config = ConfigDict(frozen=True)
+
+    defs: tuple[str, ...] = ()                            # functions and methods: "f", "Class.method"
+    imports: tuple[tuple[str, int, tuple[str, ...]], ...] = ()  # (module, level, names)
+    refs: frozenset[str] = frozenset()                    # identifiers, attribute names and imported names used

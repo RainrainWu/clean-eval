@@ -4,9 +4,9 @@ fix-to-PR links are heuristics (shared files plus fix/revert wording) that the e
 import re
 from collections import defaultdict
 
-from ...domain.history import DefectLink, FetchFailure, ModuleStats, ReviewSignal, RuleStats, RuleUse
-from .classify import ignored
-from .review import REVIEW_MARKER
+from clean_eval.domain.history import DefectLink, FetchFailure, ModuleStats, ReviewSignal, RuleStats, RuleUse
+from clean_eval.use_cases.rules.classify import ignored
+from clean_eval.use_cases.rules.review import REVIEW_MARKER
 
 RULE_ID = re.compile(r"\[([A-Z]{1,4}-\d{2,3}|NEW)\]")  # pr-review tags findings as [CA-01] / [NEW]
 MERGE_PR = re.compile(r"Merge pull request #(\d+)")

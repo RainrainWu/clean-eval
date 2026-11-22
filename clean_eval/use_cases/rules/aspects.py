@@ -2,7 +2,7 @@
 (score 0-100, evidence lines)."""
 import math
 
-from .scoring import clamp
+from clean_eval.use_cases.rules.scoring import clamp
 
 FLOW_TERMS = ("flow_weight", "entry")
 

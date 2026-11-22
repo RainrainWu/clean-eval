@@ -3,8 +3,8 @@ from typing import Optional
 
 from pydantic import BaseModel, model_validator
 
-from .rating import Evidence, Facts, Scores
-from .values import Band, Score
+from clean_eval.domain.rating import Evidence, Facts, Scores
+from clean_eval.domain.values import Band, Score
 
 
 class ModuleRecord(BaseModel):

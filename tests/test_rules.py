@@ -1,5 +1,6 @@
 """Business rules (use_cases/rules): scoring, bands, module splitting and lookup, the four aspects, rating,
-classification, judgement, change assessment, the README convention and the graph queries."""
+classification, judgement, change risk, the README convention, the graph queries, the built-in knowledge graph and the
+per-file signals."""
 import unittest
 from collections import Counter
 
@@ -10,10 +11,12 @@ from clean_eval.domain.judgement import Judgement
 from clean_eval.domain.policy import ASPECTS, Policy
 from clean_eval.domain.rating import AspectScores, Facts
 from clean_eval.use_cases.rules import aspects, classify
-from clean_eval.use_cases.rules.change import assess_change
+from clean_eval.use_cases.rules.ast_graph import builtin_graph
+from clean_eval.use_cases.rules.change import change_risk
 from clean_eval.use_cases.rules.graph import dependents, functions_by_module, test_files_to_modules
 from clean_eval.use_cases.rules.judgement import apply_levels, refresh_overall
 from clean_eval.use_cases.rules.modules import module_of, split_modules
+from clean_eval.use_cases.rules.python_signals import file_signals, python_stats, write_calls
 from clean_eval.use_cases.rules.rating import rate_module, rescore
 from clean_eval.use_cases.rules.readme import MARKERS, SECTION_HEADING, block_fingerprint, fingerprint, merge_readme
 from clean_eval.use_cases.rules.scoring import band, band_floor, level_range, overall, place_in_level
@@ -190,10 +193,10 @@ class JudgementRule(unittest.TestCase):
         self.assertEqual(refresh_overall(h, 0.5).modules[0].scores.overall, overall(h.modules[0].scores))
 
 
-class ChangeAssessment(unittest.TestCase):
+class ChangeRiskTest(unittest.TestCase):
     def test_paths_take_their_module_band_and_unknown_paths_the_unrated_band(self):
         h = heatmap(rating("src/api", 500, biz=90, unverified=90), rating("src/util", 100, biz=5, effects=0, entropy=5, unverified=5))
-        risk = assess_change(h, ["src/api/x.py", "src/util/y.py", "README.md", "terraform/main.tf", "src/new/z.py"], P)
+        risk = change_risk(h, ["src/api/x.py", "src/util/y.py", "README.md", "terraform/main.tf", "src/new/z.py"], P)
         self.assertEqual(risk.files["src/api/x.py"], "src/api")
         self.assertEqual(risk.ignored, ["README.md"])
         mods = {m.module: m for m in risk.modules}
@@ -204,15 +207,15 @@ class ChangeAssessment(unittest.TestCase):
         self.assertEqual(risk.modules[0].module, "src/api")  # most severe first
 
     def test_agent_instructions_are_not_risk_free(self):
-        risk = assess_change(heatmap(), [".claude/skills/pr-review/SKILL.md", ".clean-eval/review-rules.md"], P)
+        risk = change_risk(heatmap(), [".claude/skills/pr-review/SKILL.md", ".clean-eval/review-rules.md"], P)
         self.assertEqual((risk.max_band, risk.ignored), ("Moderate", []))
 
     def test_docs_only_and_empty_changes_are_low(self):
-        self.assertEqual(assess_change(heatmap(), ["docs/a.md"], P).max_band, "Low")
-        self.assertEqual(assess_change(heatmap(), [], P).max_score, 0)
+        self.assertEqual(change_risk(heatmap(), ["docs/a.md"], P).max_band, "Low")
+        self.assertEqual(change_risk(heatmap(), [], P).max_score, 0)
 
     def test_unrated_only_change_scores_the_band_floor(self):
-        risk = assess_change(heatmap(), ["infra/main.tf"], Policy.from_overrides({"unrated_band": "High"}))
+        risk = change_risk(heatmap(), ["infra/main.tf"], Policy.from_overrides({"unrated_band": "High"}))
         self.assertEqual((risk.max_band, risk.max_score), ("High", 50))
 
 
@@ -254,6 +257,81 @@ class GraphQueries(unittest.TestCase):
         self.assertEqual((fan_in["B"], fan_out["A"]), ({"A"}, {"B"}))
         self.assertEqual(sorted(functions_by_module(g, file_mod)), ["A", "B"])
         self.assertEqual(test_files_to_modules(g, file_mod), {"tests/test_a.py": {"A"}})
+
+
+
+SAMPLE = '''
+def typed(a: int) -> int:
+    if a and a > 1:
+        return a
+    return 0
+
+
+def loose(x):
+    try:
+        return x
+    except Exception:
+        pass
+'''
+
+
+class PythonSignalsTest(unittest.TestCase):
+    def test_python_stats(self):
+        st = python_stats(SAMPLE)
+        self.assertEqual((len(st.funcs), st.typed, st.broad, st.swallow), (2, 1, 1, 1))
+        self.assertEqual(st.funcs[0][1], 3)  # one if and one boolean operator on top of the base path
+        self.assertIsNone(python_stats("def broken(:"))
+
+    def test_write_calls_are_counted_with_a_line_and_gated_by_context(self):
+        aws = "import boto3\nc = boto3.client('s3')\nc.put_object(Bucket='b')\nc.delete_object(Bucket='b')\n"
+        self.assertEqual(write_calls(aws)["aws_write"], (2, 3))
+        self.assertNotIn("aws_write", write_calls("x.put_object(1)\n"))  # no boto import: not an AWS write
+
+    def test_signals_are_cached_per_content(self):
+        cache = {}
+        a = file_signals(sf("a.py", 1, "# TODO a\nx = 1  # FIXME b\nTODOS = 3\n", blob="b1"), cache)
+        self.assertEqual(a.todo, 2)
+        self.assertIs(file_signals(sf("renamed.py", 1, "ignored", blob="b1"), cache), a)
+
+
+class BuiltinGraphTest(unittest.TestCase):
+    FILES = {
+        "src/pkg/__init__.py": "from .core import run\n",
+        "src/pkg/core.py": "import json\nfrom . import util\n\ndef run():\n    return util.helper()\n\nclass Svc:\n    def go(self):\n        pass\n",
+        "src/pkg/util.py": "def helper():\n    return 1\n",
+        "tools/json.py": "X = 1\n",
+        "lambdas/x/handler.py": "import utils\n\ndef handler(e, c):\n    return utils.f()\n",
+        "lambdas/x/utils.py": "def f():\n    pass\n",
+        "other/deep/utils.py": "def f():\n    pass\n",
+        "tests/test_core.py": "from pkg import run\nfrom pkg.core import Svc\n\ndef test_run():\n    assert run() and Svc().go() is None\n",
+    }
+
+    def graph(self, cache=None):
+        return builtin_graph([sf(p, 1, t, test=p.startswith("tests/"), blob="blob-" + p) for p, t in self.FILES.items()], cache)
+
+    def test_imports_resolve_by_path(self):
+        g = self.graph()
+        self.assertEqual(g.links["src/pkg/core.py"], {"src/pkg/util.py"})              # relative; stdlib json skipped
+        self.assertEqual(g.links["src/pkg/__init__.py"], {"src/pkg/core.py"})
+        self.assertEqual(g.links["tests/test_core.py"], {"src/pkg/__init__.py", "src/pkg/core.py"})  # src layout
+        self.assertEqual(g.links["lambdas/x/handler.py"], {"lambdas/x/utils.py"})      # sibling, not other/deep
+        self.assertFalse(g.has_flows)
+        self.assertEqual(g.stats["source"], "built-in ast")
+
+    def test_tests_link_to_the_functions_they_import_and_name(self):
+        g = self.graph()
+        self.assertEqual(g.tested["src/pkg/core.py::run"], {"tests/test_core.py"})      # through the __init__ re-export
+        self.assertEqual(g.tested["src/pkg/core.py::Svc.go"], {"tests/test_core.py"})
+        self.assertNotIn("src/pkg/util.py::helper", g.tested)
+        self.assertEqual(g.nodes["src/pkg/core.py::Svc.go"], ("Function", "src/pkg/core.py", False))
+
+    def test_per_file_syntax_is_cached(self):
+        cache = {}
+        self.graph(cache)
+        self.assertEqual(len(cache), len(self.FILES))
+        before = dict(cache)
+        self.graph(cache)
+        self.assertEqual(cache, before)
 
 
 if __name__ == "__main__":

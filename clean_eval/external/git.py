@@ -1,13 +1,14 @@
-"""The git CLI: every git command clean-eval runs. It reads the sources of a working tree or of any revision, and it is
-the use cases' Repository port (history, diffs, patches). Paths are passed raw (NUL-delimited output, literal
-pathspecs), so any filename survives; nothing in the repository is executed."""
+"""The git CLI: every git command clean-eval runs, as the use cases' Git interface: the sources of a working tree or of
+any revision, the history, diffs and patches. Paths are passed raw (NUL-delimited output, literal pathspecs), so any
+filename survives; nothing in the repository is executed."""
 import re
 import subprocess
 
-from ..domain.errors import HeatmapError
+from clean_eval.domain.errors import HeatmapError
+from clean_eval.use_cases.interfaces import Git
 
 
-class GitGateway:
+class GitGateway(Git):
     def __init__(self, root):
         self.root = root
 

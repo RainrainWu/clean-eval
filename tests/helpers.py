@@ -200,6 +200,22 @@ def write(path, text):
         f.write(text)
 
 
+# ---------------------------------------------------------------- fakes of the use cases' interfaces
+
+def fake(interface, **members):
+    """An implementation of one of the interfaces in use_cases/interfaces.py, in one line: `members` are its methods (as
+    plain functions, without `self`) and attributes. Calling any other abstract method fails the test, so a fake also
+    shows which methods a use case needs."""
+    def unexpected(name):
+        def method(self, *args, **kwargs):
+            raise AssertionError("unexpected call: %s.%s" % (interface.__name__, name))
+        return method
+
+    body = {name: unexpected(name) for name in interface.__abstractmethods__}
+    body.update({name: staticmethod(m) if callable(m) else m for name, m in members.items()})
+    return type("Fake" + interface.__name__, (interface,), body)()
+
+
 # ---------------------------------------------------------------- builders of domain models
 
 def facts(**kw):

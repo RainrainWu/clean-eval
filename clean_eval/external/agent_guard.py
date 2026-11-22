@@ -19,9 +19,9 @@ unexpected denies; action.sh also turns any other exit status of the hook comman
 """
 import sys
 
-from ..domain.ci import ToolCall
-from .environment import EnvironmentGateway
-from .filesystem import FileSystemGateway
+from clean_eval.domain.ci import ToolCall
+from clean_eval.external.environment import EnvironmentGateway
+from clean_eval.external.filesystem import FileSystemGateway
 
 READ_TOOLS = {"Read": "file_path", "Grep": "path", "Glob": "path", "LS": "path"}
 WRITE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path"}

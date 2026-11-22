@@ -3,11 +3,11 @@ policy on an already-collected history: every rated module is re-scored from its
 mixes or thresholds is evaluated in milliseconds without touching git. Module shape (depth, paths) needs a re-collect."""
 from collections import defaultdict
 
-from ...domain.history import AspectMeans, BandStats, Calibration, Replay, SensitivityRow
-from ...domain.policy import SCORE_KEYS, WEIGHT_GROUPS
-from ...domain.values import BAND_NAMES
-from .rating import rescore as rescore_module
-from .scoring import band, band_floor, severity
+from clean_eval.domain.history import AspectMeans, BandStats, Calibration, Replay, SensitivityRow
+from clean_eval.domain.policy import SCORE_KEYS, WEIGHT_GROUPS
+from clean_eval.domain.values import BAND_NAMES
+from clean_eval.use_cases.rules.rating import rescore as rescore_module
+from clean_eval.use_cases.rules.scoring import band, band_floor, severity
 
 
 def auc(pos, neg):

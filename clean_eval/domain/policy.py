@@ -9,8 +9,9 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from .errors import InvalidPolicy
-from .values import BAND_NAMES, BANDS, AtLeastOne, Band, Divisor, Fraction, Number, Whole  # noqa: F401  (BAND_NAMES, BANDS re-exported)
+from clean_eval.domain.errors import InvalidPolicy
+# BAND_NAMES and BANDS are re-exported
+from clean_eval.domain.values import BAND_NAMES, BANDS, AtLeastOne, Band, Divisor, Fraction, Number, Whole  # noqa: F401
 
 # Where a repository keeps its own tuning (git paths, so always "/"-separated).
 REPO_DIR = ".clean-eval"

@@ -1,11 +1,12 @@
 """A rating: the facts the four aspect rules read about one module, the scores they give, and the heat map of a repository.
 Scores are 0-100 wherever they appear, and assignments are validated too, so no rule can push one out of range."""
 from collections import Counter
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .values import Count, Fraction, Score
+from clean_eval.domain.source import FileSignals, FileSyntax
+from clean_eval.domain.values import Count, Fraction, Score
 
 
 class Facts(BaseModel):
@@ -109,3 +110,19 @@ class Heatmap(BaseModel):
     notes: list[str] = Field(default_factory=list)
     judged_modules: Count = 0
     policy_version: Optional[int] = None
+
+
+class ReadmeUpdate(BaseModel):
+    """What refreshing the README's heat-map section did."""
+    heatmap: Heatmap
+    changed: bool
+    action: Optional[Literal["ADD", "UPDATE"]] = None  # when changed
+    fingerprint: str
+
+
+class RatingCache(BaseModel):
+    """What rating many revisions of one repository shares, so each version of a file is read and analysed once: blob
+    texts by id, and the syntax and signals of each file content."""
+    blobs: dict[str, str] = {}
+    syntax: dict[str, FileSyntax] = {}
+    signals: dict[str, FileSignals] = {}

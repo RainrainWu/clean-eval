@@ -1,8 +1,9 @@
 """ReportPresenter: a short Markdown summary of a heatmap, for job summaries and chat."""
-from ...domain.policy import ASPECTS
-from ...use_cases.rules.scoring import band
-from . import style
-from .diagram import legend
+from clean_eval.adaptor.presenters import style
+from clean_eval.adaptor.presenters.diagram import legend
+from clean_eval.domain.policy import ASPECTS
+from clean_eval.use_cases.interfaces import ReportPresenter
+from clean_eval.use_cases.rules.scoring import band
 
 TOP = 10
 
@@ -17,7 +18,7 @@ def _name(name):
     return "`%s`" % name.replace("`", "'").replace("|", "\\|")
 
 
-class MarkdownReportPresenter:
+class MarkdownReportPresenter(ReportPresenter):
     def report(self, heatmap):
         mods = sorted(heatmap.modules, key=lambda m: (-m.scores.overall, m.name))
         head = ["**%s** risk heat map · `%s` @ `%s` · %s · %d modules · %d lines%s"

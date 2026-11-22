@@ -5,7 +5,6 @@ import unittest
 
 from helpers import Repo, days_ago, read
 
-from clean_eval.adaptor.files import Folder
 from clean_eval.domain.errors import HeatmapError
 from clean_eval.domain.policy import Policy
 from clean_eval.domain.review import DiffIndex
@@ -32,7 +31,7 @@ class SplitDiffTest(unittest.TestCase):
             head = r.commit("change", when=days_ago(2))
             git = GitGateway(r.path)
             files = git.diff_files(base, head)
-            index = write_split_diff(git, Folder(FileSystemGateway(), out), base, head, files, {f: "src/a" for f in files})
+            index = write_split_diff(git, FileSystemGateway(), out, base, head, files, {f: "src/a" for f in files})
             self.assertEqual(len(index), len(files))
             for e in index:
                 patch = read(os.path.join(out, e.patch))

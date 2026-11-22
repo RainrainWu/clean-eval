@@ -1,11 +1,12 @@
 """DiagramPresenter: a static SVG treemap, and the README block that shows it."""
 from xml.sax.saxutils import escape
 
-from ...domain.policy import ASPECTS, BANDS
-from ...use_cases.rules.readme import MARKERS
-from ...use_cases.rules.scoring import band
-from . import style
-from .treemap import squarify
+from clean_eval.adaptor.presenters import style
+from clean_eval.adaptor.presenters.treemap import squarify
+from clean_eval.domain.policy import ASPECTS, BANDS
+from clean_eval.use_cases.interfaces import DiagramPresenter
+from clean_eval.use_cases.rules.readme import MARKERS
+from clean_eval.use_cases.rules.scoring import band
 
 WIDTH, HEIGHT = 960, 540
 TEXT_MIN_W, TEXT_MIN_H = 96, 44
@@ -25,7 +26,7 @@ def legend():
                       for i, (hi, n) in enumerate(BANDS))
 
 
-class SvgDiagramPresenter:
+class SvgDiagramPresenter(DiagramPresenter):
     def svg(self, heatmap):
         mods = sorted(heatmap.modules, key=lambda m: -m.loc)
         total = sum(m.loc for m in mods) or 1

@@ -1,8 +1,8 @@
 """The risk a change carries: each changed path takes the band of the module it belongs to, as rated at the change's base."""
-from ...domain.change import ChangeRisk, ModuleRisk
-from .classify import ignored
-from .modules import module_of
-from .scoring import band, band_floor, severity
+from clean_eval.domain.change import ChangeRisk, ModuleRisk
+from clean_eval.use_cases.rules.classify import ignored
+from clean_eval.use_cases.rules.modules import module_of
+from clean_eval.use_cases.rules.scoring import band, band_floor, severity
 
 
 def _unrated_key(path, names):
@@ -15,7 +15,8 @@ def _unrated_key(path, names):
     return path
 
 
-def assess_change(heatmap, paths, policy):
+def change_risk(heatmap, paths, policy):
+    """The ChangeRisk of changing `paths`, from the heat map of the change's base."""
     by_name = {m.name: m for m in heatmap.modules}
     files, touched, skipped = {}, {}, []
     for path in paths:

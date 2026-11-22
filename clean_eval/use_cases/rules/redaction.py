@@ -18,10 +18,11 @@ MAX_REPORT_CHARS = 60_000  # GitHub caps review bodies at 65,536
 
 def secret_values(environ):
     """The values to redact, from an environment mapping: every secret-looking variable's value (8+ characters) and its
-    base64 forms, e.g. the `AUTHORIZATION: basic <b64("x-access-token:<token>")>` actions/checkout persists in .git/config."""
+    base64 forms, e.g. the `AUTHORIZATION: basic <b64("x-access-token:<token>")>` actions/checkout persists in .git/config.
+    Longest first, so a secret that contains another is replaced whole."""
     values = {v for k, v in environ.items() if SECRET_NAME.search(k) and v and len(v) >= 8}
     encoded = {base64.b64encode(raw.encode()).decode() for v in values for raw in (v, "x-access-token:" + v)}
-    return values | encoded
+    return tuple(sorted(values | encoded, key=len, reverse=True))
 
 
 def neutralize_comments(text):
@@ -35,28 +36,25 @@ def neutralize_comments(text):
     return text.replace("<!--", "&lt;!--")
 
 
-class Redactor:
-    def __init__(self, secrets=()):
-        # longest first, so a secret that contains another is replaced whole
-        self.secrets = sorted(set(secrets), key=len, reverse=True)
+def redact(text, secrets=()):
+    """(text with secrets and well-known token formats replaced, number of replacements). `secrets` as secret_values
+    gives them."""
+    n = 0
+    for v in sorted(secrets, key=len, reverse=True):
+        if v in text:
+            n += text.count(v)
+            text = text.replace(v, REDACTED)
+    for pattern in TOKEN_PATTERNS:
+        text, k = pattern.subn(REDACTED, text)
+        n += k
+    text, k = AUTH_HEADER.subn(r"\1" + REDACTED, text)
+    return text, n + k
 
-    def redact(self, text):
-        """(text with secrets replaced, number of replacements)."""
-        n = 0
-        for v in self.secrets:
-            if v in text:
-                n += text.count(v)
-                text = text.replace(v, REDACTED)
-        for pattern in TOKEN_PATTERNS:
-            text, k = pattern.subn(REDACTED, text)
-            n += k
-        text, k = AUTH_HEADER.subn(r"\1" + REDACTED, text)
-        return text, n + k
 
-    def sanitize_report(self, text):
-        """(report safe to post, redactions): no comments (the agent can't forge or duplicate the marker), no secrets,
-        within GitHub's size limit."""
-        text, n = self.redact(neutralize_comments(text or ""))
-        if len(text) > MAX_REPORT_CHARS:
-            text = text[:MAX_REPORT_CHARS] + "\n\n_[report truncated]_\n"
-        return text.strip() + "\n", n
+def sanitize_report(text, secrets=()):
+    """(report safe to post, redactions): no comments (the agent can't forge or duplicate the marker), no secrets, within
+    GitHub's size limit."""
+    text, n = redact(neutralize_comments(text or ""), secrets)
+    if len(text) > MAX_REPORT_CHARS:
+        text = text[:MAX_REPORT_CHARS] + "\n\n_[report truncated]_\n"
+    return text.strip() + "\n", n
