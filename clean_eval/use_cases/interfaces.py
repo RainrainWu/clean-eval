@@ -7,11 +7,23 @@ inherit and implement them:
   RunLog                                                         the command line's console (external/cli.py)
 """
 
-from abc import ABC, abstractmethod
-from typing import Any, Optional
+from abc import (
+    ABC,
+    abstractmethod,
+)
+from typing import (
+    Any,
+    Optional,
+)
 
 from clean_eval.domain.rating import Heatmap
-from clean_eval.domain.review import AgentRun, HostReview, PullRequest, ReviewPost, RunFolders
+from clean_eval.domain.review import (
+    AgentRun,
+    HostReview,
+    PullRequest,
+    ReviewPost,
+    RunFolders,
+)
 
 
 class Git(ABC):
@@ -399,20 +411,15 @@ class Agent(ABC):
 
 
 class Environment(ABC):
-    """The process environment."""
+    """The process environment, as a whole: every variable (what redaction scans, what the agent may be passed) and path
+    lists (the guard's roots). A run's settings, each read from its own variable, are Settings
+    (clean_eval/settings.py)."""
 
     @abstractmethod
     def variables(
         self,
     ) -> dict[str, str]:
         """A copy of every variable, as {name: value}."""
-
-    @abstractmethod
-    def get(
-        self,
-        name: str,
-        default: Optional[str] = None,
-    ) -> Optional[str]: ...
 
     @abstractmethod
     def paths(

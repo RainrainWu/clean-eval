@@ -4,7 +4,7 @@ This layer holds only the presenters, in `presenters.py`. They implement `Diagra
 `clean_eval/use_cases/interfaces.py`:
 - `SvgDiagramPresenter` renders the README's SVG treemap and the block between the heat-map markers.
 - `MarkdownReportPresenter` renders the Markdown summary.
-- The colors, bands and diagram path they share, and the squarified treemap layout (`squarify`), sit beside them.
+- The colors and bands they share, and the squarified treemap layout (`squarify`), sit beside them.
 
 Rules:
 - **Rendering only, no I/O.** A presenter returns text, and the use case writes it.

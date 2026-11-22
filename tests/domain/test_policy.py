@@ -3,11 +3,19 @@ tunable and structural ones, and the band type names the bands."""
 
 import pytest
 from pydantic import ValidationError
+from pytest_lazy_fixtures import (
+    lf,
+    lfc,
+)
 
 from clean_eval.domain.errors import InvalidPolicy
-from clean_eval.domain.policy import BAND_NAMES, STRUCTURAL, TUNABLE, Band, Policy
-
-DEFAULTS = Policy()
+from clean_eval.domain.policy import (
+    BANDS,
+    STRUCTURAL,
+    TUNABLE,
+    Band,
+    Policy,
+)
 
 
 class TestFromOverrides:
@@ -23,17 +31,19 @@ class TestFromOverrides:
     def test_overrides_merge_into_the_defaults(
         self,
         policy,
+        default_policy,
     ):
         assert policy.business_weights["dependents"] == 0.4
-        assert policy.business_weights["size"] == DEFAULTS.business_weights["size"]  # other keys keep their defaults
+        assert policy.business_weights["size"] == default_policy.business_weights["size"]  # other keys keep defaults
         assert policy.unrated_band == "High"
 
     @pytest.mark.parametrize("policy", [{}, None], indirect=True, ids=["empty", "none"])
     def test_no_overrides_are_the_defaults(
         self,
         policy,
+        default_policy,
     ):
-        assert policy == DEFAULTS
+        assert policy == default_policy
 
     @pytest.mark.parametrize("policy", [{"business_weights": {"keyword": 0}}], indirect=True, ids=["keyword 0"])
     def test_weights_may_be_zero(
@@ -82,7 +92,13 @@ class TestRefusedOverrides:
             {"exclude": "vendor/*"},
             {"not_applicable": [["x"]]},
             {"not_applicable": [["reason", "("]]},
-            {"business_weights": dict.fromkeys(DEFAULTS.business_weights, 0)},
+            pytest.param(
+                lfc(
+                    lambda defaults: {"business_weights": dict.fromkeys(defaults.business_weights, 0)},
+                    lf("default_policy"),
+                ),
+                id="{'business_weights': every default at 0}",
+            ),
             {"version": "2"},
             {"effects_scale": "40"},
             {"effects_scale": float("nan")},
@@ -149,9 +165,10 @@ class TestKnobs:
 
 
 class TestBands:
-    """The score bands and the type of a band's name."""
+    """The score bands and the bands they bound."""
 
-    def test_the_band_type_matches_the_bands(
+    def test_the_bands_are_bounded_in_their_order(
         self,
     ):
-        assert Band.__args__ == BAND_NAMES
+        assert [band for _, band in BANDS] == list(Band)
+        assert [band.rank for band in Band] == [0, 1, 2, 3]

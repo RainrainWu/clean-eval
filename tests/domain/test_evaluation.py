@@ -5,22 +5,19 @@ import datetime as dt
 
 import pytest
 from pydantic import ValidationError
+from pytest_lazy_fixtures import lf
 
 from clean_eval.domain.evaluation import (
     AgentEvalResult,
     EvalResult,
     FetchFailure,
     MergedPR,
-    ModelChange,
     Period,
     PolicyEdit,
     Rejection,
     ReviewSignal,
     RulesChange,
 )
-
-# An edit of the risk model that the replay accepted.
-ACCEPTED_MODEL_CHANGE = ModelChange(changed_keys=["x"], auc_before=0.6, auc_after=0.7)
 
 
 class TestPeriod:
@@ -106,7 +103,13 @@ class TestPolicyEdit:
         orig,
         changed,
     ):
-        assert PolicyEdit(new=new, orig=orig).changed_keys == changed
+        assert (
+            PolicyEdit(
+                new=new,
+                orig=orig,
+            ).changed_keys
+            == changed
+        )
 
     @pytest.mark.parametrize(
         "new",
@@ -131,7 +134,9 @@ class TestPolicyEdit:
         new,
     ):
         with pytest.raises(ValidationError):
-            PolicyEdit(new=new)
+            PolicyEdit(
+                new=new,
+            )
 
 
 class TestAgentEvalResult:
@@ -160,9 +165,16 @@ class TestEvalResult:
     @pytest.mark.parametrize(
         ("eval_result", "applied"),
         [
-            ({"model_change": Rejection(reason="no")}, False),
+            (
+                {
+                    "model_change": Rejection(
+                        reason="no",
+                    )
+                },
+                False,
+            ),
             ({"rules_change": RulesChange()}, True),
-            ({"model_change": ACCEPTED_MODEL_CHANGE}, True),
+            ({"model_change": lf("accepted_model_change")}, True),
         ],
         indirect=["eval_result"],
         ids=["a rejected model change", "an accepted rules change", "an accepted model change"],
@@ -176,7 +188,7 @@ class TestEvalResult:
 
     @pytest.mark.parametrize(
         "eval_result",
-        [{"model_change": ACCEPTED_MODEL_CHANGE}],
+        [{"model_change": lf("accepted_model_change")}],
         indirect=True,
         ids=["an accepted model change"],
     )

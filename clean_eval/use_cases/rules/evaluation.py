@@ -3,18 +3,33 @@ calibrating the risk model against it, and judging the tuning the agent proposes
 
 import json
 import re
-from collections import Counter, defaultdict
-from collections.abc import Collection, Sequence
-from typing import Any, Optional, Union
+from collections import (
+    Counter,
+    defaultdict,
+)
+from collections.abc import (
+    Collection,
+    Sequence,
+)
+from typing import (
+    Any,
+    Optional,
+    Union,
+)
 
 from pydantic import ValidationError
 
-from clean_eval.domain.errors import InvalidOutput
+from clean_eval.domain.errors import (
+    InvalidOutput,
+    RemoteFailure,
+)
 from clean_eval.domain.evaluation import (
     AgentEvalResult,
     AspectMeans,
     BandStats,
     Calibration,
+    Confidence,
+    DefectKind,
     DefectLink,
     EvalHistory,
     EvalResult,
@@ -33,13 +48,26 @@ from clean_eval.domain.evaluation import (
     RuleUse,
     SensitivityRow,
 )
-from clean_eval.domain.policy import BAND_NAMES, SCORE_KEYS, WEIGHT_GROUPS, Policy
+from clean_eval.domain.policy import (
+    WEIGHT_GROUPS,
+    Aspect,
+    Band,
+    Policy,
+)
 from clean_eval.domain.rating import ModuleRecord
 from clean_eval.domain.review import StepOutputs
 from clean_eval.use_cases.rules.analysis import ignored
-from clean_eval.use_cases.rules.heatmap import band, band_floor, severity
+from clean_eval.use_cases.rules.heatmap import (
+    band,
+    band_floor,
+    severity,
+)
 from clean_eval.use_cases.rules.heatmap import rescore as rescore_module
-from clean_eval.use_cases.rules.review import REVIEW_MARKER, check_rules, redact
+from clean_eval.use_cases.rules.review import (
+    REVIEW_MARKER,
+    check_rules,
+    redact,
+)
 
 # Merged-PR history: which PR a commit merged, which later fixes and reverts point back at it ("escaped defects"), and
 # what its clean-eval review cited. Each first-parent commit of the main branch is one merged PR (merge or squash). The
@@ -99,8 +127,8 @@ def attribute_defects(
                 fix_sha=fix.sha,
                 fix_pr=fix.pr,
                 subject=fix.subject,
-                kind="revert" if is_revert else "fix",
-                confidence="high" if strong else "heuristic",
+                kind=DefectKind.REVERT if is_revert else DefectKind.FIX,
+                confidence=Confidence.HIGH if strong else Confidence.HEURISTIC,
                 days_after=round((fix.ts - target.ts) / DAY, 1),
                 overlap_files=sorted(fset & set(target.files))[:20],
             )
@@ -161,7 +189,7 @@ def rule_stats(
     fetched = [(u, u.review) for u in prs if isinstance(u.review, ReviewSignal)]
     failures = [(u.pr, u.review.error) for u in prs if u.pr is not None and isinstance(u.review, FetchFailure)]
     failed = [pr for pr, error in failures if error == "error"]
-    not_found = [pr for pr, error in failures if error == "not_found"]
+    not_found = [pr for pr, error in failures if error == RemoteFailure.NOT_FOUND]
     attempted = len(fetched) + len(failed)
     error_rate = round(len(failed) / attempted, 3) if attempted else 0.0
     per_rule = defaultdict(RuleUse)
@@ -259,13 +287,14 @@ def calibration(
         b.escape_rate = round(b.defective_prs / b.prs, 3) if b.prs else None
     bad, good = [u for u in prs if u.defects], [u for u in prs if not u.defects]
     aspect_auc, aspect_means = {}, {}
-    for key in SCORE_KEYS:
+    for key in (aspect.score_key for aspect in Aspect):
         sp, sn = [aspect_peak(u, key) for u in bad], [aspect_peak(u, key) for u in good]
         aspect_auc[key] = auc(sp, sn)
         aspect_means[key] = AspectMeans(
-            defective=round(sum(sp) / len(sp), 1) if sp else None, clean=round(sum(sn) / len(sn), 1) if sn else None
+            defective=round(sum(sp) / len(sp), 1) if sp else None,
+            clean=round(sum(sn) / len(sn), 1) if sn else None,
         )
-    bands = [b for b in BAND_NAMES if b in by_band]
+    bands = [b for b in Band if b in by_band]
     return Calibration(
         auc_max_score=auc([u.max_score for u in bad], [u.max_score for u in good]),
         by_band={b: by_band[b] for b in bands},
@@ -285,7 +314,7 @@ def summarise(
     return merged_pr.model_copy(
         update={
             "modules": mods,
-            "max_tier": max([m.band for m in mods] or ["Low"], key=severity),
+            "max_tier": max([m.band for m in mods] or [Band.LOW], key=severity),
             "max_score": max(scores, default=0),
         }
     )
@@ -317,7 +346,11 @@ def replay(
 ) -> Replay:
     """Calibration of `policy` on an already-collected EvalHistory (weights, mixes and thresholds; not module shape)."""
     cal = calibration(rescore(history.prs, policy))
-    return Replay(auc_max_score=cal.auc_max_score, by_band=cal.by_band, band_mix=cal.band_mix)
+    return Replay(
+        auc_max_score=cal.auc_max_score,
+        by_band=cal.by_band,
+        band_mix=cal.band_mix,
+    )
 
 
 def sensitivity(
@@ -326,7 +359,12 @@ def sensitivity(
     step: float = 0.1,
 ) -> list[SensitivityRow]:
     """One-knob-at-a-time replays: the overall peak share and every weight of the four aspects, each ±step and -> 0."""
-    rows = [SensitivityRow(change="baseline", **replay(history, policy).model_dump())]
+    rows = [
+        SensitivityRow(
+            change="baseline",
+            **replay(history, policy).model_dump(),
+        )
+    ]
     for nv in (policy.overall_peak_share + step, policy.overall_peak_share - step):
         if 0 <= nv <= 1:
             variant = policy.model_copy(update={"overall_peak_share": round(nv, 3)})
@@ -348,7 +386,8 @@ def sensitivity(
                 variant = policy.model_copy(update={group: {**weights, key: nw}})
                 rows.append(
                     SensitivityRow(
-                        change="%s.%s %g→%g (%s)" % (group, key, w, nw, label), **replay(history, variant).model_dump()
+                        change="%s.%s %g→%g (%s)" % (group, key, w, nw, label),
+                        **replay(history, variant).model_dump(),
                     )
                 )
     return rows
@@ -389,10 +428,18 @@ def judge_model_edit(
     before = replay(history, Policy.from_overrides(edit.orig)).auc_max_score
     after = replay(history, Policy.from_overrides(edit.new)).auc_max_score
     if before is None or after is None:
-        raise InvalidOutput("AUC is undefined for this period (no defective or no clean PRs): no evidence for a change")
+        raise InvalidOutput(
+            "AUC is undefined for this period (no defective or no clean PRs): no evidence for a change",
+        )
     if after < before:
-        raise InvalidOutput("replay AUC %s is below the current model's %s" % (after, before))
-    return ModelChange(changed_keys=sorted(edit.changed_keys), auc_before=before, auc_after=after)
+        raise InvalidOutput(
+            "replay AUC %s is below the current model's %s" % (after, before),
+        )
+    return ModelChange(
+        changed_keys=sorted(edit.changed_keys),
+        auc_before=before,
+        auc_after=after,
+    )
 
 
 def judge_rules_edit(
@@ -400,7 +447,9 @@ def judge_rules_edit(
 ) -> RulesChange:
     """The accepted change of the review rules; InvalidOutput when they are removed or don't parse into unique rows."""
     if new_text is None:
-        raise InvalidOutput("review-rules.md may not be removed")
+        raise InvalidOutput(
+            "review-rules.md may not be removed",
+        )
     try:
         check_rules(new_text)
     except ValidationError as e:

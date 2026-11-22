@@ -1,14 +1,14 @@
 """The eval's rules (use_cases/rules/evaluation.py): reading the merged-PR history, and calibration."""
 
 import pytest
+from pytest_lazy_fixtures import lf
 
-from clean_eval.use_cases.rules.evaluation import RULE_ID, auc, pr_number, rescore
-
-# Review text with rule tags among other bracketed words and IDs, and the tags pr-review wrote.
-TAGGED = "[CA-01][blocker] x SHA-256 [Q-01] [NEW] CA-02 [R-123]"
-TAGS = ["CA-01", "Q-01", "NEW", "R-123"]
-# A PR that touched only a module no rated module covers, in the band unrated modules had then.
-UNRATED_ONLY = [{"modules": [{"module": "infra", "band": "Moderate", "rated": False}]}]
+from clean_eval.use_cases.rules.evaluation import (
+    RULE_ID,
+    auc,
+    pr_number,
+    rescore,
+)
 
 
 class TestPrNumber:
@@ -39,7 +39,9 @@ class TestRuleId:
     def test_only_bracketed_rule_ids_and_new_are_tags(
         self,
     ):
-        assert RULE_ID.findall(TAGGED) == TAGS
+        # review text with rule tags among other bracketed words and IDs, and the tags pr-review wrote
+        review = "[CA-01][blocker] x SHA-256 [Q-01] [NEW] CA-02 [R-123]"
+        assert RULE_ID.findall(review) == ["CA-01", "Q-01", "NEW", "R-123"]
 
 
 class TestAuc:
@@ -63,7 +65,7 @@ class TestAuc:
 class TestRescore:
     """Replaying the history under another policy: every module the PRs touched is re-scored."""
 
-    @pytest.mark.parametrize("merged_prs", [UNRATED_ONLY], indirect=True)
+    @pytest.mark.parametrize("merged_prs", [[lf("unrated_only_pr")]], indirect=True)
     @pytest.mark.parametrize("policy", [{"unrated_band": "High"}], indirect=True)
     def test_unrated_modules_take_the_policys_band(
         self,

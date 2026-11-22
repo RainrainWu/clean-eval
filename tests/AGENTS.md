@@ -4,8 +4,10 @@ The tests are written for pytest, laid out like the package, and held to the sam
 `test_architecture.py` checks them:
 - `TestsMirrorThePackage` checks the layout and the imports;
 - `TestsFollowTheConventions` checks the shape described under "Writing tests";
-- `TestCodeStyle` checks the code style of the root AGENTS.md here as everywhere: no `def _name`, one parameter per
-  line, no single-character parameter names.
+- `TestCodeStyle` checks the code style of the root AGENTS.md here as everywhere: no `def _name`, no function over
+  50 lines, none defined inside another, one parameter per line, one argument per line in a class constructor call,
+  one name per line in an import of several, no `Literal` of names where a `StrEnum` belongs, no mutable constant, no
+  single-character parameter names.
 
 ```bash
 uv run pytest                                            # everything, ~30 s; no network (fake gh and claude)
@@ -23,11 +25,16 @@ uv run pytest tests/use_cases/test_heatmap.py            # one module; ::TestCla
   fixture parametrized over the in-memory fake and the gateway, so each check runs on both. When either changes,
   extend the contract.
 - **Top-level tests** span the layers: `test_architecture.py` (the architecture rules), `test_action.py`
-  (the GitHub Action's command end to end, with fake `claude` and `gh`) and `test_release.py` (the release check).
+  (the GitHub Action's command end to end, run by its `action.yml` line with fake `claude` and `gh`),
+  `test_settings.py` (`clean_eval/settings.py`, which sits beside the layers, and its match with `action.yml`) and
+  `test_release.py` (the release check).
 - **Packages.** Every test folder needs an `__init__.py`: the layers' test modules share names (`test_review.py`,
   `test_heatmap.py`), and the tests import `tests.*`.
 - **Support** holds classes and constants only, no functions. Read and write files with pathlib.
-  - `tests/helpers.py` (no package imports): `Repo`, `FakeBin`, `Dates`.
+  - `tests/helpers.py` (no package imports): `Repo`, `FakeBin`, `Dates`, `Contents` (behind `write_files`) and
+    `CommandLine` (behind `run_cli`).
+  - `tests/external/fakes.py`: `ClaudeProcess` and `TokenEndpoint`, the claude process and the OIDC endpoint behind
+    `claude_runs` and `oidc_tokens`.
   - `tests/use_cases/fakes.py`: `MemoryFileSystem`, `MemoryGit`.
   - `tests/architecture.py`: `Codebase`, the code as `test_architecture.py` reads it.
   - `tests/action.py`: `Action`, which runs the action's command for `test_action.py`.
@@ -36,18 +43,27 @@ uv run pytest tests/use_cases/test_heatmap.py            # one module; ::TestCla
 
 | conftest.py | Fixtures |
 |---|---|
-| `tests/` | The machine: `repo`, `fake_bin`, the autouse `hermetic_git`. Domain models: `today`, `policy`, `facts`, `source_files`, `ratings`, `rating`, `heatmap`, `judgement`. A change under review: `review_rules`, `finding`, `agent_review`, `risk_report`, `pull_request`. The top-level tests: `codebase`; the action's `workspace`, `action`, `action_run` and the fakes' replies; the release check's `released`, `release_check`. |
-| `tests/domain/` | Raw field dicts of a valid example per model (`scores`, `module_record`, `stored_review`, `review_rule`, `period`, `merged_pr`, `eval_result`), which a test validates itself, so a refused input fails inside `pytest.raises`. |
-| `tests/use_cases/` | The interfaces as MagicMocks (`fs`, `git`, `clock`, `env`, `host`, `agent`, `run_log`, `diagram_presenter`, `report_presenter`) and the data they answer from (`files`, `links`, `history`, `shas`, `environ`); `graph`, `rating_cache`, `period`; the class-scoped `collected` history. |
-| `tests/use_cases/rules/` | The rules' inputs as models: `aspect_scores`, `inline_comment`, `merged_prs`. |
-| `tests/external/` | The real gateways and repositories of the contract tests (`git`, `fs`, `repo`, `history`, `files`); the mocked CLIs (`gh`; and for the Claude Code gateway `claude_runs`, `npm_installs` and `oidc_tokens`, GitHub's token endpoint); the guard's `sandbox`, `stdin`, `guard_env`; the command line's `run_cli` (a subprocess), `cli_runner` (click, in-process), `host` and the CI commands' files and arguments. |
+| `tests/` | The machine: `repo`, `fake_bin`, the autouse `hermetic_git`. A run's environment: `environ` (its variables), `settings_environment` (this process's environment made exactly that, for the test) and `settings` (the `Settings` read from it). Domain models: `today`, `policy`, `facts`, `source_files`, `ratings`, `rating`, `heatmap`, `judgement`. A change under review: `review_rules`, `finding`, `agent_review`, `risk_report`, `pull_request`. The top-level tests: `codebase`; the action's `workspace`, `action`, `action_run` and the fakes' replies; the release check's `released`, `release_check`. Static assets: the settings tests' runs (`anthropic_api_key`, `review_run`, `eval_run`, `action_yml`); the architecture's rule tables (`architecture`) and planted sources (`planted_*`); the action's workspaces (`*_workspace`), the fakes' replies and plans (`*_replies`, `*_plan`, `discounts_pull_request`) and `eval_since`; the release check's steps (`annotated_pre_release`, `forgotten_bump`, ...). |
+| `tests/domain/` | Raw field dicts of a valid example per model (`scores`, `module_record`, `stored_review`, `review_rule`, `period`, `merged_pr`, `eval_result`), which a test validates itself, so a refused input fails inside `pytest.raises`. Static assets: `default_policy`, `untidy_judgement`, `trusted_blocker`, `trusted_major`, `accepted_model_change`. |
+| `tests/adaptor/` | Static assets: `mixed_ratings`. |
+| `tests/use_cases/` | The interfaces as MagicMocks (`fs`, `git`, `clock`, `env`, `host`, `agent`, `run_log`, `diagram_presenter`, `report_presenter`) and the data they answer from (`files`, `links`, `history`, `shas`; `env` answers from `environ`); `graph`, `rating_cache`, `period`; the class-scoped `collected` history. Static assets: a CI run's `run_folders`, `files_before_a_run` and `run_environment`; each module's sources, histories, changes and stored files (`core_source`, `core_history`, `rename_diffs`, `policy_file`, ...). |
+| `tests/use_cases/rules/` | The rules' inputs as models: `aspect_scores`, `inline_comment`, `merged_prs`. Static assets: the rules' inputs as text and models (`package_repository`, `diff_of_x_and_y`, `readme_block`, the fake `github_token`, `legacy_review_rules`, ...). |
+| `tests/external/` | The real gateways and repositories of the contract tests (`git`, `fs`, `repo`, `history`, `files`); the mocked CLIs (`gh`; and for the Claude Code gateway `claude_runs`, `npm_installs` and `oidc_tokens`, GitHub's token endpoint); the guard's `sandbox`, `stdin`, `guard_env`; the command line's `run_cli` (a subprocess), `cli_runner` (click, in-process), `host` and the CI commands' files and arguments. Static assets: the Claude Code gateway's environments (`agent_variables`, `federated_job`, ...), the git contract's histories (`*_history`), gh's payloads (`review_threads_view`, `review_pages`, ...), and the CI commands' edits and findings (`valid_model_edit`, `blocker_finding`, ...). |
 
 ## Writing tests
 
 ### A test module
 
-- **What it holds:** a docstring, imports, constants (inputs, expected values, tables of cases) and `Test*` classes.
-  No function at module level: no helper, no fixture, no test outside a class.
+- **What it holds:** a docstring, imports and `Test*` classes, plus `pytestmark` when it needs one. Nothing else at
+  module level: no constant, no helper, no fixture, no test outside a class.
+- **Static assets are fixtures.** What a test feeds the code or checks against (an environment, files, a repository's
+  history, a payload, a model, an expected structure) is a fixture in the conftest.py at the level of its tests, with
+  a docstring saying what it is. A decorator names it with pytest-lazy-fixtures' `lf`, directly or as an indirect
+  param, and derives a variant with `lfc`:
+  - `@pytest.mark.parametrize("environ", [lf("federated_job")], indirect=True)`;
+  - `lfc(lambda job: {**job, "ANTHROPIC_ORGANIZATION_ID": None}, lf("federated_job"))`.
+  A case's own scalars (an expected message, a variable's name, a count), its `ids`, and a small literal only that
+  case uses stay inline, in its decorator or its test.
 - **One class per unit or behaviour** (`TestPolicyAt`, `TestCollectHistory`), with a docstring saying what it covers.
   A class holds only `test_*` methods: no helper methods, no fixtures, no setup.
 - **Plain `assert`** and `pytest.raises`. From unittest, only `unittest.mock`.

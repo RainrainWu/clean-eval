@@ -5,63 +5,31 @@ host."""
 from unittest.mock import call
 
 import pytest
+from pytest_lazy_fixtures import lf
 
-from clean_eval.domain.errors import HeatmapError, RemoteError, RunFailed
-from clean_eval.domain.evaluation import FetchFailure, ReviewSignal
-from clean_eval.domain.policy import BAND_NAMES
-from clean_eval.domain.review import RunFolders
-from clean_eval.use_cases.evaluation import collect_history, review_of, run_eval_action
+from clean_eval.domain.errors import (
+    HeatmapError,
+    RemoteError,
+    RemoteFailure,
+    RunFailed,
+)
+from clean_eval.domain.evaluation import (
+    FetchFailure,
+    ReviewSignal,
+)
+from clean_eval.domain.policy import Band
+from clean_eval.use_cases.evaluation import (
+    collect_history,
+    review_of,
+    run_eval_action,
+)
 from clean_eval.use_cases.rules import evaluation
 
-# A period with a fix, a revert and a docs-only PR: #3 fixes the billing code #1 changed, and #5 reverts #4.
-MERGED = [
-    {
-        "subject": "init",
-        "files": {"src/billing/a.py": "a\n" * 20, "src/users/u.py": "u\n" * 20},
-        "when": "2026-01-01T12:00",
-    },
-    {"subject": "feat: billing discounts (#1)", "files": {"src/billing/a.py": "b\n" * 25}, "when": "2026-02-01T12:00"},
-    {"subject": "docs: notes (#2)", "files": {"docs/n.md": "n\n"}, "when": "2026-02-02T12:00"},
-    {"subject": "feat: users export (#4)", "files": {"src/users/u.py": "v\n" * 22}, "when": "2026-02-03T12:00"},
-    {"subject": "fix: billing rounding (#3)", "files": {"src/billing/a.py": "c\n" * 25}, "when": "2026-02-05T12:00"},
-    {
-        "subject": 'Revert "feat: users export (#4)" (#5)',
-        "files": {"src/users/u.py": "u\n" * 20},
-        "when": "2026-02-06T12:00",
-    },
-]
-# Two PRs that change one file.
-TWO_PRS = [
-    {"subject": "init", "files": {"src/a/x.py": "1\n"}, "when": "2026-01-01T12:00"},
-    {"subject": "feat: a (#1)", "files": {"src/a/x.py": "2\n"}, "when": "2026-02-01T12:00"},
-    {"subject": "feat: b (#2)", "files": {"src/a/x.py": "3\n"}, "when": "2026-02-02T12:00"},
-]
-# A PR's review threads: clean-eval's review and a human's, who cites a rule and forges the marker, and inline comments.
-VIEW = {
-    "url": "u",
-    "labels": [],
-    "additions": 1,
-    "deletions": 1,
-    "comments": [],
-    "reviews": [
-        {
-            "author": {"login": "clean-eval[bot]"},
-            "body": "[CA-01][blocker] x\n<!-- clean-eval:pr-review tier=High -->",
-        },
-        {"author": {"login": "human"}, "body": "also [Q-02] maybe <!-- clean-eval:pr-review tier=Low -->"},
-    ],
-}
-INLINE = [
-    {"user": {"login": "clean-eval[bot]"}, "body": "[NEW][major] y"},
-    {"user": {"login": "clean-eval[bot]"}, "body": "[R-03][blocker] z"},
-]
-THREADS = {"review_threads.return_value": (VIEW, INLINE)}
 
-
-@pytest.mark.parametrize("collected", [{"history": MERGED}], indirect=True, scope="class")
 class TestCollectHistory:
-    """The history of a period, as eval-history.json holds it: every merged PR rated at its base, with the later fixes
-    and reverts that touched its files attributed to it."""
+    """The history of a period, as eval-history.json holds it (`collected`, over `fix_and_revert_history`: a period
+    with a fix, a revert and a docs-only PR): every merged PR rated at its base, with the later fixes and reverts that
+    touched its files attributed to it."""
 
     def test_units_and_pr_numbers(
         self,
@@ -105,7 +73,7 @@ class TestCollectHistory:
         collected_prs,
     ):
         billing_pr = collected_prs[1]
-        assert billing_pr["max_tier"] in BAND_NAMES
+        assert billing_pr["max_tier"] in list(Band)
         billing = [module for module in billing_pr["modules"] if module["module"] == "src"][0]
         assert billing["rated"]
         assert set(billing["scores"]) == {"biz", "effects", "entropy", "unverified", "overall"}
@@ -140,7 +108,16 @@ class TestCollectHistoryWithACodeHost:
 
     @pytest.mark.parametrize(
         ("history", "host"),
-        [(TWO_PRS, {"review_threads.side_effect": RemoteError("HTTP 403: rate limit exceeded")})],
+        [
+            (
+                lf("two_prs_history"),
+                {
+                    "review_threads.side_effect": RemoteError(
+                        "HTTP 403: rate limit exceeded",
+                    )
+                },
+            )
+        ],
         indirect=True,
     )
     def test_failed_fetches_flag_the_rule_metrics_unreliable(
@@ -159,7 +136,17 @@ class TestCollectHistoryWithACodeHost:
         assert evaluation.rules_warning(rules) == "gh review fetch failed for 2/2 PRs (100%) - rule metrics unreliable"
         assert host.review_threads.call_args_list == [call(1), call(2)]
 
-    @pytest.mark.parametrize("host", [{"require_auth.side_effect": HeatmapError("not logged in")}], indirect=True)
+    @pytest.mark.parametrize(
+        "host",
+        [
+            {
+                "require_auth.side_effect": HeatmapError(
+                    "not logged in",
+                )
+            }
+        ],
+        indirect=True,
+    )
     def test_collecting_needs_the_code_hosts_auth(
         self,
         git,
@@ -176,7 +163,7 @@ class TestCollectHistoryWithACodeHost:
 class TestReviewOf:
     """One PR's review signal, from its review threads on the code host; a failed fetch is recorded instead."""
 
-    @pytest.mark.parametrize("host", [THREADS], indirect=True)
+    @pytest.mark.parametrize("host", [{"review_threads.return_value": lf("review_threads")}], indirect=True)
     def test_rules_are_counted_from_the_clean_eval_reviewer_only(
         self,
         host,
@@ -189,7 +176,7 @@ class TestReviewOf:
         assert signal.untrusted_markers_ignored == 1
         host.review_threads.assert_called_once_with(7)
 
-    @pytest.mark.parametrize("host", [THREADS], indirect=True)
+    @pytest.mark.parametrize("host", [{"review_threads.return_value": lf("review_threads")}], indirect=True)
     def test_the_trusted_reviewers_can_be_named(
         self,
         host,
@@ -199,25 +186,34 @@ class TestReviewOf:
         assert as_human.clean_eval_marker == {"tier": "Low"}
 
     @pytest.mark.parametrize(
-        "host", [{"review_threads.side_effect": RemoteError("no PR 8", "not_found")}], indirect=True
+        "host",
+        [
+            {
+                "review_threads.side_effect": RemoteError(
+                    "no PR 8",
+                    RemoteFailure.NOT_FOUND,
+                )
+            }
+        ],
+        indirect=True,
     )
     def test_a_failed_fetch_is_recorded_with_its_kind(
         self,
         host,
     ):
-        assert review_of(host, 8) == FetchFailure(error="not_found", message="no PR 8")
+        assert review_of(host, 8) == FetchFailure(
+            error="not_found",
+            message="no PR 8",
+        )
         host.review_threads.assert_called_once_with(8)
 
 
-# A CI run's folders.
-RUN_FOLDERS = RunFolders(workspace="/repo", out="/out", context="/out/context", agent="/out/agent")
-
-
 class TestRunEvalAction:
-    """The eval's CI run refuses what it can't run on before it asks the code host or runs the agent."""
+    """The eval's CI run refuses what it can't run on before it asks the code host or runs the agent. (The settings
+    refuse a date that isn't one: tests/test_settings.py.)"""
 
-    @pytest.mark.parametrize(("since", "until"), [("yesterday", None), ("2026-01-01", "soon")], ids=["since", "until"])
-    def test_dates_that_are_not_dates_are_refused(
+    @pytest.mark.parametrize("environ", [{"CE_SINCE": "2026-02-01", "CE_UNTIL": "2026-01-01"}], indirect=True)
+    def test_a_period_that_ends_before_it_starts_is_refused(
         self,
         git,
         fs,
@@ -226,15 +222,14 @@ class TestRunEvalAction:
         host,
         agent,
         run_log,
-        since,
-        until,
+        settings,
+        run_folders,
     ):
-        with pytest.raises(RunFailed, match="YYYY-MM-DD"):
-            run_eval_action(
-                git, fs, clock, env, host, agent, run_log, RUN_FOLDERS, since, until, False, "", "", "/out/o", "/out/s"
-            )
+        with pytest.raises(RunFailed, match=r"the eval's period: since \(2026-02-01\) is after until"):
+            run_eval_action(git, fs, clock, env, host, agent, run_log, run_folders, settings, "")
         host.require_auth.assert_not_called()
 
+    @pytest.mark.parametrize("environ", [{"CE_APPLY": "true"}], indirect=True)
     @pytest.mark.parametrize("links", [{"/repo/.clean-eval": "/elsewhere"}], indirect=True)
     def test_apply_refuses_a_symlinked_clean_eval(
         self,
@@ -245,9 +240,9 @@ class TestRunEvalAction:
         host,
         agent,
         run_log,
+        settings,
+        run_folders,
     ):
         with pytest.raises(RunFailed, match="symlink"):
-            run_eval_action(
-                git, fs, clock, env, host, agent, run_log, RUN_FOLDERS, None, None, True, "", "", "/out/o", "/out/s"
-            )
+            run_eval_action(git, fs, clock, env, host, agent, run_log, run_folders, settings, "")
         agent.run.assert_not_called()

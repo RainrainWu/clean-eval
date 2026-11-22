@@ -3,34 +3,140 @@ and the value types and score bands every model uses."""
 
 import json
 import re
-from typing import Annotated, Any, Literal, Optional, Self
+from enum import StrEnum
+from typing import (
+    Annotated,
+    Any,
+    Optional,
+    Self,
+)
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from clean_eval.domain.errors import InvalidPolicy
 
 # Value types shared by the data models: constrained scalars whose rules pydantic enforces wherever they are used.
 
-# Score bands, ascending: (upper bound, name). Level n of an aspect takes the band at position 3 - n (0 Critical ... 3 Low).
-Band = Literal["Low", "Moderate", "High", "Critical"]
-BANDS: tuple[tuple[int, Band], ...] = ((24, "Low"), (49, "Moderate"), (74, "High"), (100, "Critical"))
-BAND_NAMES: tuple[Band, ...] = tuple(name for _, name in BANDS)
 
-Severity = Literal["minor", "major", "blocker"]
-SEVERITIES: tuple[Severity, ...] = ("minor", "major", "blocker")  # ascending
+class Band(StrEnum):
+    """A score band, from the lowest risk. Level n of an aspect takes the band of rank 3 - n (0 Critical ... 3 Low)."""
 
-Score = Annotated[int, Field(ge=0, le=100)]  # 0-100, as the bands read it
-Level = Annotated[int, Field(ge=0, le=3, strict=True)]  # 0 most severe ... 3 least
-Count = Annotated[int, Field(ge=0)]
-Fraction = Annotated[float, Field(ge=0, le=1)]
-Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")]  # a full git object id (SHA-1 or SHA-256)
-OneLine = Annotated[str, Field(pattern=r"^[^\r\n]*$")]
+    LOW = "Low"
+    MODERATE = "Moderate"
+    HIGH = "High"
+    CRITICAL = "Critical"
+
+    @property
+    def rank(
+        self,
+    ) -> int:
+        """Its place among the bands, from 0 for the lowest risk."""
+        return list(Band).index(self)
+
+
+# Each band's upper bound, ascending: a score falls in the first band whose bound it doesn't exceed.
+BANDS: tuple[tuple[int, Band], ...] = (
+    (24, Band.LOW),
+    (49, Band.MODERATE),
+    (74, Band.HIGH),
+    (100, Band.CRITICAL),
+)
+
+
+class Severity(StrEnum):
+    """A review finding's severity, from the mildest."""
+
+    MINOR = "minor"
+    MAJOR = "major"
+    BLOCKER = "blocker"
+
+    @property
+    def rank(
+        self,
+    ) -> int:
+        """Its place among the severities, from 0 for the mildest."""
+        return list(Severity).index(self)
+
+
+Score = Annotated[
+    int,
+    Field(
+        ge=0,
+        le=100,
+    ),
+]  # 0-100, as the bands read it
+Level = Annotated[
+    int,
+    Field(
+        ge=0,
+        le=3,
+        strict=True,
+    ),
+]  # 0 most severe ... 3 least
+Count = Annotated[
+    int,
+    Field(
+        ge=0,
+    ),
+]
+Fraction = Annotated[
+    float,
+    Field(
+        ge=0,
+        le=1,
+    ),
+]
+Sha = Annotated[
+    str,
+    Field(
+        pattern=r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+    ),
+]  # a full git object id (SHA-1 or SHA-256)
+OneLine = Annotated[
+    str,
+    Field(
+        pattern=r"^[^\r\n]*$",
+    ),
+]
 
 # Numbers of the policy: JSON numbers only (a bool or a string is refused), finite.
-Number = Annotated[float, Field(ge=0, strict=True, allow_inf_nan=False)]
-Divisor = Annotated[float, Field(gt=0, strict=True, allow_inf_nan=False)]  # divides a measurement: never 0
-Whole = Annotated[int, Field(ge=0, strict=True)]
-AtLeastOne = Annotated[int, Field(ge=1, strict=True)]
+Number = Annotated[
+    float,
+    Field(
+        ge=0,
+        strict=True,
+        allow_inf_nan=False,
+    ),
+]
+Divisor = Annotated[
+    float,
+    Field(
+        gt=0,
+        strict=True,
+        allow_inf_nan=False,
+    ),
+]  # divides a measurement: never 0
+Whole = Annotated[
+    int,
+    Field(
+        ge=0,
+        strict=True,
+    ),
+]
+AtLeastOne = Annotated[
+    int,
+    Field(
+        ge=1,
+        strict=True,
+    ),
+]
 
 
 # Business policy of the risk heat map: standards, weights, thresholds and level definitions, as one validated model.
@@ -39,46 +145,93 @@ AtLeastOne = Annotated[int, Field(ge=1, strict=True)]
 # tunable numbers in `.clean-eval/risk-model.json`; `Policy.from_overrides` checks every override with the validators
 # below (types and ranges on the fields, the cross-field rules on the model).
 
-# BAND_NAMES and BANDS are re-exported
-
 # Where a repository keeps its own tuning (git paths, so always "/"-separated).
 REPO_DIR = ".clean-eval"
 REPO_POLICY = REPO_DIR + "/risk-model.json"
 REPO_RULES = REPO_DIR + "/review-rules.md"
 
 # Level texts, most severe first (the wording of references/rate.md).
-BUSINESS_LEVELS = {
-    0: "root-level dependencies that can change how the whole service behaves, or critical logic with hard-to-reverse side effects",
-    1: "a path on the major utility that all traffic goes through",
-    2: "integration and arrangement around the core utility, to streamline the process",
-    3: "logic that does not directly affect the core utility",
-}
-EFFECT_LEVELS = {
-    0: "negative customer impact that destroys trust (payment, access control), or irreversible storage clean-up",
-    1: "foundation-level resource mutation that needs a sensible period to roll back or recreate, leaving the service inaccessible",
-    2: "interfacing with upstream or downstream systems, where incorrect influence propagates and needs ad-hoc fixing",
-    3: "all impact stays within the service; fix and restart costs nothing painful",
-}
-ENTROPY_LEVELS = {
-    0: "code in the shape of a non-organised process rather than reusable blocks",
-    1: "utility boundaries are blurred and the data propagated is hard to trace",
-    2: "lengthy functions, non-descriptive naming, or edge cases and growing data volume not handled",
-    3: "well-structured with a consistent design; a new implementation finds its right place easily",
-}
-UNVERIFIED_LEVELS = {
-    0: "only trivial tests found, or the code itself can hardly be tested",
-    1: "core utility happy paths are covered by unit tests and gated in CI",
-    2: "major branches and common exceptions of the utilities are well covered",
-    3: "tests follow the framework's best practice, with layered suites reaching wider scope (such as e2e)",
-}
-# The four aspects: judgement key, score key, label, page tab id, levels. Presenters and the judgement rule read this.
-ASPECTS = (
-    ("business", "biz", "Business Impact", "business-impact", BUSINESS_LEVELS),
-    ("effects", "effects", "Side Effects & Reversibility", "side-effects", EFFECT_LEVELS),
-    ("entropy", "entropy", "Entropy", "entropy", ENTROPY_LEVELS),
-    ("unverified", "unverified", "Unverified", "unverified", UNVERIFIED_LEVELS),
+BUSINESS_LEVELS = frozendict(
+    {
+        0: "root-level dependencies that can change how the whole service behaves, or critical logic with hard-to-reverse side effects",
+        1: "a path on the major utility that all traffic goes through",
+        2: "integration and arrangement around the core utility, to streamline the process",
+        3: "logic that does not directly affect the core utility",
+    }
 )
-SCORE_KEYS = tuple(key for _, key, _, _, _ in ASPECTS)
+EFFECT_LEVELS = frozendict(
+    {
+        0: "negative customer impact that destroys trust (payment, access control), or irreversible storage clean-up",
+        1: "foundation-level resource mutation that needs a sensible period to roll back or recreate, leaving the service inaccessible",
+        2: "interfacing with upstream or downstream systems, where incorrect influence propagates and needs ad-hoc fixing",
+        3: "all impact stays within the service; fix and restart costs nothing painful",
+    }
+)
+ENTROPY_LEVELS = frozendict(
+    {
+        0: "code in the shape of a non-organised process rather than reusable blocks",
+        1: "utility boundaries are blurred and the data propagated is hard to trace",
+        2: "lengthy functions, non-descriptive naming, or edge cases and growing data volume not handled",
+        3: "well-structured with a consistent design; a new implementation finds its right place easily",
+    }
+)
+UNVERIFIED_LEVELS = frozendict(
+    {
+        0: "only trivial tests found, or the code itself can hardly be tested",
+        1: "core utility happy paths are covered by unit tests and gated in CI",
+        2: "major branches and common exceptions of the utilities are well covered",
+        3: "tests follow the framework's best practice, with layered suites reaching wider scope (such as e2e)",
+    }
+)
+
+
+class Aspect(StrEnum):
+    """The four aspects a module is rated on, each by the key a judgement levels it under; the presenters and the
+    judgement rule read their score key, label and level texts."""
+
+    BUSINESS = "business"
+    EFFECTS = "effects"
+    ENTROPY = "entropy"
+    UNVERIFIED = "unverified"
+
+    @property
+    def score_key(
+        self,
+    ) -> str:
+        """Its field in Scores: `biz` for Business Impact, else its own key."""
+        return "biz" if self is Aspect.BUSINESS else self.value
+
+    @property
+    def label(
+        self,
+    ) -> str:
+        """Its name on the heat map."""
+        return ASPECT_LABELS[self]
+
+    @property
+    def levels(
+        self,
+    ) -> frozendict[int, str]:
+        """What each of its levels means, from 0, the riskiest, to 3."""
+        return ASPECT_LEVELS[self]
+
+
+ASPECT_LABELS = frozendict(
+    {
+        Aspect.BUSINESS: "Business Impact",
+        Aspect.EFFECTS: "Side Effects & Reversibility",
+        Aspect.ENTROPY: "Entropy",
+        Aspect.UNVERIFIED: "Unverified",
+    }
+)
+ASPECT_LEVELS = frozendict(
+    {
+        Aspect.BUSINESS: BUSINESS_LEVELS,
+        Aspect.EFFECTS: EFFECT_LEVELS,
+        Aspect.ENTROPY: ENTROPY_LEVELS,
+        Aspect.UNVERIFIED: UNVERIFIED_LEVELS,
+    }
+)
 # Weight groups: each mixes the terms of one aspect, so it needs a positive sum.
 WEIGHT_GROUPS = ("business_weights", "effects_mix", "entropy_weights", "unverified_mix")
 REGEX_KNOBS = ("test_file", "tooling", "keywords", "migration_path")
@@ -107,7 +260,10 @@ V1_KEYS = frozenset(
 
 
 class Policy(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+    )
 
     version: Whole = 2
     # Modules: levels of splitting, and when a module is too small or too crowded to split.
@@ -154,12 +310,20 @@ class Policy(BaseModel):
         ("Test code", r"(^|/)(tests?|testing|fixtures?|e2e|specs?)(/|$)"),
     )
     # Overall score: half the geometric mean of impact and weakness, half (this share) the worst single aspect.
-    overall_peak_share: Fraction = Field(0.5, strict=True, allow_inf_nan=False)
+    overall_peak_share: Fraction = Field(
+        0.5,
+        strict=True,
+        allow_inf_nan=False,
+    )
     # Band of a changed path no rated module covers (a new module, or non-Python code): unknown, not low, risk.
-    unrated_band: Band = "Moderate"
+    unrated_band: Band = Band.MODERATE
     # Business Impact.
-    business_weights: dict[str, Number] = Field(default_factory=lambda: dict(dependents=0.30, keyword=0.10, size=0.15))
-    business_saturation: dict[str, Divisor] = Field(default_factory=lambda: dict(dependents=6, size=0.25))
+    business_weights: dict[str, Number] = Field(
+        default_factory=lambda: dict(dependents=0.30, keyword=0.10, size=0.15),
+    )
+    business_saturation: dict[str, Divisor] = Field(
+        default_factory=lambda: dict(dependents=6, size=0.25),
+    )
     tooling_factor: Number = 0.5
     # Side Effects & Reversibility.
     effect_points: dict[str, Number] = Field(
@@ -169,7 +333,9 @@ class Policy(BaseModel):
     )
     migration_points: Number = 6
     effects_scale: Divisor = 40.0
-    effects_mix: dict[str, Number] = Field(default_factory=lambda: dict(points=0.7, dependents=0.3))
+    effects_mix: dict[str, Number] = Field(
+        default_factory=lambda: dict(points=0.7, dependents=0.3),
+    )
     effects_dependents_saturation: Divisor = 6
     # Entropy.
     entropy_weights: dict[str, Number] = Field(
@@ -200,7 +366,9 @@ class Policy(BaseModel):
     neutral_no_functions: Number = 0.3
     neutral_untyped: Number = 0.5
     # Unverified.
-    unverified_mix: dict[str, Number] = Field(default_factory=lambda: dict(links=0.5, ratio=0.5))
+    unverified_mix: dict[str, Number] = Field(
+        default_factory=lambda: dict(links=0.5, ratio=0.5),
+    )
     unverified_ratio_target: Divisor = 0.8
     unverified_no_functions: Number = 20.0
     single_scale_penalty: Number = 5
@@ -216,7 +384,9 @@ class Policy(BaseModel):
         """Overrides are partial: comments (`_*`, `notes`) are dropped, v1 keys are refused with a migration hint, and a
         dictionary knob keeps the defaults of the keys it doesn't name; naming a key it doesn't have is an error."""
         if not isinstance(data, dict):
-            raise ValueError("the risk model must be a JSON object")
+            raise ValueError(
+                "the risk model must be a JSON object",
+            )
         data = {k: v for k, v in data.items() if not (isinstance(k, str) and (k.startswith("_") or k == "notes"))}
         legacy = sorted(set(data) & V1_KEYS)
         if legacy:
@@ -229,7 +399,9 @@ class Policy(BaseModel):
             default = field.get_default(call_default_factory=True) if field else None
             if isinstance(default, dict):
                 if not isinstance(value, dict) or set(value) - set(default):
-                    raise ValueError("%s takes the keys %s" % (key, ", ".join(sorted(default))))
+                    raise ValueError(
+                        "%s takes the keys %s" % (key, ", ".join(sorted(default))),
+                    )
                 data[key] = {**default, **value}
         return data
 
@@ -242,7 +414,9 @@ class Policy(BaseModel):
         try:
             re.compile(pattern)
         except re.error as e:
-            raise ValueError("not a valid regular expression: %s" % e)
+            raise ValueError(
+                "not a valid regular expression: %s" % e,
+            )
         return pattern
 
     @field_validator("not_applicable")
@@ -255,7 +429,9 @@ class Policy(BaseModel):
             try:
                 re.compile(pattern)
             except re.error as e:
-                raise ValueError("%r is not a valid regular expression: %s" % (reason, e))
+                raise ValueError(
+                    "%r is not a valid regular expression: %s" % (reason, e),
+                )
         return rules
 
     @model_validator(mode="after")
@@ -264,7 +440,9 @@ class Policy(BaseModel):
     ) -> Self:
         for name in WEIGHT_GROUPS:
             if sum(getattr(self, name).values()) <= 0:
-                raise ValueError("%s must have a positive sum" % name)
+                raise ValueError(
+                    "%s must have a positive sum" % name,
+                )
         return self
 
     @classmethod
@@ -289,7 +467,9 @@ class Policy(BaseModel):
         try:
             overrides = json.loads(text) if text and text.strip() else {}
         except ValueError as e:
-            raise InvalidPolicy("%s is not valid JSON: %s" % (source, e))
+            raise InvalidPolicy(
+                "%s is not valid JSON: %s" % (source, e),
+            )
         return cls.from_overrides(overrides, source)
 
 

@@ -2,16 +2,55 @@
 agent proposes from it, with its outcome."""
 
 import datetime as dt
-from typing import Any, Literal, Optional, Self, Union
+from enum import StrEnum
+from typing import (
+    Any,
+    Literal,
+    Optional,
+    Self,
+    Union,
+)
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
-from clean_eval.domain.errors import InvalidPolicy
-from clean_eval.domain.policy import TUNABLE, Band, Count, Fraction, Policy, Score, Sha
+from clean_eval.domain.errors import (
+    InvalidPolicy,
+    RemoteFailure,
+)
+from clean_eval.domain.policy import (
+    TUNABLE,
+    Band,
+    Count,
+    Fraction,
+    Policy,
+    Score,
+    Sha,
+)
 from clean_eval.domain.rating import ModuleRecord
 
 # Merged-PR history: the period looked back over, each merged PR rated at its base, the later fixes and reverts that point
 # back at it ("escaped defects"), what its review cited, and how well the scores predicted the defects (calibration).
+
+
+class DefectKind(StrEnum):
+    """What links a later commit to a merged PR as its defect: a fix of the PR's files, or a revert of the PR."""
+
+    FIX = "fix"
+    REVERT = "revert"
+
+
+class Confidence(StrEnum):
+    """How sure a defect link is: `high` for a revert or a fix that names the PR, `heuristic` for one found by overlap."""
+
+    HIGH = "high"
+    HEURISTIC = "heuristic"
 
 
 class Period(BaseModel):
@@ -26,7 +65,9 @@ class Period(BaseModel):
         self,
     ) -> Self:
         if self.since > self.until:
-            raise ValueError("since (%s) is after until (%s)" % (self.since, self.until))
+            raise ValueError(
+                "since (%s) is after until (%s)" % (self.since, self.until),
+            )
         return self
 
     @property
@@ -50,8 +91,8 @@ class DefectLink(BaseModel):
     fix_sha: Sha
     fix_pr: Optional[int] = None
     subject: str
-    kind: Literal["fix", "revert"]
-    confidence: Literal["high", "heuristic"]
+    kind: DefectKind
+    confidence: Confidence
     days_after: float
     overlap_files: list[str]
 
@@ -59,7 +100,9 @@ class DefectLink(BaseModel):
 class ReviewSignal(BaseModel):
     """What a PR's reviews said: the rules cited, NEW findings, and the clean-eval marker of a trusted reviewer."""
 
-    model_config = ConfigDict(extra="forbid")  # so a fetch failure can never pass for a review
+    model_config = ConfigDict(
+        extra="forbid",
+    )  # so a fetch failure can never pass for a review
 
     url: Optional[str] = None
     labels: list[Optional[str]] = []
@@ -74,9 +117,11 @@ class ReviewSignal(BaseModel):
 class FetchFailure(BaseModel):
     """A PR whose reviews couldn't be fetched: `not_found` (no such PR) or `error`."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+    )
 
-    error: Literal["not_found", "error"]
+    error: RemoteFailure
     message: str
 
 
@@ -89,9 +134,12 @@ class MergedPR(BaseModel):
     ts: int
     subject: str
     pr: Optional[int] = None
-    files: list[str] = Field(default_factory=list, exclude=True)  # stored as a count only
+    files: list[str] = Field(
+        default_factory=list,
+        exclude=True,
+    )  # stored as a count only
     file_count: Count = 0
-    max_tier: Band = "Low"
+    max_tier: Band = Band.LOW
     max_score: Score = 0
     modules: list[ModuleRecord] = []
     defects: list[DefectLink] = []
@@ -199,8 +247,8 @@ class DefectPatch(BaseModel):
     pr_band: Band
     fix_sha: Sha
     fix_subject: str
-    kind: Literal["fix", "revert"]
-    confidence: Literal["high", "heuristic"]
+    kind: DefectKind
+    confidence: Confidence
     overlap_files: list[str]
 
 
@@ -251,11 +299,15 @@ class PolicyEdit(BaseModel):
     ) -> Self:
         structural = self.changed_keys - TUNABLE - {"version"}
         if structural:
-            raise ValueError("only tunable keys may change in CI; also changed: %s" % sorted(structural))
+            raise ValueError(
+                "only tunable keys may change in CI; also changed: %s" % sorted(structural),
+            )
         try:
             Policy.from_overrides(self.new)
         except InvalidPolicy as e:
-            raise ValueError(str(e))
+            raise ValueError(
+                str(e),
+            )
         return self
 
 

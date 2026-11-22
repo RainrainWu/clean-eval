@@ -2,12 +2,24 @@
 period, prepare the agent's context, and run the eval in CI."""
 
 import datetime as dt
-from collections.abc import Callable, Collection
-from typing import Optional, Union
+from collections.abc import (
+    Callable,
+    Collection,
+)
+from typing import (
+    Optional,
+    Union,
+)
 
 from pydantic import ValidationError
 
-from clean_eval.domain.errors import HeatmapError, InvalidOutput, NoPythonSource, RemoteError, RunFailed
+from clean_eval.domain.errors import (
+    HeatmapError,
+    InvalidOutput,
+    NoPythonSource,
+    RemoteError,
+    RunFailed,
+)
 from clean_eval.domain.evaluation import (
     DefectPatch,
     EvalContext,
@@ -19,14 +31,42 @@ from clean_eval.domain.evaluation import (
     Period,
     Rejection,
     ReviewSignal,
+    RuleStats,
     Totals,
 )
-from clean_eval.domain.policy import REPO_DIR, Policy
-from clean_eval.domain.rating import Heatmap, ModuleRecord, RatingCache
-from clean_eval.domain.review import RunFolders, StepOutputs
-from clean_eval.use_cases.ci import report_run, run_agent
+from clean_eval.domain.policy import (
+    REPO_DIR,
+    Band,
+    Policy,
+)
+from clean_eval.domain.rating import (
+    Heatmap,
+    ModuleRecord,
+    RatingCache,
+)
+from clean_eval.domain.review import (
+    RunFolders,
+    StepOutputs,
+)
+from clean_eval.settings import (
+    LOOKBACK_DAYS,
+    Settings,
+)
+from clean_eval.use_cases.ci import (
+    MAX_PATCH_CHARS,
+    report_run,
+    run_agent,
+)
 from clean_eval.use_cases.heatmap import rate_revision
-from clean_eval.use_cases.interfaces import Agent, Clock, CodeHost, Environment, FileSystem, Git, RunLog
+from clean_eval.use_cases.interfaces import (
+    Agent,
+    Clock,
+    CodeHost,
+    Environment,
+    FileSystem,
+    Git,
+    RunLog,
+)
 from clean_eval.use_cases.rules.evaluation import (
     MODEL_FILE,
     RULES_FILE,
@@ -44,7 +84,11 @@ from clean_eval.use_cases.rules.evaluation import (
     rule_stats,
     sensitivity,
 )
-from clean_eval.use_cases.rules.review import change_risk, secret_values, truncate
+from clean_eval.use_cases.rules.review import (
+    change_risk,
+    secret_values,
+    truncate,
+)
 from clean_eval.use_cases.store import (
     JUDGING_ERRORS,
     clear_path,
@@ -157,7 +201,10 @@ def review_of(
     try:
         view, inline = host.review_threads(pr)
     except RemoteError as e:
-        return FetchFailure(error=e.kind, message=str(e))
+        return FetchFailure(
+            error=e.kind,
+            message=str(e),
+        )
     return review_signal(view, inline, reviewer_logins)
 
 
@@ -171,7 +218,91 @@ def heatmap_at(
     try:
         return rate_revision(git, clock, rev, policy, cache)
     except NoPythonSource:  # nothing to rate: every path a PR on this base touched is unrated
-        return Heatmap(repo="", ref=rev, sha=rev[:7], generated_at="", loc_total=0)
+        return Heatmap(
+            repo="",
+            ref=rev,
+            sha=rev[:7],
+            generated_at="",
+            loc_total=0,
+        )
+
+
+def merged_prs(
+    git: Git,
+    branch: str,
+    period: Period,
+) -> list[MergedPR]:
+    """The PRs merged on `branch` from the start of `period` to the end of its look-ahead, oldest first."""
+    log = git.first_parent_log(branch, period.since.isoformat(), period.lookahead_until.isoformat())
+    return sorted(
+        (
+            MergedPR(
+                sha=sha,
+                base=parents[0],
+                author=author,
+                ts=ts,
+                subject=subject,
+                pr=pr_number(subject),
+                files=git.diff_files(parents[0], sha),
+            )
+            for sha, parents, author, ts, subject in log
+            if parents
+        ),
+        key=lambda merged_pr: merged_pr.ts,
+    )
+
+
+def rate_at_bases(
+    git: Git,
+    clock: Clock,
+    prs: list[MergedPR],
+    policy: Policy,
+    cache: RatingCache,
+) -> None:
+    """Give each PR the risk of its change, from the heat map of its base commit (one rating per base)."""
+    heatmaps = {}
+    for u in prs:
+        if u.base not in heatmaps:
+            heatmaps[u.base] = heatmap_at(git, clock, u.base, policy, cache)
+        risk = change_risk(heatmaps[u.base], u.files, policy)
+        u.max_tier, u.max_score = risk.max_band, risk.max_score
+        u.modules = [
+            ModuleRecord(
+                **m.model_dump(exclude={"evidence"}),
+            )
+            for m in risk.modules
+        ]
+
+
+def eval_history(
+    prs: list[MergedPR],
+    period: Period,
+    branch: str,
+    model_source: Optional[str],
+    policy: Policy,
+    rules: Optional[RuleStats],
+) -> EvalHistory:
+    """The EvalHistory of the period's rated `prs`, their defects attributed (and `rules`, the review rules' stats)."""
+    defective = sum(1 for u in prs if u.defects)
+    return EvalHistory(
+        period=HistoryPeriod(
+            since=period.since,
+            until=period.until,
+            branch=branch,
+            model_source=model_source,
+            defect_window_days=period.window_days,
+            policy_version=policy.version,
+        ),
+        totals=Totals(
+            prs=len(prs),
+            defective_prs=defective,
+            escape_rate=round(defective / len(prs), 3) if prs else None,
+        ),
+        calibration=calibration(prs),
+        modules=module_stats(prs),
+        rules=rules,
+        prs=prs,
+    )
 
 
 def collect_history(
@@ -190,60 +321,17 @@ def collect_history(
     if host:
         host.require_auth()
     branch = branch or git.default_branch()
-    log = git.first_parent_log(branch, period.since.isoformat(), period.lookahead_until.isoformat())
-    units = sorted(
-        (
-            MergedPR(
-                sha=sha,
-                base=parents[0],
-                author=author,
-                ts=ts,
-                subject=subject,
-                pr=pr_number(subject),
-                files=git.diff_files(parents[0], sha),
-            )
-            for sha, parents, author, ts, subject in log
-            if parents
-        ),
-        key=lambda merged_pr: merged_pr.ts,
-    )
+    units = merged_prs(git, branch, period)
     prs = in_period(units, period)
-
-    cache, heatmaps = cache or RatingCache(), {}  # one rating per base
-    for u in prs:
-        if u.base not in heatmaps:
-            heatmaps[u.base] = heatmap_at(git, clock, u.base, policy, cache)
-        risk = change_risk(heatmaps[u.base], u.files, policy)
-        u.max_tier, u.max_score = risk.max_band, risk.max_score
-        u.modules = [ModuleRecord(**m.model_dump(exclude={"evidence"})) for m in risk.modules]
-
+    rate_at_bases(git, clock, prs, policy, cache or RatingCache())
     attribute_defects(units, prs, period, policy)
-
     rules = None
     if host:
         for u in prs:
             if u.pr:
                 u.review = review_of(host, u.pr, reviewer_logins)
         rules = rule_stats(prs)
-
-    defective = sum(1 for u in prs if u.defects)
-    return EvalHistory(
-        period=HistoryPeriod(
-            since=period.since,
-            until=period.until,
-            branch=branch,
-            model_source=model_source,
-            defect_window_days=period.window_days,
-            policy_version=policy.version,
-        ),
-        totals=Totals(
-            prs=len(prs), defective_prs=defective, escape_rate=round(defective / len(prs), 3) if prs else None
-        ),
-        calibration=calibration(prs),
-        modules=module_stats(prs),
-        rules=rules,
-        prs=prs,
-    )
+    return eval_history(prs, period, branch, model_source, policy, rules)
 
 
 # Use case: precompute everything the CI eval needs into the context folder `ctx`: the merged-PR history of the period
@@ -252,35 +340,35 @@ def collect_history(
 # and Clock interfaces (and a CodeHost for review signals).
 
 MAX_DEFECT_PATCHES = 30
-MAX_PATCH_CHARS = 200_000
 # Which defect links get patches: highest bands first, then Low-band misses, then Moderate.
-DEFECT_ORDER = {"Critical": 0, "High": 1, "Low": 2, "Moderate": 3}
+DEFECT_ORDER = frozendict({Band.CRITICAL: 0, Band.HIGH: 1, Band.LOW: 2, Band.MODERATE: 3})
 
 
-def prepare_eval(
-    git: Git,
+def snapshot_current_tuning(
     fs: FileSystem,
-    clock: Clock,
     ctx: str,
     workspace: str,
-    policy: Policy,
-    model_source: str,
-    period: Period,
     default_rules: str,
-    host: Optional[CodeHost] = None,
-    branch: Optional[str] = None,
-) -> EvalContext:
-    """Write the eval context of `period` into `ctx`; its EvalContext."""
+) -> tuple[Optional[str], Optional[str]]:
+    """Keep the tuning as it is now in the context `ctx`: the risk model and the review rules (or their defaults), the
+    policy's defaults, and a snapshot of .clean-eval/ that finalizing restores from. The model and rules files' texts,
+    None where the repository has none."""
     model, rules = current_tuning(fs, workspace, MODEL_FILE), current_tuning(fs, workspace, RULES_FILE)
     fs.write_text(fs.join(ctx, "risk-model.orig.json"), model if model is not None else "{}")
     write_json(fs, fs.join(ctx, "risk-model.defaults.json"), Policy())
     snapshot_tuning(fs, workspace, fs.join(ctx, SNAPSHOT))
     fs.write_text(fs.join(ctx, "review-rules.orig.md"), rules if rules is not None else default_rules)
+    return model, rules
 
-    hist = collect_history(git, clock, policy, period, host, branch, model_source)
-    write_json(fs, fs.join(ctx, "eval-history.json"), hist)
-    write_json(fs, fs.join(ctx, "sensitivity.json"), sensitivity(hist, policy))
 
+def write_defect_patches(
+    git: Git,
+    fs: FileSystem,
+    ctx: str,
+    hist: EvalHistory,
+) -> tuple[list[DefectPatch], int]:
+    """Write the patches of the defect links most worth verifying (DEFECT_ORDER, at most MAX_DEFECT_PATCHES) into
+    `ctx`/defects, with their index; the index, and how many links there were."""
     links = [(u, d) for u in hist.prs for d in u.defects]
     links.sort(
         key=lambda pr_and_defect: (
@@ -308,7 +396,28 @@ def prepare_eval(
             )
         )
     write_json(fs, fs.join(ctx, "defects", "index.json"), index)
+    return index, len(links)
 
+
+def prepare_eval(
+    git: Git,
+    fs: FileSystem,
+    clock: Clock,
+    ctx: str,
+    workspace: str,
+    policy: Policy,
+    model_source: str,
+    period: Period,
+    default_rules: str,
+    host: Optional[CodeHost] = None,
+    branch: Optional[str] = None,
+) -> EvalContext:
+    """Write the eval context of `period` into `ctx`; its EvalContext."""
+    model, rules = snapshot_current_tuning(fs, ctx, workspace, default_rules)
+    hist = collect_history(git, clock, policy, period, host, branch, model_source)
+    write_json(fs, fs.join(ctx, "eval-history.json"), hist)
+    write_json(fs, fs.join(ctx, "sensitivity.json"), sensitivity(hist, policy))
+    index, links = write_defect_patches(git, fs, ctx, hist)
     context = EvalContext(
         since=period.since,
         until=period.until,
@@ -321,7 +430,7 @@ def prepare_eval(
         with_gh=hist.rules is not None,
         rules_reliable=hist.rules.reliable if hist.rules else None,
         defect_patches=len(index),
-        defect_links=len(links),
+        defect_links=links,
     )
     write_json(fs, fs.join(ctx, "context.json"), context)
     return context
@@ -378,24 +487,95 @@ def judge_tuning_edit[T](
         return None
     try:
         if not apply:
-            raise InvalidOutput("apply=false")
+            raise InvalidOutput(
+                "apply=false",
+            )
         return judge(new, orig)
     except JUDGING_ERRORS as e:
         restore_tuning(fs, workspace, snapshot_dir, name)
-        return Rejection(reason=str(invalid(e)) if isinstance(e, ValidationError) else str(e))
+        return Rejection(
+            reason=str(invalid(e)) if isinstance(e, ValidationError) else str(e),
+        )
 
 
 # Use case: the eval's CI run (the action's eval skill): collect the history of a period, let the agent evaluate it and,
 # when allowed, edit the tuning files, then keep only the edits that pass the eval's checks. Through the Git,
 # FileSystem, Clock, Environment, CodeHost, Agent and RunLog interfaces.
 
-LOOKBACK_DAYS = 90  # the period an eval looks back over by default
 EVAL_PROMPT = (
     "Evaluate the merged PRs from %(since)s to %(until)s with apply=%(apply)s. Read %(context)s/skills/eval/SKILL.md "
     "and follow its 'CI mode' section. Precomputed context: %(context)s/context.json, %(context)s/eval-history.json, "
     "%(context)s/sensitivity.json, %(context)s/defects/index.json (patches alongside), %(context)s/risk-model.orig.json, "
     "%(context)s/review-rules.orig.md. Write %(agent)s/report.md and %(agent)s/result.json. %(extra)s"
 )
+
+
+def eval_period(
+    clock: Clock,
+    settings: Settings,
+) -> Period:
+    """The period an eval's run reads: from the settings' `since` (default: LOOKBACK_DAYS ago) to their `until`
+    (default: today). RunFailed when it ends before it starts."""
+    today = dt.date.fromisoformat(clock.today())
+    try:
+        return Period(
+            since=settings.evaluation.since or today - dt.timedelta(days=LOOKBACK_DAYS),
+            until=settings.evaluation.until or today,
+        )
+    except ValidationError as error:
+        raise RunFailed.from_validation(error, "the eval's period")
+
+
+def tuning_the_agent_may_edit(
+    fs: FileSystem,
+    folders: RunFolders,
+    apply: bool,
+) -> list[str]:
+    """The folders the eval's agent may write besides its own: the workspace's .clean-eval/ with `apply`, else none.
+    RunFailed when that folder is a symlink, whose target would be writable for the agent."""
+    if not apply:
+        return []
+    tuning = fs.join(folders.workspace, REPO_DIR)
+    if fs.is_link(tuning):
+        raise RunFailed(
+            "refusing apply=true: .clean-eval is a symlink",
+        )
+    return [tuning]
+
+
+def signed_in(
+    host: CodeHost,
+) -> Optional[CodeHost]:
+    """`host` when it is signed in, so the history can read the PRs' reviews; else None."""
+    try:
+        host.require_auth()
+    except HeatmapError:
+        return None
+    return host
+
+
+def report_eval(
+    fs: FileSystem,
+    env: Environment,
+    log: RunLog,
+    folders: RunFolders,
+    settings: Settings,
+    period: Period,
+) -> None:
+    """Finalize what the eval's agent proposed, keeping only the edits that pass the eval's checks, and report the
+    result's step outputs and its report in the job summary. RunFailed on agent output that can't be trusted (every
+    edit is reverted then)."""
+    apply = settings.evaluation.apply
+    try:
+        result, outputs = finalize_eval(fs, env, folders.context, folders.agent, folders.out, apply, folders.workspace)
+    except InvalidOutput as error:
+        raise RunFailed(
+            "invalid agent output (any .clean-eval/ edits were reverted): %s" % error,
+        )
+    if result.redactions:
+        log.warning("clean-eval redacted %d secret-looking value(s) from agent output" % result.redactions)
+    write_step_outputs(fs, settings.github.step_outputs, outputs)
+    report_run(fs, settings.github.step_summary, "Eval %s → %s" % (period.since, period.until), folders)
 
 
 def run_eval_action(
@@ -407,38 +587,17 @@ def run_eval_action(
     agent: Agent,
     log: RunLog,
     folders: RunFolders,
-    since: Optional[str],
-    until: Optional[str],
-    apply: bool,
+    settings: Settings,
     default_rules: str,
-    extra_prompt: str,
-    gh_output: str,
-    summary: str,
 ) -> None:
-    """The eval's CI run over the PRs merged from `since` (default: LOOKBACK_DAYS ago) to `until` (default: today):
-    collect their history (with their review signal when the code host is signed in), let the agent evaluate it and,
-    with `apply`, edit .clean-eval/; keep only the edits that pass the eval's checks, and report: the result's step
-    outputs, and the report in the job summary `summary`. RunFailed on dates that aren't YYYY-MM-DD, on a symlinked
-    .clean-eval with `apply`, or on agent output that can't be trusted (every edit is reverted then)."""
-    today = dt.date.fromisoformat(clock.today())
-    since = since or (today - dt.timedelta(days=LOOKBACK_DAYS)).isoformat()
-    until = until or today.isoformat()
-    try:
-        period = Period(since=since, until=until)
-    except ValidationError:
-        raise RunFailed("since/until must be YYYY-MM-DD")
-    writable = []
-    if apply:
-        tuning = fs.join(folders.workspace, REPO_DIR)
-        if fs.is_link(tuning):  # its target would be writable for the agent
-            raise RunFailed("refusing apply=true: .clean-eval is a symlink")
-        writable = [tuning]
-    try:
-        host.require_auth()
-        signed_in = True
-    except HeatmapError:
-        signed_in = False
-    log.step("Collect the history from %s to %s" % (since, until))
+    """The eval's CI run over the PRs merged in the settings' period (eval_period): collect their history (with their
+    review signal when the code host is signed in), let the agent evaluate it and, when the settings say `apply`, edit
+    .clean-eval/; then report what passes the eval's checks (report_eval). RunFailed on a period that ends before it
+    starts, on a symlinked .clean-eval with `apply`, or on agent output that can't be trusted."""
+    period = eval_period(clock, settings)
+    writable = tuning_the_agent_may_edit(fs, folders, settings.evaluation.apply)
+    reviews_host = signed_in(host)
+    log.step("Collect the history from %s to %s" % (period.since, period.until))
     policy, source = load_policy(fs, folders.workspace)
     prepare_eval(
         git,
@@ -450,23 +609,16 @@ def run_eval_action(
         source,
         period,
         default_rules,
-        host=host if signed_in else None,
+        host=reviews_host,
     )
     agent.require()
     prompt = EVAL_PROMPT % {
-        "since": since,
-        "until": until,
-        "apply": "true" if apply else "false",
+        "since": period.since,
+        "until": period.until,
+        "apply": "true" if settings.evaluation.apply else "false",
         "context": folders.context,
         "agent": folders.agent,
-        "extra": extra_prompt,
+        "extra": settings.agent.extra_prompt,
     }
     run_agent(agent, fs, env, log, folders, prompt.strip(), writable)
-    try:
-        result, outputs = finalize_eval(fs, env, folders.context, folders.agent, folders.out, apply, folders.workspace)
-    except InvalidOutput as error:
-        raise RunFailed("invalid agent output (any .clean-eval/ edits were reverted): %s" % error)
-    if result.redactions:
-        log.warning("clean-eval redacted %d secret-looking value(s) from agent output" % result.redactions)
-    write_step_outputs(fs, gh_output, outputs)
-    report_run(fs, summary, "Eval %s → %s" % (since, until), folders)
+    report_eval(fs, env, log, folders, settings, period)

@@ -4,41 +4,24 @@ and the stdin it gives gh, what it reads validated, every page of paginated outp
 import json
 
 import pytest
+from pytest_lazy_fixtures import (
+    lf,
+    lfc,
+)
 
 from clean_eval.domain.errors import RemoteError
-from clean_eval.domain.review import HostReview, InlineComment, ReviewPost
-from clean_eval.external.github import PR_FIELDS, GitHubGateway, loads_multi
-
-PR = {
-    "number": 7,
-    "title": "t",
-    "baseRefName": "main",
-    "headRefName": "f",
-    "baseRefOid": "a" * 40,
-    "headRefOid": "b" * 40,
-    "author": {"login": "dev"},
-}
-# A PR's reviews and comments (`gh pr view --json ...`), and its inline comments in two pages, one JSON document each
-# (`gh api --paginate`).
-VIEW = {"url": "u", "reviews": [], "comments": [], "labels": [], "additions": 1, "deletions": 1}
-PAGES = '[{"user":{"login":"a"},"body":"x"}][{"user":{"login":"b"},"body":"y"}]'
-HEAD = "c" * 40
-BOT = "github-actions[bot]"
-COMMENT = InlineComment(path="a.py", line=2, side="RIGHT", body="[CA-01][blocker] s")
-WITH_COMMENTS = ReviewPost(commit_id=HEAD, body="b", event="REQUEST_CHANGES", comments=[COMMENT])
-WITHOUT_COMMENTS = ReviewPost(commit_id=HEAD, body="b", event="COMMENT")
-# A PR's reviews in two pages, one of them not readable as a review (never one of ours to dismiss).
-REVIEW_PAGES = (
-    '[{"id": 10, "state": "CHANGES_REQUESTED", "user": {"login": "github-actions[bot]"}, "body": "m"}]'
-    '[{"id": "x"}, {"id": 11, "state": "COMMENTED", "user": null, "body": null}]'
+from clean_eval.domain.review import HostReview
+from clean_eval.external.github import (
+    PR_FIELDS,
+    GitHubGateway,
+    loads_multi,
 )
-REVIEWS = "repos/{owner}/{repo}/pulls/1/reviews"
 
 
 class TestPullRequest:
     """`gh pr view`: the PR is validated before it is used."""
 
-    @pytest.mark.parametrize("gh", [[{"out": PR}]], indirect=True)
+    @pytest.mark.parametrize("gh", [[{"out": lf("pull_request")}]], indirect=True)
     def test_a_pull_request_is_read_with_gh_pr_view(
         self,
         gh,
@@ -46,7 +29,9 @@ class TestPullRequest:
         assert GitHubGateway().pull_request(7).author == "dev"
         assert gh.call_args.args[0] == ["gh", "pr", "view", "7", "--json", PR_FIELDS]
 
-    @pytest.mark.parametrize("gh", [[{"out": {**PR, "headRefOid": "--upload-pack=x"}}]], indirect=True)
+    @pytest.mark.parametrize(
+        "gh", [[{"out": lfc(lambda pr: {**pr, "headRefOid": "--upload-pack=x"}, lf("pull_request"))}]], indirect=True
+    )
     def test_a_head_that_is_not_a_commit_id_is_refused(
         self,
         gh,
@@ -58,7 +43,9 @@ class TestPullRequest:
 class TestReviewThreads:
     """A PR's reviews and comments, with its inline comments read page by page; a failure is classified."""
 
-    @pytest.mark.parametrize("gh", [[{"out": VIEW}, {"out": PAGES}]], indirect=True)
+    @pytest.mark.parametrize(
+        "gh", [[{"out": lf("review_threads_view")}, {"out": lf("inline_comment_pages")}]], indirect=True
+    )
     def test_every_page_of_inline_comments_is_read(
         self,
         gh,
@@ -103,15 +90,27 @@ class TestPostReview:
     """A review is posted as JSON on gh's stdin, its defaults left out; the review posted is read back, and a reply that
     can't be read is still a posted review."""
 
-    @pytest.mark.parametrize("gh", [[{"out": {"id": 50, "user": {"login": BOT}}}]], indirect=True)
+    @pytest.mark.parametrize("gh", [[{"out": {"id": 50, "user": {"login": "github-actions[bot]"}}}]], indirect=True)
     def test_the_review_goes_to_the_pr_as_json_on_stdin(
         self,
         gh,
+        review_with_comments,
     ):
-        assert GitHubGateway().post_review(1, WITH_COMMENTS) == HostReview(id=50, user=BOT)
-        assert gh.call_args.args[0] == ["gh", "api", "-X", "POST", REVIEWS, "--input", "-"]
+        assert GitHubGateway().post_review(1, review_with_comments) == HostReview(
+            id=50,
+            user="github-actions[bot]",
+        )
+        assert gh.call_args.args[0] == [
+            "gh",
+            "api",
+            "-X",
+            "POST",
+            "repos/{owner}/{repo}/pulls/1/reviews",
+            "--input",
+            "-",
+        ]
         assert json.loads(gh.call_args.kwargs["input"]) == {
-            "commit_id": HEAD,
+            "commit_id": review_with_comments.commit_id,
             "body": "b",
             "event": "REQUEST_CHANGES",
             "comments": [{"path": "a.py", "line": 2, "side": "RIGHT", "body": "[CA-01][blocker] s"}],
@@ -120,25 +119,28 @@ class TestPostReview:
     def test_a_review_without_inline_comments_sends_none(
         self,
         gh,
+        review_without_comments,
     ):
-        GitHubGateway().post_review(1, WITHOUT_COMMENTS)
+        GitHubGateway().post_review(1, review_without_comments)
         assert "comments" not in json.loads(gh.call_args.kwargs["input"])
 
     @pytest.mark.parametrize("gh", [[{"out": "<html>oops</html>"}]], indirect=True)
     def test_a_reply_that_cannot_be_read_is_still_a_posted_review(
         self,
         gh,
+        review_with_comments,
     ):
-        assert GitHubGateway().post_review(1, WITH_COMMENTS) == HostReview()  # posted: never to be retried
+        assert GitHubGateway().post_review(1, review_with_comments) == HostReview()  # posted: never to be retried
         gh.assert_called_once()
 
     @pytest.mark.parametrize("gh", [[{"exit": 1, "err": "HTTP 422: line must be part of the diff"}]], indirect=True)
     def test_a_rejected_review_is_an_error(
         self,
         gh,
+        review_with_comments,
     ):
         with pytest.raises(RemoteError) as raised:
-            GitHubGateway().post_review(1, WITH_COMMENTS)
+            GitHubGateway().post_review(1, review_with_comments)
         assert raised.value.kind == "error"
         assert "HTTP 422" in str(raised.value)
 
@@ -146,16 +148,26 @@ class TestPostReview:
 class TestReviews:
     """A PR's reviews, read from every page, and the dismissal of one."""
 
-    @pytest.mark.parametrize("gh", [[{"out": REVIEW_PAGES}]], indirect=True)
+    @pytest.mark.parametrize("gh", [[{"out": lf("review_pages")}]], indirect=True)
     def test_every_readable_review_is_listed(
         self,
         gh,
     ):
         assert GitHubGateway().reviews(1) == [
-            HostReview(id=10, state="CHANGES_REQUESTED", user=BOT, body="m"),
-            HostReview(id=11, state="COMMENTED", user=None, body=""),
+            HostReview(
+                id=10,
+                state="CHANGES_REQUESTED",
+                user="github-actions[bot]",
+                body="m",
+            ),
+            HostReview(
+                id=11,
+                state="COMMENTED",
+                user=None,
+                body="",
+            ),
         ]
-        assert gh.call_args.args[0] == ["gh", "api", "--paginate", REVIEWS]
+        assert gh.call_args.args[0] == ["gh", "api", "--paginate", "repos/{owner}/{repo}/pulls/1/reviews"]
 
     def test_a_review_is_dismissed_with_a_message(
         self,
@@ -167,7 +179,7 @@ class TestReviews:
             "api",
             "-X",
             "PUT",
-            REVIEWS + "/10/dismissals",
+            "repos/{owner}/{repo}/pulls/1/reviews/10/dismissals",
             "-f",
             "message=Superseded",
             "-f",

@@ -5,9 +5,17 @@ import hashlib
 import json
 import math
 import re
-from typing import Any, Literal, Optional
+from typing import (
+    Any,
+    Optional,
+)
 
-from clean_eval.domain.policy import ASPECTS, BAND_NAMES, BANDS, Band, Policy
+from clean_eval.domain.policy import (
+    BANDS,
+    Aspect,
+    Band,
+    Policy,
+)
 from clean_eval.domain.rating import (
     AspectScores,
     Evidence,
@@ -16,6 +24,8 @@ from clean_eval.domain.rating import (
     Judgement,
     ModuleRating,
     ModuleTests,
+    ReadmeAction,
+    Scale,
     Scores,
     TopFile,
 )
@@ -77,14 +87,16 @@ def band_floor(
     for i, (_, n) in enumerate(BANDS):
         if n == name:
             return BANDS[i - 1][0] + 1 if i else 0
-    raise ValueError("unknown band %r" % name)
+    raise ValueError(
+        "unknown band %r" % name,
+    )
 
 
 def severity(
-    name: Optional[str],
+    band: Optional[Band],
 ) -> int:
     """Order of bands, 0 for Low; None (unknown) sorts lowest."""
-    return BAND_NAMES.index(name) if name else -1
+    return band.rank if band else -1
 
 
 # The four risk aspects. Each is a pure function of one module's Facts and the Policy, and returns
@@ -182,6 +194,30 @@ def entropy(
     return score, ev
 
 
+def with_scale_penalties(
+    score: float,
+    facts: Facts,
+    effects_score: float,
+    policy: Policy,
+) -> tuple[float, list[str]]:
+    """`score` with what Unverified adds for the scales of the module's linked tests (when they reach one scale at
+    most, and when a module that writes or is widely depended on has no integration or e2e test), and the evidence."""
+    ev = []
+    if (
+        facts.linked_functions
+        and sum(1 for scale in (Scale.UNIT, Scale.INTEGRATION, Scale.E2E) if facts.test_scales.get(scale)) <= 1
+    ):
+        score += policy.single_scale_penalty
+    if (
+        effects_score >= policy.writes_threshold
+        and not facts.test_scales.get(Scale.INTEGRATION)
+        and not facts.test_scales.get(Scale.E2E)
+    ):
+        score += policy.no_integration_penalty
+        ev.append("Writes or is widely depended on but no integration or e2e test is linked")
+    return score, ev
+
+
 def unverified(
     facts: Facts,
     effects_score: float,
@@ -220,15 +256,8 @@ def unverified(
     if facts.line_rate is not None:
         score = 0.5 * score + 0.5 * 100 * (1 - facts.line_rate)
         ev.append("Coverage report: %d%% line rate" % round(facts.line_rate * 100))
-    if facts.linked_functions and sum(1 for k in ("unit", "integration", "e2e") if facts.test_scales.get(k)) <= 1:
-        score += policy.single_scale_penalty
-    if (
-        effects_score >= policy.writes_threshold
-        and not facts.test_scales.get("integration")
-        and not facts.test_scales.get("e2e")
-    ):
-        score += policy.no_integration_penalty
-        ev.append("Writes or is widely depended on but no integration or e2e test is linked")
+    score, penalties = with_scale_penalties(score, facts, effects_score, policy)
+    ev += penalties
     if facts.test_scales:
         ev.append("Linked test files by scale: " + ", ".join("%s %d" % kv for kv in facts.test_scales.most_common()))
     return clamp(score, 0, 100), ev, info
@@ -259,8 +288,22 @@ def score_facts(
         entropy=to_score(ent),
         unverified=to_score(unv) if unv is not None else None,
     )
-    scores = Scores(**aspect.model_dump(), overall=overall(aspect, policy.overall_peak_share))
-    return scores, Evidence(biz=biz_ev, effects=eff_ev, entropy=ent_ev, unverified=unv_ev), ModuleTests(**info)
+    scores = Scores(
+        **aspect.model_dump(),
+        overall=overall(aspect, policy.overall_peak_share),
+    )
+    return (
+        scores,
+        Evidence(
+            biz=biz_ev,
+            effects=eff_ev,
+            entropy=ent_ev,
+            unverified=unv_ev,
+        ),
+        ModuleTests(
+            **info,
+        ),
+    )
 
 
 def rate_module(
@@ -274,7 +317,9 @@ def rate_module(
         loc=facts.loc,
         files=facts.files,
         scores=scores,
-        baseline=AspectScores(**scores.model_dump(exclude={"overall"})),
+        baseline=AspectScores(
+            **scores.model_dump(exclude={"overall"}),
+        ),
         tests=tests,
         evidence=evidence,
         top_files=top_files,
@@ -302,12 +347,14 @@ def apply_levels(
     for m in heatmap.modules:
         levels = judgement.modules.get(m.name, {})
         hit = False
-        for name, key, _, _, texts in ASPECTS:
-            entry = levels.get(name)
+        for aspect in Aspect:
+            entry, key = levels.get(aspect), aspect.score_key
             if entry is None or getattr(m.scores, key) is None:
                 continue
             setattr(m.scores, key, place_in_level(entry.level, getattr(m.baseline, key)))
-            getattr(m.evidence, key).insert(0, "Level %d, %s: %s" % (entry.level, texts[entry.level], entry.reason))
+            getattr(m.evidence, key).insert(
+                0, "Level %d, %s: %s" % (entry.level, aspect.levels[entry.level], entry.reason)
+            )
             hit = True
         judged += hit
     heatmap.judged_modules = judged
@@ -353,19 +400,19 @@ def block_fingerprint(
 def merge_readme(
     existing: Optional[str],
     block: str,
-) -> tuple[str, Literal["ADD", "UPDATE"]]:
+) -> tuple[str, ReadmeAction]:
     """Put `block` (markers included) into README text: between existing markers, else under the section heading
     (replacing that section's old body), else as a new section at the end. Returns (new text, ADD or UPDATE)."""
     start, end = MARKERS
     if existing and start in existing and end in existing:
         head, rest = existing.split(start, 1)
-        return head + block.rstrip("\n") + rest.split(end, 1)[1], "UPDATE"
+        return head + block.rstrip("\n") + rest.split(end, 1)[1], ReadmeAction.UPDATE
     text = existing or ""
     m = re.search(r"^%s[ \t]*$" % re.escape(SECTION_HEADING), text, re.M)
     if m:
         nxt = re.search(r"^## ", text[m.end() :], re.M)
         stop = m.end() + nxt.start() if nxt else len(text)
         tail = text[stop:].lstrip("\n")
-        return text[: m.end()] + "\n\n" + block.rstrip("\n") + "\n" + ("\n" + tail if tail else ""), "UPDATE"
+        return text[: m.end()] + "\n\n" + block.rstrip("\n") + "\n" + ("\n" + tail if tail else ""), ReadmeAction.UPDATE
     prefix = text.rstrip("\n") + "\n\n" if text.strip() else ""
-    return prefix + SECTION_HEADING + "\n\n" + block.rstrip("\n") + "\n", "ADD"
+    return prefix + SECTION_HEADING + "\n\n" + block.rstrip("\n") + "\n", ReadmeAction.ADD

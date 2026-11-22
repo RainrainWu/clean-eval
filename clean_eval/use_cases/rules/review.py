@@ -4,11 +4,22 @@ map of its base, and the review CI derives from what the agent proposed."""
 import base64
 import hashlib
 import re
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import (
+    Collection,
+    Mapping,
+    Sequence,
+)
 from typing import Optional
 
-from clean_eval.domain.policy import SEVERITIES, Policy
-from clean_eval.domain.rating import ChangeRisk, Heatmap, ModuleRisk
+from clean_eval.domain.policy import (
+    Band,
+    Policy,
+)
+from clean_eval.domain.rating import (
+    ChangeRisk,
+    Heatmap,
+    ModuleRisk,
+)
 from clean_eval.domain.review import (
     AgentReview,
     CheckedRules,
@@ -21,9 +32,17 @@ from clean_eval.domain.review import (
     RiskReport,
     RulesTable,
     StepOutputs,
+    Verdict,
 )
-from clean_eval.use_cases.rules.analysis import ignored, module_of
-from clean_eval.use_cases.rules.heatmap import band, band_floor, severity
+from clean_eval.use_cases.rules.analysis import (
+    ignored,
+    module_of,
+)
+from clean_eval.use_cases.rules.heatmap import (
+    band,
+    band_floor,
+    severity,
+)
 
 # Unified diffs as text: one patch per file, size limits, and the lines GitHub accepts inline comments on.
 
@@ -90,7 +109,7 @@ def commentable_lines(
 
 REDACTED = "[REDACTED]"
 SECRET_NAME = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|CREDENTIAL", re.I)
-TOKEN_PATTERNS = [
+TOKEN_PATTERNS = tuple(
     re.compile(p)
     for p in (
         r"gh[pousr]_[A-Za-z0-9]{30,}",
@@ -100,7 +119,7 @@ TOKEN_PATTERNS = [
         r"xox[abpr]-[A-Za-z0-9-]{10,}",
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
     )
-]
+)
 AUTH_HEADER = re.compile(r"(?i)(authorization:\s*(?:basic|bearer|token)\s+)[A-Za-z0-9+/=._\-]{8,}")
 MARKER_RE = re.compile(r"<!--\s*clean-eval:[^>]*-->")
 MAX_REPORT_CHARS = 60_000  # GitHub caps review bodies at 65,536
@@ -207,14 +226,21 @@ def change_risk(
             )
         else:
             key = unrated_module_name(path, by_name)
-            touched.setdefault(key, ModuleRisk(module=key, band=policy.unrated_band, rated=False))
+            touched.setdefault(
+                key,
+                ModuleRisk(
+                    module=key,
+                    band=policy.unrated_band,
+                    rated=False,
+                ),
+            )
     risks = sorted(touched.values(), key=lambda risk: (-severity(risk.band), -(risk.score or 0), risk.module))
     scores = [r.score for r in risks if r.rated] + [band_floor(r.band) for r in risks if not r.rated]
     return ChangeRisk(
         files=files,
         modules=risks,
         ignored=skipped,
-        max_band=risks[0].band if risks else "Low",
+        max_band=risks[0].band if risks else Band.LOW,
         max_score=max(scores, default=0),
     )
 
@@ -243,14 +269,18 @@ def parse_rules(
     text: str,
 ) -> RulesTable:
     """The RulesTable of a rules file (rows of its Markdown tables)."""
-    return RulesTable(rules=rule_rows(text))
+    return RulesTable(
+        rules=rule_rows(text),
+    )
 
 
 def check_rules(
     text: str,
 ) -> CheckedRules:
     """The rules of a rules file an unattended eval may keep; a ValidationError when it has no rows or repeats an ID."""
-    return CheckedRules(rules=rule_rows(text))
+    return CheckedRules(
+        rules=rule_rows(text),
+    )
 
 
 def rules_version(
@@ -275,14 +305,22 @@ def finalize_review(
         if rule != "NEW" and rule not in known:
             notes.append("cited unknown rule %s" % rule)
             rule = "NEW"
-        if rule in known and SEVERITIES.index(severity) < SEVERITIES.index(known[rule].severity):
+        if rule in known and severity.rank < known[rule].severity.rank:
             notes.append("severity raised from %s to the rule's %s" % (severity, known[rule].severity))
             severity = known[rule].severity
         summary, n1 = redact(neutralize_comments(f.summary), secrets)
         fix, n2 = redact(neutralize_comments(f.fix), secrets)
         redactions += n1 + n2
         findings.append(
-            Finding(rule=rule, severity=severity, file=f.file, line=f.line, summary=summary, fix=fix, notes=notes)
+            Finding(
+                rule=rule,
+                severity=severity,
+                file=f.file,
+                line=f.line,
+                summary=summary,
+                fix=fix,
+                notes=notes,
+            )
         )
     return Review(
         pr=risk.pr,
@@ -347,7 +385,7 @@ def compose_review(
             detached.append("- [%s][%s] `%s:%s`: %s" % (f.rule, f.severity, f.file, f.line, f.summary))
     extra = ("\n\n**Not attached inline** (line is outside the diff):\n" + "\n".join(detached)) if detached else ""
     body = "%s%s\n\n%s" % (report.strip(), extra, marker(review))
-    event = "REQUEST_CHANGES" if review.verdict == "request_changes" else "COMMENT"
+    event = ReviewEvent.REQUEST_CHANGES if review.verdict == Verdict.REQUEST_CHANGES else ReviewEvent.COMMENT
     return body, event, comments
 
 
@@ -358,7 +396,7 @@ def post_attempts(
     """(event, comments) to try in turn: GitHub rejects inline comments on lines outside the diff (422), and a reviewer
     can't request changes on its own PR."""
     attempts = []
-    for attempt in ((event, comments), (event, []), ("COMMENT", comments), ("COMMENT", [])):
+    for attempt in ((event, comments), (event, []), (ReviewEvent.COMMENT, comments), (ReviewEvent.COMMENT, [])):
         if attempt not in attempts:
             attempts.append(attempt)
     return attempts

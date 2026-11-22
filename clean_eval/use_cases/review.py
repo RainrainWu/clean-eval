@@ -3,25 +3,62 @@ trusts, and the review's run in CI."""
 
 from typing import Optional
 
-from clean_eval.domain.errors import InvalidOutput, InvalidPolicy, NoPythonSource, RemoteError, RunFailed
-from clean_eval.domain.policy import REPO_POLICY, REPO_RULES, Policy
-from clean_eval.domain.rating import ChangeRisk, Heatmap, RatingCache
+from clean_eval.domain.errors import (
+    InvalidOutput,
+    InvalidPolicy,
+    NoPythonSource,
+    RemoteError,
+    RunFailed,
+)
+from clean_eval.domain.policy import (
+    REPO_POLICY,
+    REPO_RULES,
+    Policy,
+)
+from clean_eval.domain.rating import (
+    ChangeRisk,
+    Heatmap,
+    RatingCache,
+)
 from clean_eval.domain.review import (
     AgentReview,
     ChangeHeader,
     DiffIndex,
+    HostReview,
+    LogLevel,
     PatchEntry,
     PostOutcome,
+    PullRequest,
     Review,
     ReviewContext,
     ReviewPost,
     RiskReport,
     RunFolders,
     StepOutputs,
+    Verdict,
 )
-from clean_eval.use_cases.ci import report_run, run_agent
-from clean_eval.use_cases.heatmap import rate_revision, revision_snapshot
-from clean_eval.use_cases.interfaces import Agent, Clock, CodeHost, Environment, FileSystem, Git, RunLog
+from clean_eval.settings import (
+    FailOn,
+    Settings,
+)
+from clean_eval.use_cases.ci import (
+    MAX_PATCH_CHARS,
+    report_run,
+    run_agent,
+)
+from clean_eval.use_cases.heatmap import (
+    rate_revision,
+    revision_snapshot,
+)
+from clean_eval.use_cases.interfaces import (
+    Agent,
+    Clock,
+    CodeHost,
+    Environment,
+    FileSystem,
+    Git,
+    RunLog,
+)
 from clean_eval.use_cases.rules.review import (
     change_risk,
     commentable_lines,
@@ -85,9 +122,8 @@ def assess_change(
 # judged by.
 
 MAX_HISTORY_FILES = 60
-MAX_PATCH_CHARS = 200_000
 DEFAULT_SOURCE = "clean-eval default"
-PR_META = {"number", "title", "body", "url", "baseRefName", "headRefName", "isCrossRepository", "author"}
+PR_META = frozenset({"number", "title", "body", "url", "baseRefName", "headRefName", "isCrossRepository", "author"})
 
 
 def policy_at(
@@ -136,8 +172,82 @@ def write_split_diff(
                 truncated=cut,
             )
         )
-    write_json(fs, fs.join(ctx, "diff", "index.json"), DiffIndex(index))
+    write_json(
+        fs,
+        fs.join(ctx, "diff", "index.json"),
+        DiffIndex(
+            index,
+        ),
+    )
     return index
+
+
+def pull_request_commits(
+    host: CodeHost,
+    git: Git,
+    pr: int,
+) -> tuple[PullRequest, str, str]:
+    """PR `pr` as the code host shows it, with its commits fetched: the PR, its merge base and its head."""
+    info = host.pull_request(pr)
+    head = info.headRefOid
+    git.ensure_commit(head, "pull/%d/head" % pr)
+    git.ensure_commit(info.baseRefOid, info.baseRefOid)
+    return info, git.merge_base(info.baseRefOid, head), head
+
+
+def write_rules_at_base(
+    git: Git,
+    fs: FileSystem,
+    ctx: str,
+    base: str,
+    default_rules: str,
+) -> tuple[str, str]:
+    """Write the review rules the change is judged by into `ctx`: the base commit's .clean-eval/review-rules.md, else
+    `default_rules`. Their text, and where they come from."""
+    rules = git.show(base, REPO_RULES)
+    source = "%s@%s" % (REPO_RULES, base[:8]) if rules is not None else DEFAULT_SOURCE
+    rules = rules if rules is not None else default_rules
+    fs.write_text(fs.join(ctx, "review-rules.md"), rules)
+    return rules, source
+
+
+def write_risk_report(
+    fs: FileSystem,
+    ctx: str,
+    header: ChangeHeader,
+    heatmap: Heatmap,
+    risk: ChangeRisk,
+    model_note: Optional[str],
+) -> None:
+    """Write the change's risk into `ctx`/risk.json: the header, the modules it touches (their evidence, not their
+    facts: the reviewer reads evidence) and the band of each file, with the heat map's notes."""
+    write_json(
+        fs,
+        fs.join(ctx, "risk.json"),
+        RiskReport(
+            **header.model_dump(),
+            modules=[m.model_copy(update={"facts": None}) for m in risk.modules],
+            files=risk.files,
+            ignored=risk.ignored,
+            notes=heatmap.notes + ([model_note] if model_note else []),
+        ),
+    )
+
+
+def write_file_history(
+    git: Git,
+    fs: FileSystem,
+    ctx: str,
+    base: str,
+    files: list[str],
+) -> None:
+    """Write the history of the changed `files` before the change (at most MAX_HISTORY_FILES) into `ctx`."""
+    lines = []
+    for f in files[:MAX_HISTORY_FILES]:
+        lines += ["## " + f, git.file_log(base, f, 10) or "(no history before this PR)", ""]
+    if len(files) > MAX_HISTORY_FILES:
+        lines.append("[history omitted for %d more files]" % (len(files) - MAX_HISTORY_FILES))
+    fs.write_text(fs.join(ctx, "file-history.txt"), "\n".join(lines))
 
 
 def prepare_review(
@@ -151,19 +261,10 @@ def prepare_review(
 ) -> ReviewContext:
     """Write the review context of PR `pr` into `ctx`; its ReviewContext. `default_rules` is the rules text used when
     the base has no .clean-eval/review-rules.md."""
-    info = host.pull_request(pr)
-    head = info.headRefOid
-    git.ensure_commit(head, "pull/%d/head" % pr)
-    git.ensure_commit(info.baseRefOid, info.baseRefOid)
-    base = git.merge_base(info.baseRefOid, head)
-
+    info, base, head = pull_request_commits(host, git, pr)
     policy, model_src, model_text, model_note = policy_at(git, base)
     fs.write_text(fs.join(ctx, "risk-model.json"), model_text)
-    rules = git.show(base, REPO_RULES)
-    rules_src = "%s@%s" % (REPO_RULES, base[:8]) if rules is not None else DEFAULT_SOURCE
-    rules = rules if rules is not None else default_rules
-    fs.write_text(fs.join(ctx, "review-rules.md"), rules)
-
+    rules, rules_src = write_rules_at_base(git, fs, ctx, base, default_rules)
     heatmap, risk = assess_change(git, clock, base, head, policy)
     files = list(risk.files)
     header = ChangeHeader(
@@ -178,27 +279,15 @@ def prepare_review(
         rules_version=rules_version(rules),
         files_changed=len(files),
     )
-    modules = [m.model_copy(update={"facts": None}) for m in risk.modules]  # the reviewer reads evidence, not facts
-    notes = heatmap.notes + ([model_note] if model_note else [])
-    write_json(
-        fs,
-        fs.join(ctx, "risk.json"),
-        RiskReport(**header.model_dump(), modules=modules, files=risk.files, ignored=risk.ignored, notes=notes),
-    )
-    write_json(fs, fs.join(ctx, "pr.json"), {**info.model_dump(include=PR_META), "files": files})
-
+    write_risk_report(fs, ctx, header, heatmap, risk, model_note)
+    write_json(fs, fs.join(ctx, "pr.json"), {**info.model_dump(include=set(PR_META)), "files": files})
     index = write_split_diff(git, fs, ctx, base, head, files, risk.files)
+    write_file_history(git, fs, ctx, base, files)
     context = ReviewContext(
-        **header.model_dump(), diff_patches=len(index), diff_truncated=any(e.truncated for e in index)
+        **header.model_dump(),
+        diff_patches=len(index),
+        diff_truncated=any(e.truncated for e in index),
     )
-
-    lines = []
-    for f in files[:MAX_HISTORY_FILES]:
-        lines += ["## " + f, git.file_log(base, f, 10) or "(no history before this PR)", ""]
-    if len(files) > MAX_HISTORY_FILES:
-        lines.append("[history omitted for %d more files]" % (len(files) - MAX_HISTORY_FILES))
-    fs.write_text(fs.join(ctx, "file-history.txt"), "\n".join(lines))
-
     write_json(fs, fs.join(ctx, "context.json"), context)
     return context
 
@@ -220,6 +309,81 @@ def lines_on_diff(
     return {e.file: commentable_lines(fs.read_text(fs.join(ctx, e.patch))) for e in index}
 
 
+def host_error_text(
+    error: RemoteError,
+    secrets: tuple[str, ...],
+    limit: int,
+) -> str:
+    """A code host's error as a log line can show it: redacted of `secrets`, then cut to `limit` characters (redacted
+    first, since a host's error can echo the request's data)."""
+    return redact(str(error), secrets)[0][:limit]
+
+
+def post_first_accepted(
+    host: CodeHost,
+    pr: int,
+    head: str,
+    review: Review,
+    report: str,
+    lines: Optional[dict[str, set[int]]],
+    secrets: tuple[str, ...],
+    outcome: PostOutcome,
+) -> Optional[HostReview]:
+    """Post the review of PR `pr` at `head`, trying each of post_attempts in turn (fewer inline comments, then a plainer
+    event) until the code host accepts one; the posted review, or None. Each attempt is logged in `outcome`."""
+    body, event, comments = compose_review(review, report, lines)
+    for ev, cm in post_attempts(event, comments):
+        try:
+            posted = host.post_review(
+                pr,
+                ReviewPost(
+                    commit_id=head,
+                    body=body,
+                    event=ev,
+                    comments=cm,
+                ),
+            )
+        except RemoteError as e:
+            outcome.log.append(
+                (
+                    LogLevel.WARNING,
+                    "review post failed (event=%s, comments=%d): %s" % (ev, len(cm), host_error_text(e, secrets, 300)),
+                )
+            )
+            continue
+        outcome.posted = True
+        outcome.log.append((LogLevel.INFO, "posted review on #%s: event=%s, inline comments=%d" % (pr, ev, len(cm))))
+        return posted
+    return None
+
+
+def dismiss_stale_reviews(
+    host: CodeHost,
+    pr: int,
+    head: str,
+    posted: HostReview,
+    secrets: tuple[str, ...],
+    outcome: PostOutcome,
+) -> None:
+    """Dismiss the earlier "changes requested" reviews of the action's user on PR `pr`, superseded by `posted`, so a
+    fixed PR isn't left blocked. Each step is logged in `outcome`."""
+    try:
+        reviews = host.reviews(pr)
+    except RemoteError as e:
+        outcome.log.append(
+            (LogLevel.WARNING, "could not list reviews to dismiss stale ones: %s" % host_error_text(e, secrets, 200))
+        )
+        return
+    for review_id in stale_reviews(reviews, posted.user, posted.id):
+        try:
+            host.dismiss_review(pr, review_id, "Superseded by the clean-eval review of %s" % head[:8])
+            outcome.log.append((LogLevel.INFO, "dismissed stale review %s" % review_id))
+        except RemoteError as e:
+            outcome.log.append(
+                (LogLevel.WARNING, "could not dismiss review %s: %s" % (review_id, host_error_text(e, secrets, 200)))
+            )
+
+
 def post_review(
     host: CodeHost,
     fs: FileSystem,
@@ -229,44 +393,15 @@ def post_review(
     head: str,
     ctx: Optional[str] = None,
 ) -> PostOutcome:
-    """Post out/result.json and out/report.md as the review of PR `pr` at commit `head`; the PostOutcome."""
+    """Post out/result.json and out/report.md as the review of PR `pr` at commit `head`, and dismiss the reviews it
+    supersedes; the PostOutcome."""
     secrets = secret_values(env.variables())
-
-    def error(
-        exception: RemoteError,
-        limit: int,
-    ) -> str:
-        return redact(str(exception), secrets)[0][:limit]  # redact before cutting: host errors can echo request data
-
     outcome = PostOutcome()
     review = Review.model_validate(read_json(fs, fs.join(out, "result.json")))
-    body, event, comments = compose_review(review, fs.read_text(fs.join(out, "report.md")), lines_on_diff(fs, ctx))
-    posted = None
-    for ev, cm in post_attempts(event, comments):
-        try:
-            posted = host.post_review(pr, ReviewPost(commit_id=head, body=body, event=ev, comments=cm))
-        except RemoteError as e:
-            outcome.log.append(
-                ("warning", "review post failed (event=%s, comments=%d): %s" % (ev, len(cm), error(e, 300)))
-            )
-            continue
-        outcome.posted = True
-        outcome.log.append(("info", "posted review on #%s: event=%s, inline comments=%d" % (pr, ev, len(cm))))
-        break
-    if posted is None:
-        return outcome
-
-    try:
-        reviews = host.reviews(pr)
-    except RemoteError as e:
-        outcome.log.append(("warning", "could not list reviews to dismiss stale ones: %s" % error(e, 200)))
-        return outcome
-    for review_id in stale_reviews(reviews, posted.user, posted.id):
-        try:
-            host.dismiss_review(pr, review_id, "Superseded by the clean-eval review of %s" % head[:8])
-            outcome.log.append(("info", "dismissed stale review %s" % review_id))
-        except RemoteError as e:
-            outcome.log.append(("warning", "could not dismiss review %s: %s" % (review_id, error(e, 200))))
+    report = fs.read_text(fs.join(out, "report.md"))
+    posted = post_first_accepted(host, pr, head, review, report, lines_on_diff(fs, ctx), secrets, outcome)
+    if posted is not None:
+        dismiss_stale_reviews(host, pr, head, posted, secrets, outcome)
     return outcome
 
 
@@ -300,13 +435,67 @@ def finalize_pr_review(
 # change, finalize the review CI trusts, post it, and fail the run as configured. Through the CodeHost, Git,
 # FileSystem, Clock, Environment, Agent and RunLog interfaces.
 
-FAIL_ON = ("never", "request_changes", "blocker")  # what a review run may fail on
 REVIEW_PROMPT = (
     "Review pull request #%(pr)d. Read %(context)s/skills/pr-review/SKILL.md and follow its 'CI mode' section. "
     "Precomputed context: %(context)s/context.json, %(context)s/pr.json, %(context)s/risk.json, "
     "%(context)s/review-rules.md, %(context)s/diff/index.json (one patch per changed file — read them all), "
     "%(context)s/file-history.txt. Write %(agent)s/report.md and %(agent)s/result.json. %(extra)s"
 )
+
+
+def trusted_review(
+    fs: FileSystem,
+    env: Environment,
+    log: RunLog,
+    folders: RunFolders,
+    fail_on: FailOn,
+) -> Optional[tuple[Review, StepOutputs]]:
+    """The review CI trusts, finalized from what the agent proposed, and its step outputs. Agent output that can't be
+    trusted is RunFailed, failing closed, unless `fail_on` is never: then it is a warning, and None."""
+    try:
+        return finalize_pr_review(fs, env, folders.context, folders.agent, folders.out)
+    except InvalidOutput as error:
+        if fail_on == FailOn.NEVER:
+            log.warning("invalid agent output, so nothing is posted: %s" % error)
+            return None
+        raise RunFailed(
+            "invalid agent output with fail-on=%s (failing closed): %s" % (fail_on, error),
+        )
+
+
+def post_and_log(
+    host: CodeHost,
+    fs: FileSystem,
+    env: Environment,
+    log: RunLog,
+    folders: RunFolders,
+    pr: int,
+    head: str,
+) -> None:
+    """Post the run's review on PR `pr` at `head`, and log how it went."""
+    posted = post_review(host, fs, env, folders.out, pr, head, folders.context)
+    for level, message in posted.log:
+        if level == "warning":
+            log.warning(message)
+        else:
+            log.show(message)
+    if not posted.posted:
+        log.warning("could not post the review (the token needs pull-requests: write)")
+
+
+def fail_as_told(
+    review: Review,
+    fail_on: FailOn,
+) -> None:
+    """RunFailed as `fail_on` says: `request_changes` on that verdict, `blocker` on a blocker finding."""
+    if fail_on == FailOn.REQUEST_CHANGES and review.verdict == Verdict.REQUEST_CHANGES:
+        raise RunFailed(
+            "review verdict: request_changes",
+        )
+    if fail_on == FailOn.BLOCKER and review.blockers:
+        raise RunFailed(
+            "%d blocker finding(s)" % review.blockers,
+        )
 
 
 def run_review_action(
@@ -318,48 +507,36 @@ def run_review_action(
     agent: Agent,
     log: RunLog,
     folders: RunFolders,
-    pr: Optional[int],
-    post: bool,
-    fail_on: str,
+    settings: Settings,
     default_rules: str,
-    extra_prompt: str,
-    gh_output: str,
-    summary: str,
 ) -> None:
-    """The PR review's CI run for PR `pr`: prepare its context, let the agent review it, finalize the review CI trusts
-    and, with `post`, post it; report its step outputs, and its report in the job summary `summary`. RunFailed as
-    `fail_on` (one of FAIL_ON) says: `request_changes` on that verdict, `blocker` on a blocker finding, and either on
-    agent output that can't be trusted. With `never`, such output is a warning, and nothing is posted."""
-    if fail_on not in FAIL_ON:
-        raise RunFailed("unknown fail-on %r (%s)" % (fail_on, " | ".join(FAIL_ON)))
+    """The PR review's CI run for the settings' PR: prepare its context, let the agent review it, finalize the review
+    CI trusts and, when the settings say `post`, post it; report its step outputs, and its report in the job summary.
+    RunFailed as the settings' `fail_on` says (fail_as_told), and on agent output that can't be trusted unless it is
+    never (trusted_review)."""
+    pr, fail_on = settings.review.pr, settings.review.fail_on
     if pr is None:
-        raise RunFailed("pr-review needs a PR number (input 'pr', or run on pull_request events)")
+        raise RunFailed(
+            "pr-review needs a PR number (input 'pr', or run on pull_request events)",
+        )
     log.step("Prepare the review context of #%d" % pr)
     context = prepare_review(host, git, fs, clock, folders.context, pr, default_rules)
     agent.require()
-    prompt = REVIEW_PROMPT % {"pr": pr, "context": folders.context, "agent": folders.agent, "extra": extra_prompt}
+    prompt = REVIEW_PROMPT % {
+        "pr": pr,
+        "context": folders.context,
+        "agent": folders.agent,
+        "extra": settings.agent.extra_prompt,
+    }
     run_agent(agent, fs, env, log, folders, prompt.strip())
-    try:
-        review, outputs = finalize_pr_review(fs, env, folders.context, folders.agent, folders.out)
-    except InvalidOutput as error:
-        if fail_on == "never":
-            log.warning("invalid agent output, so nothing is posted: %s" % error)
-            return
-        raise RunFailed("invalid agent output with fail-on=%s (failing closed): %s" % (fail_on, error))
+    trusted = trusted_review(fs, env, log, folders, fail_on)
+    if trusted is None:
+        return
+    review, outputs = trusted
     if review.redactions:
         log.warning("clean-eval redacted %d secret-looking value(s) from agent output" % review.redactions)
-    write_step_outputs(fs, gh_output, outputs)
-    report_run(fs, summary, "PR Review #%d" % pr, folders)
-    if post:
-        posted = post_review(host, fs, env, folders.out, pr, context.head, folders.context)
-        for level, message in posted.log:
-            if level == "warning":
-                log.warning(message)
-            else:
-                log.show(message)
-        if not posted.posted:
-            log.warning("could not post the review (the token needs pull-requests: write)")
-    if fail_on == "request_changes" and review.verdict == "request_changes":
-        raise RunFailed("review verdict: request_changes")
-    if fail_on == "blocker" and review.blockers:
-        raise RunFailed("%d blocker finding(s)" % review.blockers)
+    write_step_outputs(fs, settings.github.step_outputs, outputs)
+    report_run(fs, settings.github.step_summary, "PR Review #%d" % pr, folders)
+    if settings.review.post:
+        post_and_log(host, fs, env, log, folders, pr, context.head)
+    fail_as_told(review, fail_on)

@@ -14,8 +14,8 @@ The only code that touches anything outside the process.
 **Drivers:** only they use the console (`print`, `sys.stdin`/`stdout`/`exit`).
 - `cli.py` is the command line, built on click, and the entry point of every utility: the user commands, and the
   CI commands (`action`, which action.yml runs, and `prepare`, `finalize`, `post`, `redact`, `guard`). It is also the
-  composition root: it builds the gateways and presenters it hands to the use cases. A CI run's log (`RunLog`) is its
-  console.
+  composition root: it builds the gateways and presenters it hands to the use cases, and `action` builds the run's
+  `Settings` (`clean_eval/settings.py`) from the environment. A CI run's log (`RunLog`) is its console.
   - A new utility is a new click command of the `clean_eval` group, with its options declared on it.
   - A command that fails with a status calls `context.exit(<status>)`. A `HeatmapError` it raises reads
     `clean_eval: <message>` with status 1, never a traceback.
@@ -26,6 +26,8 @@ The only code that touches anything outside the process.
   and only those its entry in `GATEWAYS` allows.
 - A gateway module holds exactly the gateway classes its `GATEWAYS` entry lists.
 - `open()` appears only in `filesystem.py`, and clock reads and `os.environ` only in `environment.py`.
+- `Settings` reads the environment too, through pydantic-settings, which only `clean_eval/settings.py` imports; only
+  the drivers build a `Settings` (`TestTheSettings`).
 
 **To add an external dependency**
 1. Define its interface in `use_cases/interfaces.py`.

@@ -23,7 +23,8 @@ This layer holds exactly two things; `UseCasesHoldInterfacesAndFunctions` in `te
   same features (`heatmap.py`, `review.py`, `evaluation.py`), plus `analysis.py` for reading code.
 
 **Constraints**
-- Import only the domain, this layer, the stdlib modules in `PURE_IMPORTS`, and pydantic.
+- Import only the domain, this layer, the stdlib modules in `PURE_IMPORTS`, pydantic, and `clean_eval.settings`. A use
+  case takes the run's `Settings` as a parameter and never builds one, since building it reads the environment.
 - No I/O and no clock reads; today's date comes from a `Clock`.
 - Take only `sys.stdlib_module_names` from `sys`.
 

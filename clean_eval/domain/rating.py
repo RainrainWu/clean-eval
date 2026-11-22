@@ -3,19 +3,57 @@ syntax), its knowledge graph, the rated modules and heat map, a reviewer's judge
 carries."""
 
 from collections import Counter
-from typing import Annotated, Any, Literal, Optional, Self
+from enum import StrEnum
+from typing import (
+    Annotated,
+    Any,
+    Optional,
+    Self,
+)
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
-from clean_eval.domain.policy import Band, Count, Fraction, Level, Score
+from clean_eval.domain.policy import (
+    Aspect,
+    Band,
+    Count,
+    Fraction,
+    Level,
+    Score,
+)
 
 # What is read from the code: a snapshot of a repository, its source files, and the signals one file gives.
+
+
+class Scale(StrEnum):
+    """How widely a test file's tests reach, read from its path."""
+
+    UNIT = "unit"
+    INTEGRATION = "integration"
+    E2E = "e2e"
+    OTHER = "other"
+
+
+class ReadmeAction(StrEnum):
+    """What updating the README did to its heat-map section: added it, or updated it."""
+
+    ADD = "ADD"
+    UPDATE = "UPDATE"
 
 
 class Snapshot(BaseModel):
     """The code being rated: a working tree, or a revision read straight from git."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(
+        frozen=True,
+    )
 
     repo: str
     ref: str
@@ -24,9 +62,16 @@ class Snapshot(BaseModel):
 
 
 class SourceFile(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(
+        frozen=True,
+    )
 
-    path: Annotated[str, Field(min_length=1)]  # repo-relative, "/"-separated
+    path: Annotated[
+        str,
+        Field(
+            min_length=1,
+        ),
+    ]  # repo-relative, "/"-separated
     text: str
     loc: Count
     is_test: bool
@@ -53,7 +98,9 @@ class FileSignals(BaseModel):
 class FileSyntax(BaseModel):
     """What the syntax tree of one Python file says about its links: its functions, its imports and the names it uses."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(
+        frozen=True,
+    )
 
     defs: tuple[str, ...] = ()  # functions and methods: "f", "Class.method"
     imports: tuple[tuple[str, int, tuple[str, ...]], ...] = ()  # (module, level, names)
@@ -98,7 +145,7 @@ class Facts(BaseModel):
     linked_functions: Count  # functions with a resolved test link
     linked_test_files: Count
     linked_test_loc: float
-    test_scales: Counter[str]
+    test_scales: Counter[Scale]
     line_rate: Optional[float]  # from a coverage report when the repo has one
     na_reason: Optional[str] = None  # set when the module is not rated for Unverified
 
@@ -112,7 +159,9 @@ class Facts(BaseModel):
 class AspectScores(BaseModel):
     """The four aspect scores of a module; unverified is None when the aspect doesn't apply (N/A)."""
 
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(
+        validate_assignment=True,
+    )
 
     biz: Score
     effects: Score
@@ -154,7 +203,9 @@ class TopFile(BaseModel):
 
 
 class ModuleRating(BaseModel):
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(
+        validate_assignment=True,
+    )
 
     name: str
     loc: Count
@@ -168,15 +219,21 @@ class ModuleRating(BaseModel):
 
 
 class Heatmap(BaseModel):
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(
+        validate_assignment=True,
+    )
 
     repo: str
     ref: str
     sha: str
     generated_at: str
     loc_total: Count
-    modules: list[ModuleRating] = Field(default_factory=list)
-    notes: list[str] = Field(default_factory=list)
+    modules: list[ModuleRating] = Field(
+        default_factory=list,
+    )
+    notes: list[str] = Field(
+        default_factory=list,
+    )
     judged_modules: Count = 0
     policy_version: Optional[int] = None
 
@@ -186,7 +243,7 @@ class ReadmeUpdate(BaseModel):
 
     heatmap: Heatmap
     changed: bool
-    action: Optional[Literal["ADD", "UPDATE"]] = None  # when changed
+    action: Optional[ReadmeAction] = None  # when changed
     fingerprint: str
 
 
@@ -201,7 +258,6 @@ class RatingCache(BaseModel):
 
 # A reviewer's judgement of a heat map: one level (0 most severe ... 3 least) per module and aspect, with a reason.
 
-AspectName = Literal["business", "effects", "entropy", "unverified"]
 MAX_REASON = 240
 
 
@@ -222,7 +278,7 @@ class Judgement(BaseModel):
     """{"modules": {name: {aspect: {"level": 0-3, "reason": ...}}}}. The levelling agent's output is untrusted: an entry
     that doesn't validate is dropped rather than failing the whole judgement, as the skill documents."""
 
-    modules: dict[str, dict[AspectName, AspectLevel]] = {}
+    modules: dict[str, dict[Aspect, AspectLevel]] = {}
 
     @model_validator(mode="before")
     @classmethod
@@ -237,7 +293,7 @@ class Judgement(BaseModel):
                 continue
             levels = {}
             for aspect, entry in aspects.items():
-                if aspect not in AspectName.__args__:
+                if aspect not in set(Aspect):
                     continue
                 try:
                     levels[aspect] = AspectLevel.model_validate(entry)
@@ -267,7 +323,9 @@ class ModuleRecord(BaseModel):
         self,
     ) -> Self:
         if self.rated != (self.score is not None):
-            raise ValueError("a rated module has a score and an unrated one has none")
+            raise ValueError(
+                "a rated module has a score and an unrated one has none",
+            )
         return self
 
 

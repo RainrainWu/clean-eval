@@ -5,10 +5,20 @@ from collections.abc import Sequence
 from typing import Optional
 from xml.sax.saxutils import escape
 
-from clean_eval.domain.policy import ASPECTS, BANDS
+from clean_eval.domain.policy import (
+    BANDS,
+    Aspect,
+    Band,
+)
 from clean_eval.domain.rating import Heatmap
-from clean_eval.use_cases.interfaces import DiagramPresenter, ReportPresenter
-from clean_eval.use_cases.rules.heatmap import MARKERS, band
+from clean_eval.use_cases.interfaces import (
+    DiagramPresenter,
+    ReportPresenter,
+)
+from clean_eval.use_cases.rules.heatmap import (
+    MARKERS,
+    band,
+)
 
 # Presenters: adaptors that turn a heatmap into the SVG diagram, the README block and a Markdown summary.
 
@@ -16,23 +26,34 @@ from clean_eval.use_cases.rules.heatmap import MARKERS, band
 # How bands look: the status palette, emoji and glyphs shared by the SVG and the Markdown summary.
 
 # band -> (colour, emoji, glyph). Tiles are drawn translucent: a tint of the colour behind theme-coloured text, with a solid border.
-BAND_STYLE = {
-    "Low": ("#0ca30c", "🟢", "✓"),
-    "Moderate": ("#fab219", "🟡", "!"),
-    "High": ("#ec835a", "🟠", "▲"),
-    "Critical": ("#d03b3b", "🔴", "✕"),
-    "N/A": ("#898781", "⚪", "–"),
-}
+BAND_STYLE = frozendict(
+    {
+        Band.LOW: ("#0ca30c", "🟢", "✓"),
+        Band.MODERATE: ("#fab219", "🟡", "!"),
+        Band.HIGH: ("#ec835a", "🟠", "▲"),
+        Band.CRITICAL: ("#d03b3b", "🔴", "✕"),
+        "N/A": ("#898781", "⚪", "–"),
+    }
+)
 TILE_OPACITY = 0.35
 DIAGRAM_BACKING, DIAGRAM_TEXT = (
     "#0d1117",
     "#e6edf3",
 )  # the SVG brings its own dark backing: GitHub's page theme can differ from the OS theme
 MIN_TILE_SHARE = 0.015  # tiles under this share of the code are drawn larger so they stay readable
-DIAGRAM_PATH = "docs/risk-heatmap.svg"  # default location of the README diagram, relative to the repository root
 
 
 # Squarified treemap layout.
+
+
+def worst_aspect_ratio[T](
+    row: list[tuple[T, float]],
+    side: float,
+) -> float:
+    """The worst (largest) aspect ratio of `row`'s tiles, [(payload, area)], laid along a side of length `side`: squarify
+    adds a tile to a row only while this doesn't get worse."""
+    s, mx, mn = sum(a for _, a in row), max(a for _, a in row), min(a for _, a in row)
+    return max(side * side * mx / (s * s), s * s / (side * side * mn))
 
 
 def squarify[T](
@@ -44,17 +65,9 @@ def squarify[T](
 ) -> list[tuple[T, float, float, float, float]]:
     """`items` is [(payload, area)] sorted by area descending; returns [(payload, x, y, w, h)] filling the rectangle."""
     out, rest = [], list(items)
-
-    def worst(
-        row: list[tuple[T, float]],
-        side: float,
-    ) -> float:
-        s, mx, mn = sum(a for _, a in row), max(a for _, a in row), min(a for _, a in row)
-        return max(side * side * mx / (s * s), s * s / (side * side * mn))
-
     while rest:
         side, row, i = min(width, height), [rest[0]], 1
-        while i < len(rest) and worst(row + [rest[i]], side) <= worst(row, side):
+        while i < len(rest) and worst_aspect_ratio(row + [rest[i]], side) <= worst_aspect_ratio(row, side):
             row.append(rest[i])
             i += 1
         s = sum(a for _, a in row)
@@ -78,7 +91,7 @@ def squarify[T](
 
 WIDTH, HEIGHT = 960, 540
 TEXT_MIN_W, TEXT_MIN_H = 96, 44
-COLUMNS = tuple((key, label) for _, key, label, _, _ in ASPECTS)
+COLUMNS = tuple((aspect.score_key, aspect.label) for aspect in Aspect)
 
 
 def band_label(
@@ -213,7 +226,7 @@ class MarkdownReportPresenter(ReportPresenter):
         ]
         if not mods:
             return "\n".join(head + ["_No Python source modules to rate._", ""])
-        cols = ["Module", "Overall"] + [label for _, _, label, _, _ in ASPECTS] + ["Lines"]
+        cols = ["Module", "Overall"] + [aspect.label for aspect in Aspect] + ["Lines"]
         rows = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
         for m in mods[:TOP]:
             rows.append(
@@ -221,7 +234,7 @@ class MarkdownReportPresenter(ReportPresenter):
                 % (
                     markdown_name(m.name),
                     score_cell(m.scores.overall),
-                    " | ".join(score_cell(getattr(m.scores, k)) for _, k, _, _, _ in ASPECTS),
+                    " | ".join(score_cell(getattr(m.scores, aspect.score_key)) for aspect in Aspect),
                     m.loc,
                 )
             )

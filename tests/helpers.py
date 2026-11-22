@@ -1,6 +1,7 @@
 """Test infrastructure for every layer's tests, and nothing from the package: dates relative to now, throwaway git
-repositories, and fake `gh` and `claude` executables. Classes only: the fixtures that hand them out (`repo`, `fake_bin`)
-and the hermetic git config are in tests/conftest.py, and files are read and written with pathlib."""
+repositories, fake `gh` and `claude` executables, files written into a folder, and the command line run in a
+subprocess. Classes only: the fixtures that hand them out (`repo`, `fake_bin`, `write_files`, `run_cli`) and the
+hermetic git config are in the conftest.py files, and files are read and written with pathlib."""
 
 import datetime as dt
 import json
@@ -11,7 +12,58 @@ import sys
 import textwrap
 from pathlib import Path
 
-ROOT = str(Path(__file__).absolute().parent.parent)
+ROOT = str(
+    Path(
+        __file__,
+    )
+    .absolute()
+    .parent.parent
+)
+
+
+class Contents:
+    """Files' contents as the tests write them into a folder (`write`): a str as it is, None for a file to remove, and
+    anything else as JSON."""
+
+    @staticmethod
+    def write(
+        folder,
+        contents,
+    ):
+        """Write {path in `folder`: content} into `folder`, making folders as needed."""
+        for relative, content in contents.items():
+            path = Path(
+                folder,
+                relative,
+            )
+            if content is None:
+                path.unlink()
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content if isinstance(content, str) else json.dumps(content, indent=2))
+
+
+class CommandLine:
+    """The command line as the skills and the action run it, `python -I <package> <arguments>`, in a subprocess, with the
+    package at the path `package` (`run`)."""
+
+    def __init__(
+        self,
+        package,
+    ):
+        self.package = package
+
+    def run(
+        self,
+        *arguments,
+        cwd,
+        **options,
+    ):
+        """Run it with `arguments` in the folder `cwd`, and any other keyword of subprocess.run; the CompletedProcess,
+        with text output."""
+        return subprocess.run(
+            [sys.executable, "-I", self.package, *arguments], cwd=cwd, capture_output=True, text=True, **options
+        )
 
 
 class Dates:
@@ -33,7 +85,9 @@ class Repo:
         path,
     ):
         self.path = str(path)
-        Path(self.path).mkdir(parents=True, exist_ok=True)
+        Path(
+            self.path,
+        ).mkdir(parents=True, exist_ok=True)
         self.git("init", "-q")
 
     def git(
@@ -45,7 +99,9 @@ class Repo:
             ["git", "-C", self.path, *args], capture_output=True, text=True, env={**os.environ, **(env or {})}
         )
         if completed.returncode != 0:
-            raise RuntimeError(f"git {args}: {completed.stderr}")
+            raise RuntimeError(
+                f"git {args}: {completed.stderr}",
+            )
         return completed.stdout.strip()
 
     def write(
@@ -53,7 +109,10 @@ class Repo:
         rel,
         content,
     ):
-        full = Path(self.path, rel)
+        full = Path(
+            self.path,
+            rel,
+        )
         full.parent.mkdir(parents=True, exist_ok=True)
         full.write_text(content)
 
@@ -146,9 +205,23 @@ class FakeBin:
         path,
     ):
         self.dir = str(path)
-        Path(self.dir).mkdir(parents=True, exist_ok=True)
-        self.make_executable(Path(self.dir, "gh"), FAKE_GH)
-        self.make_executable(Path(self.dir, "claude"), FAKE_CLAUDE)
+        Path(
+            self.dir,
+        ).mkdir(parents=True, exist_ok=True)
+        self.make_executable(
+            Path(
+                self.dir,
+                "gh",
+            ),
+            FAKE_GH,
+        )
+        self.make_executable(
+            Path(
+                self.dir,
+                "claude",
+            ),
+            FAKE_CLAUDE,
+        )
         self.gh({})
         self.claude({})
 
@@ -158,7 +231,9 @@ class FakeBin:
         source,
     ):
         """Write a Python script to `path` that runs with this interpreter, and make it executable."""
-        executable = Path(path)
+        executable = Path(
+            path,
+        )
         executable.write_text(f"#!{sys.executable}\n" + textwrap.dedent(source))
         executable.chmod(executable.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -167,27 +242,39 @@ class FakeBin:
         cfg,
     ):
         """Configure the fake gh's replies (see FAKE_GH)."""
-        Path(self.dir, "gh.json").write_text(json.dumps(cfg))
+        Path(
+            self.dir,
+            "gh.json",
+        ).write_text(json.dumps(cfg))
 
     def claude(
         self,
         plan,
     ):
         """Configure what the fake claude writes, says and exits with (see FAKE_CLAUDE)."""
-        Path(self.dir, "claude.json").write_text(json.dumps(plan))
+        Path(
+            self.dir,
+            "claude.json",
+        ).write_text(json.dumps(plan))
 
     def gh_calls(
         self,
     ):
         """The fake gh's calls so far: {"args", "stdin"} each, oldest first."""
-        calls = Path(self.dir, "gh-calls.jsonl")
+        calls = Path(
+            self.dir,
+            "gh-calls.jsonl",
+        )
         return [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
 
     def claude_invocation(
         self,
     ):
         """How the fake claude was run ({"argv", "env", "stdin", "cwd"}), or None when it wasn't."""
-        invocation = Path(self.dir, "claude-invocation.json")
+        invocation = Path(
+            self.dir,
+            "claude-invocation.json",
+        )
         return json.loads(invocation.read_text()) if invocation.exists() else None
 
     def env(

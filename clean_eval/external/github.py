@@ -5,12 +5,23 @@ cases' CodeHost interface: what it reads is validated into domain models. Failur
 import json
 import re
 import subprocess
-from typing import Any, Optional
+from typing import (
+    Any,
+    Optional,
+)
 
 from pydantic import ValidationError
 
-from clean_eval.domain.errors import HeatmapError, RemoteError
-from clean_eval.domain.review import HostReview, PullRequest, ReviewPost
+from clean_eval.domain.errors import (
+    HeatmapError,
+    RemoteError,
+    RemoteFailure,
+)
+from clean_eval.domain.review import (
+    HostReview,
+    PullRequest,
+    ReviewPost,
+)
 from clean_eval.use_cases.interfaces import CodeHost
 
 NOT_FOUND = re.compile(r"Could not resolve to a PullRequest|HTTP 404|Not Found", re.I)
@@ -43,7 +54,8 @@ def run_gh(
     if completed.returncode != 0:
         err = (completed.stderr or completed.stdout).strip()[:300]
         raise RemoteError(
-            "gh %s failed: %s" % (" ".join(args[:2]), err), kind="not_found" if NOT_FOUND.search(err) else "error"
+            "gh %s failed: %s" % (" ".join(args[:2]), err),
+            kind=RemoteFailure.NOT_FOUND if NOT_FOUND.search(err) else RemoteFailure.ERROR,
         )
     return completed.stdout
 
@@ -57,7 +69,9 @@ def gh_json(
     try:
         return loads_multi(out)
     except ValueError as e:
-        raise RemoteError("unparseable output of gh %s: %s" % (" ".join(args[:2]), e))
+        raise RemoteError(
+            "unparseable output of gh %s: %s" % (" ".join(args[:2]), e),
+        )
 
 
 def reviews_path(
@@ -83,7 +97,9 @@ class GitHubGateway(CodeHost):
         try:
             run_gh("auth", "status")
         except RemoteError as e:
-            raise HeatmapError("--with-gh needs an authenticated gh CLI: %s" % e)
+            raise HeatmapError(
+                "--with-gh needs an authenticated gh CLI: %s" % e,
+            )
 
     def review_threads(
         self,
@@ -91,7 +107,9 @@ class GitHubGateway(CodeHost):
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         view = gh_json("pr", "view", str(number), "--json", "reviews,comments,labels,additions,deletions,url")
         if not isinstance(view, dict):
-            raise RemoteError("gh pr view %s returned no pull request object" % number)
+            raise RemoteError(
+                "gh pr view %s returned no pull request object" % number,
+            )
         inline = gh_json("api", "--paginate", "repos/{owner}/{repo}/pulls/%s/comments" % number)
         return view, inline if isinstance(inline, list) else []
 

@@ -1,17 +1,18 @@
 """The heat map's use cases (use_cases/heatmap.py), with their dependencies mocked: the sources a rating reads,
 coverage, rating a snapshot, a working tree or a revision, summarizing, and refreshing the README."""
 
-from typing import Any
 from unittest.mock import call
 
 import pytest
+from pytest_lazy_fixtures import (
+    lf,
+    lfc,
+)
 
 from clean_eval.domain.errors import NoPythonSource
-from clean_eval.domain.rating import Snapshot
-from clean_eval.domain.review import RunFolders
+from clean_eval.domain.policy import Aspect
 from clean_eval.use_cases.heatmap import (
     GENERATED,
-    MAX_FILE_BYTES,
     agent_judgement,
     content_id,
     count_loc,
@@ -25,81 +26,7 @@ from clean_eval.use_cases.heatmap import (
     summarize_heatmap,
     update_readme,
 )
-from clean_eval.use_cases.rules.heatmap import MARKERS
 from tests.use_cases.fakes import MemoryGit
-
-# The sources a rating reads: a history of two commits, the second adding a generated file, a huge one and one the
-# working tree has lost.
-INIT = {"src/a.py": "def f():\n    return 1\n", "tests/test_a.py": "from src.a import f\n"}
-CHANGE = {
-    "src/a.py": "def f():\n    return 2\n",
-    "src/x_pb2.py": "X = 1\n",
-    "src/gone.py": "G = 1\n",
-    "src/huge.py": "#\n" * (MAX_FILE_BYTES // 2 + 1),
-    "docs/n.md": "n\n",
-}
-SOURCES_HISTORY = [{"subject": "init", "files": INIT}, {"subject": "change", "files": CHANGE}]
-# What git tracks: the last commit's files, and a symlink that is staged.
-TRACKED = sorted({*INIT, *CHANGE, "src/link.py"})
-# The working tree: the last commit without src/gone.py, src/a.py edited, an untracked file, and the symlink.
-EDITED = "def f():\n    return 3\n"
-WORKING_TREE = {
-    "/repo/" + path: text
-    for path, text in {**INIT, **CHANGE, "src/a.py": EDITED, "src/untracked.py": "U = 1\n"}.items()
-    if path != "src/gone.py"
-}
-SYMLINK = {"/repo/src/link.py": "/etc/hosts"}
-
-# A Cobertura coverage report.
-REPORT = '<coverage><class name="a" filename="src/a.py" line-rate="0.75"/></coverage>'
-
-# Rating a snapshot: its files are two modules, src/api (600 lines) and src/core (100), and a test. In their knowledge
-# graph src/api calls into src/core, its function is tested, and a flow runs through both.
-SNAPSHOT = Snapshot(repo="demo", ref="main", sha="abc1234", root="/r")
-CORE = "def g(con):\n    con.execute('INSERT INTO t VALUES (1)')\n    con.commit()\n"
-TEST_FILE = {"path": "tests/unit/test_a.py", "loc": 50, "is_test": True}
-SOURCES = [
-    {"path": "src/api/a.py", "loc": 300, "text": "def f(x: int) -> int:\n    return x\n"},
-    {"path": "src/api/b.py", "loc": 300},
-    {"path": "src/core/c.py", "loc": 100, "text": CORE},
-    TEST_FILE,
-]
-GRAPH: dict[str, Any] = {
-    "nodes": {
-        "src/api/a.py::f": ("Function", "src/api/a.py", False),
-        "src/core/c.py::g": ("Function", "src/core/c.py", False),
-    },
-    "links": {"src/api/a.py": {"src/core/c.py"}},
-    "tested": {"src/api/a.py::f": {"tests/unit/test_a.py"}},
-    "stats": {"source": "fake", "nodes": 2, "edges": 1},
-}
-
-# Rating a repository: one commit of a module that writes to a database and its test, and its working tree.
-TEST_C = "from src.core.c import g\n"
-REPOSITORY = [{"subject": "init", "files": {"src/core/c.py": CORE, "tests/test_c.py": TEST_C}}]
-CHECKOUT = {"/repo/src/core/c.py": CORE, "/repo/tests/test_c.py": TEST_C}
-COVERAGE = '<coverage><class name="c" filename="src/core/c.py" line-rate="0.5"/></coverage>'
-# A second commit, which adds one module file.
-NEW_FILE = "def h():\n    pass\n"
-MORE = {"subject": "more", "files": {"src/core/d.py": NEW_FILE}}
-# A repository without Python source, and its working tree.
-DOCS_ONLY = [{"subject": "docs", "files": {"README.md": "# r\n"}}]
-DOCS_CHECKOUT = {"/repo/README.md": "# r\n"}
-
-# Summarizing: a reviewer's level for module "m", and a ReportPresenter whose report says how many modules were judged
-# when it was asked (str.format reads them off the heat map it is given).
-LEVELED = {"modules": {"m": {"business": {"level": 0, "reason": "r"}}}}
-SUMMARY = {"report.side_effect": "{0.judged_modules} judged".format}
-
-# Refreshing the README. The DiagramPresenter answers with an SVG, and with a README block between the markers that
-# holds the image link and the fingerprint it is given (str.format fills them in from the call's arguments).
-README, SVG = "/repo/README.md", "/repo/docs/risk-heatmap.svg"
-DIAGRAM = {
-    "svg.return_value": "<svg/>",
-    "readme_block.side_effect": (
-        MARKERS[0] + "\n![map]({1})\n<!-- risk-heat-map:fingerprint={2} -->\n" + MARKERS[1] + "\n"
-    ).format,
-}
 
 
 class TestSourceHelpers:
@@ -125,12 +52,14 @@ class TestSourceHelpers:
         assert content_id("hi\n") == "45b983be36b73c0788dc9cbcb76cbb80fc7bb057"  # `git hash-object` of "hi\n"
 
 
-@pytest.mark.parametrize("history", [SOURCES_HISTORY], indirect=True)
+@pytest.mark.parametrize("history", [lf("sources_history")], indirect=True)
 class TestSources:
     """A history and a working tree that differs from it: what a rating reads of each."""
 
     @pytest.mark.parametrize(
-        ("git", "files", "links"), [({"ls_files.return_value": TRACKED}, WORKING_TREE, SYMLINK)], indirect=True
+        ("git", "files", "links"),
+        [({"ls_files.return_value": lf("tracked_paths")}, lf("working_tree_files"), lf("staged_symlink"))],
+        indirect=True,
     )
     def test_a_working_tree_is_its_tracked_python_files_as_they_are_on_disk(
         self,
@@ -138,12 +67,13 @@ class TestSources:
         fs,
         policy,
         shas,
+        edited_source,
     ):
         snapshot, read = read_working_tree(git, fs, policy)
         by_path = {source.path: source for source in read}
         assert sorted(by_path) == ["src/a.py", "tests/test_a.py"]  # not generated, linked, gone, huge or untracked
-        assert by_path["src/a.py"].text == EDITED
-        assert by_path["src/a.py"].blob == MemoryGit.blob_id(EDITED)  # git's id: caches are shared
+        assert by_path["src/a.py"].text == edited_source
+        assert by_path["src/a.py"].blob == MemoryGit.blob_id(edited_source)  # git's id: caches are shared
         assert by_path["tests/test_a.py"].is_test
         assert (snapshot.repo, snapshot.ref, snapshot.sha, snapshot.root) == ("demo", "main", shas[-1][:7], "/repo")
         assert fs.read_text.call_args_list == [call("/repo/src/a.py"), call("/repo/tests/test_a.py")]  # nothing else
@@ -153,10 +83,12 @@ class TestSources:
         git,
         policy,
         shas,
+        first_commit_files,
+        second_commit_files,
     ):
         blobs = {}
         snapshot, old = read_revision(git, shas[0], policy, blobs)
-        assert {source.path: source.text for source in old} == INIT
+        assert {source.path: source.text for source in old} == first_commit_files
         assert (snapshot.ref, snapshot.sha, len(blobs)) == (shas[0], shas[0][:7], 2)
         _, head = read_revision(git, "HEAD", policy, blobs)
         # not generated or huge
@@ -164,8 +96,18 @@ class TestSources:
         # the unchanged test file is read once
         assert len(blobs) == 4
         assert git.read_blobs.call_args_list == [
-            call([MemoryGit.blob_id(INIT["src/a.py"]), MemoryGit.blob_id(INIT["tests/test_a.py"])]),
-            call([MemoryGit.blob_id(CHANGE["src/a.py"]), MemoryGit.blob_id(CHANGE["src/gone.py"])]),
+            call(
+                [
+                    MemoryGit.blob_id(first_commit_files["src/a.py"]),
+                    MemoryGit.blob_id(first_commit_files["tests/test_a.py"]),
+                ]
+            ),
+            call(
+                [
+                    MemoryGit.blob_id(second_commit_files["src/a.py"]),
+                    MemoryGit.blob_id(second_commit_files["src/gone.py"]),
+                ]
+            ),
         ]
 
 
@@ -175,8 +117,14 @@ class TestCoverageLineRates:
     @pytest.mark.parametrize(
         ("files", "report"),
         [
-            ({"/repo/coverage.xml": REPORT}, "/repo/coverage.xml"),
-            ({"/repo/build/coverage.xml": REPORT, "/repo/deep/er/coverage.xml": REPORT}, "/repo/build/coverage.xml"),
+            ({"/repo/coverage.xml": lf("coverage_report")}, "/repo/coverage.xml"),
+            (
+                {
+                    "/repo/build/coverage.xml": lf("coverage_report"),
+                    "/repo/deep/er/coverage.xml": lf("coverage_report"),
+                },
+                "/repo/build/coverage.xml",
+            ),
         ],
         indirect=["files"],
         ids=["at the root", "one level below"],
@@ -189,7 +137,7 @@ class TestCoverageLineRates:
         assert coverage_line_rates(fs, "/repo") == {"src/a.py": 0.75}
         fs.read_text.assert_called_once_with(report)
 
-    @pytest.mark.parametrize("files", [{"/repo/deep/er/coverage.xml": REPORT}], indirect=True)
+    @pytest.mark.parametrize("files", [{"/repo/deep/er/coverage.xml": lf("coverage_report")}], indirect=True)
     def test_a_report_two_levels_down_is_not_looked_at(
         self,
         fs,
@@ -198,7 +146,9 @@ class TestCoverageLineRates:
         fs.read_text.assert_not_called()
 
     @pytest.mark.parametrize(
-        ("files", "links"), [({"/elsewhere.xml": REPORT}, {"/repo/coverage.xml": "/elsewhere.xml"})], indirect=True
+        ("files", "links"),
+        [({"/elsewhere.xml": lf("coverage_report")}, {"/repo/coverage.xml": "/elsewhere.xml"})],
+        indirect=True,
     )
     def test_a_symlinked_report_is_not_read(
         self,
@@ -211,15 +161,18 @@ class TestCoverageLineRates:
 class TestRate:
     """The rating itself: a pure function of a snapshot's files and their knowledge graph."""
 
-    @pytest.mark.parametrize(("source_files", "graph"), [(SOURCES, GRAPH)], indirect=True)
+    @pytest.mark.parametrize(
+        ("source_files", "graph"), [(lf("api_and_core_sources"), lf("api_and_core_graph"))], indirect=True
+    )
     def test_rates_every_module(
         self,
         source_files,
         graph,
         policy,
         today,
+        demo_snapshot,
     ):
-        rated = rate(SNAPSHOT, source_files, graph, policy, today, None, None, 2)  # no coverage or cache; depth 2
+        rated = rate(demo_snapshot, source_files, graph, policy, today, None, None, 2)  # no coverage or cache; depth 2
         assert (rated.repo, rated.ref, rated.sha, rated.generated_at) == ("demo", "main", "abc1234", today)
         assert rated.policy_version == 2
         # largest first; tests are not modules
@@ -237,7 +190,9 @@ class TestRate:
         assert rated.loc_total == 700
 
     @pytest.mark.parametrize(
-        ("source_files", "graph", "policy"), [(SOURCES, GRAPH, {"exclude": ["src/core/*"]})], indirect=True
+        ("source_files", "graph", "policy"),
+        [(lf("api_and_core_sources"), lf("api_and_core_graph"), {"exclude": ["src/core/*"]})],
+        indirect=True,
     )
     def test_excluded_code_is_not_rated(
         self,
@@ -245,13 +200,19 @@ class TestRate:
         graph,
         policy,
         today,
+        demo_snapshot,
     ):
-        names = [module.name for module in rate(SNAPSHOT, source_files, graph, policy, today, None, None, 2).modules]
+        names = [
+            module.name for module in rate(demo_snapshot, source_files, graph, policy, today, None, None, 2).modules
+        ]
         assert names
         assert not any("core" in name for name in names), names
 
     @pytest.mark.parametrize(
-        ("source_files", "graph"), [([], GRAPH), ([TEST_FILE], GRAPH)], indirect=True, ids=["no files", "tests only"]
+        ("source_files", "graph"),
+        [([], lf("api_and_core_graph")), ([lf("unit_test_file")], lf("api_and_core_graph"))],
+        indirect=True,
+        ids=["no files", "tests only"],
     )
     def test_no_python_source_to_rate(
         self,
@@ -259,16 +220,28 @@ class TestRate:
         graph,
         policy,
         today,
+        demo_snapshot,
     ):
         with pytest.raises(NoPythonSource):
-            rate(SNAPSHOT, source_files, graph, policy, today)
+            rate(demo_snapshot, source_files, graph, policy, today)
 
 
 class TestRateWorkingTree:
     """A working tree is read through Git and the FileSystem, and rated with the built-in graph."""
 
     @pytest.mark.parametrize(
-        ("history", "files"), [(REPOSITORY, {**CHECKOUT, "/repo/coverage.xml": COVERAGE})], indirect=True
+        ("history", "files"),
+        [
+            (
+                lf("core_history"),
+                lfc(
+                    lambda checkout, report: {**checkout, "/repo/coverage.xml": report},
+                    lf("core_checkout"),
+                    lf("core_coverage_report"),
+                ),
+            )
+        ],
+        indirect=True,
     )
     def test_with_the_builtin_graph_and_coverage(
         self,
@@ -285,7 +258,7 @@ class TestRateWorkingTree:
         assert (module_facts.line_rate, rated.modules[0].tests.tested) == (0.5, 1)
         assert rated.notes[0].startswith("Knowledge graph (built-in ast)")
 
-    @pytest.mark.parametrize(("history", "files"), [(DOCS_ONLY, DOCS_CHECKOUT)], indirect=True)
+    @pytest.mark.parametrize(("history", "files"), [(lf("docs_only_history"), lf("docs_only_checkout"))], indirect=True)
     def test_without_python_source(
         self,
         git,
@@ -300,7 +273,7 @@ class TestRateWorkingTree:
 class TestRateRevision:
     """A revision is read from git objects alone; a RatingCache shares the work across revisions."""
 
-    @pytest.mark.parametrize("history", [[*REPOSITORY, MORE]], indirect=True)
+    @pytest.mark.parametrize("history", [lf("two_commit_core_history")], indirect=True)
     def test_revisions_share_their_work_through_the_cache(
         self,
         git,
@@ -309,6 +282,9 @@ class TestRateRevision:
         rating_cache,
         shas,
         today,
+        core_source,
+        core_test_source,
+        added_module_source,
     ):
         first, second = shas
         old = rate_revision(git, clock, first, policy, rating_cache)
@@ -318,11 +294,11 @@ class TestRateRevision:
         # the unchanged files are read and parsed once
         assert (len(rating_cache.blobs), len(rating_cache.syntax)) == (3, 3)
         assert git.read_blobs.call_args_list == [
-            call([MemoryGit.blob_id(CORE), MemoryGit.blob_id(TEST_C)]),
-            call([MemoryGit.blob_id(NEW_FILE)]),
+            call([MemoryGit.blob_id(core_source), MemoryGit.blob_id(core_test_source)]),
+            call([MemoryGit.blob_id(added_module_source)]),
         ]
 
-    @pytest.mark.parametrize("history", [DOCS_ONLY], indirect=True)
+    @pytest.mark.parametrize("history", [lf("docs_only_history")], indirect=True)
     def test_without_python_source(
         self,
         git,
@@ -337,7 +313,12 @@ class TestRateRevision:
 class TestSummarizeHeatmap:
     """Summarizing a heat map: the reviewer's levels are applied first, then the ReportPresenter reports on it."""
 
-    @pytest.mark.parametrize(("report_presenter", "judgement"), [(SUMMARY, LEVELED)], indirect=True)
+    @pytest.mark.parametrize(
+        ("report_presenter", "judgement"),
+        # a report that says how many modules were judged when it was asked (str.format reads them off the heat map)
+        [({"report.side_effect": "{0.judged_modules} judged".format}, lf("critical_business_levels"))],
+        indirect=True,
+    )
     def test_levels_are_applied_before_summarizing(
         self,
         report_presenter,
@@ -358,7 +339,9 @@ class TestSummarizeHeatmap:
         assert finalize_heatmap(heatmap, None, policy).judged_modules == 0
 
 
-@pytest.mark.parametrize(("files", "diagram_presenter"), [({README: "# Demo\n"}, DIAGRAM)], indirect=True)
+@pytest.mark.parametrize(
+    ("files", "diagram_presenter"), [({lf("readme_path"): "# Demo\n"}, lf("diagram_replies"))], indirect=True
+)
 class TestUpdateReadme:
     """Refreshing the README's heat-map section and its diagram: written when the ratings change, and not otherwise."""
 
@@ -369,14 +352,16 @@ class TestUpdateReadme:
         diagram_presenter,
         heatmap,
         policy,
+        readme_path,
+        svg_path,
     ):
-        first = update_readme(fs, diagram_presenter, README, SVG, heatmap, None, policy)
+        first = update_readme(fs, diagram_presenter, readme_path, svg_path, heatmap, None, policy)
         assert (first.changed, first.action) == (True, "ADD")
         assert (
             "![map](docs/risk-heatmap.svg)\n<!-- risk-heat-map:fingerprint=%s -->" % first.fingerprint
-            in memory_fs.read_text(README)
+            in memory_fs.read_text(readme_path)
         )
-        assert memory_fs.read_text(SVG) == "<svg/>"
+        assert memory_fs.read_text(svg_path) == "<svg/>"
 
     def test_the_same_ratings_write_nothing(
         self,
@@ -384,9 +369,11 @@ class TestUpdateReadme:
         diagram_presenter,
         heatmap,
         policy,
+        readme_path,
+        svg_path,
     ):
-        first = update_readme(fs, diagram_presenter, README, SVG, heatmap, None, policy)
-        again = update_readme(fs, diagram_presenter, README, SVG, heatmap, None, policy)
+        first = update_readme(fs, diagram_presenter, readme_path, svg_path, heatmap, None, policy)
+        again = update_readme(fs, diagram_presenter, readme_path, svg_path, heatmap, None, policy)
         assert not again.changed
         assert again.fingerprint == first.fingerprint
         assert fs.write_text.call_count == 2  # the diagram and the README, by the first update only
@@ -398,11 +385,13 @@ class TestUpdateReadme:
         diagram_presenter,
         heatmap,
         policy,
+        readme_path,
+        svg_path,
     ):
-        update_readme(fs, diagram_presenter, README, SVG, heatmap, None, policy)
-        memory_fs.remove(SVG)
-        assert update_readme(fs, diagram_presenter, README, SVG, heatmap, None, policy).changed
-        assert memory_fs.read_text(SVG) == "<svg/>"
+        update_readme(fs, diagram_presenter, readme_path, svg_path, heatmap, None, policy)
+        memory_fs.remove(svg_path)
+        assert update_readme(fs, diagram_presenter, readme_path, svg_path, heatmap, None, policy).changed
+        assert memory_fs.read_text(svg_path) == "<svg/>"
 
     def test_moved_ratings_update_the_section(
         self,
@@ -410,11 +399,13 @@ class TestUpdateReadme:
         diagram_presenter,
         heatmap,
         policy,
+        readme_path,
+        svg_path,
     ):
-        update_readme(fs, diagram_presenter, README, SVG, heatmap, None, policy)
+        update_readme(fs, diagram_presenter, readme_path, svg_path, heatmap, None, policy)
         moved = heatmap.model_copy(deep=True)
         moved.modules[0].scores.biz = 90
-        update = update_readme(fs, diagram_presenter, README, SVG, moved, None, policy)
+        update = update_readme(fs, diagram_presenter, readme_path, svg_path, moved, None, policy)
         assert (update.changed, update.action) == (True, "UPDATE")
 
     def test_the_image_is_linked_relative_to_the_readme(
@@ -424,42 +415,39 @@ class TestUpdateReadme:
         diagram_presenter,
         heatmap,
         policy,
+        svg_path,
     ):
-        update_readme(fs, diagram_presenter, "/repo/docs/README.md", SVG, heatmap, None, policy)
+        update_readme(fs, diagram_presenter, "/repo/docs/README.md", svg_path, heatmap, None, policy)
         text = memory_fs.read_text("/repo/docs/README.md")
         assert "![map](risk-heatmap.svg)" in text
         assert text.endswith("\n")
 
 
-# A CI run's folders, and what the agent may write into its own: levels with a token in them, or no judgement at all.
-RUN_FOLDERS = RunFolders(workspace="/repo", out="/out", context="/out/context", agent="/out/agent")
-TOKEN = "ghs_" + "t" * 36
-LEVELS = '{"modules": {"m": {"business": {"level": 0, "reason": "read %s"}, "nope": {"level": 9}}}}' % TOKEN
-
-
 class TestAgentJudgement:
     """The levels the agent wrote are read redacted, entry by entry; without a JSON object, the static levels stay."""
 
-    @pytest.mark.parametrize("files", [{"/out/agent/judgement.json": LEVELS}], indirect=True)
-    @pytest.mark.parametrize("environ", [{"GH_TOKEN": TOKEN}], indirect=True)
+    @pytest.mark.parametrize("files", [{"/out/agent/judgement.json": lf("agent_levels")}], indirect=True)
+    @pytest.mark.parametrize("environ", [{"GH_TOKEN": lf("gh_token")}], indirect=True)
     def test_the_levels_are_read_redacted(
         self,
         fs,
         memory_fs,
         env,
         run_log,
+        run_folders,
+        gh_token,
     ):
-        judgement = agent_judgement(fs, env, run_log, RUN_FOLDERS)
+        judgement = agent_judgement(fs, env, run_log, run_folders)
         assert judgement is not None
-        assert list(judgement.modules["m"]) == ["business"]  # the invalid entry is dropped
-        assert judgement.modules["m"]["business"].reason == "read [REDACTED]"
-        assert TOKEN not in memory_fs.read_text("/out/agent/judgement.json")
+        assert list(judgement.modules["m"]) == [Aspect.BUSINESS]  # the invalid entry is dropped
+        assert judgement.modules["m"][Aspect.BUSINESS].reason == "read [REDACTED]"
+        assert gh_token not in memory_fs.read_text("/out/agent/judgement.json")
         run_log.warning.assert_not_called()
 
     @pytest.mark.parametrize(
         ("files", "warning"),
         [
-            ({"/out/agent/.keep": ""}, "the agent wrote no judgement.json"),
+            (lf("empty_agent_folder"), "the agent wrote no judgement.json"),
             ({"/out/agent/judgement.json": "[1, 2]"}, "not a JSON object"),
             ({"/out/agent/judgement.json": "{not json"}, "not a JSON object"),
         ],
@@ -471,7 +459,8 @@ class TestAgentJudgement:
         fs,
         env,
         run_log,
+        run_folders,
         warning,
     ):
-        assert agent_judgement(fs, env, run_log, RUN_FOLDERS) is None
+        assert agent_judgement(fs, env, run_log, run_folders) is None
         assert warning in run_log.warning.call_args.args[0]
